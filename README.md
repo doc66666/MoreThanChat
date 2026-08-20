@@ -1,2 +1,10 @@
 # MoreThanChat
-一切皆插件的聊天应用，或许你的企鹅已经过时了！
+
+An all-plugin-based chat application.
+
+Still worried that your chat software can only chat?
+Still frustrated that your software is not customizable enough?
+
+**MoreThanChat** is a chat application that supports custom plugins and AI integration.
+
+🚧 The project is currently under development — stay tuned!
