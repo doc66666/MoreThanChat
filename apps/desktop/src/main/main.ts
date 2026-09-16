@@ -5,7 +5,7 @@ import path from 'node:path'
 const MAX_STATE_BYTES = 8 * 1024 * 1024
 let mainWindow: BrowserWindow | null = null
 
-if (process.env.MTC_SCREENSHOT_PATH) {
+if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
   app.setPath('userData', path.join(app.getPath('temp'), 'MoreThanChat-QA'))
 }
 

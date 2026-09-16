@@ -79,6 +79,8 @@ export interface ChatTransportPlugin {
   create(): ChatTransport
 }
 
+export const chatTransportsServiceId = 'chat.transports'
+
 export class TransportRegistry {
   readonly #plugins = new Map<string, ChatTransportPlugin>()
 

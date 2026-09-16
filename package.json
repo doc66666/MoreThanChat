@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "pnpm --filter @more-than-chat/desktop dev",
     "build": "pnpm --filter @more-than-chat/desktop build",
-    "test": "pnpm --filter @more-than-chat/chat-core test",
+    "test": "pnpm -r --if-present test",
+    "verify:plugin-ui": "pnpm build && node scripts/verify-plugin-ui.mjs",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {

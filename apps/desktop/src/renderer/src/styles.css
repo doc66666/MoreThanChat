@@ -120,6 +120,9 @@ button { color: inherit; }
 .composer-toolbar { display: flex; align-items: center; justify-content: space-between; }
 .composer-toolbar button { width: 31px; height: 31px; border: 0; border-radius: 9px; background: transparent; color: #8d909b; cursor: pointer; }
 .composer-toolbar button:hover { background: #f0f1f5; color: #5a5d68; }
+.composer-toolbar > div:first-child { display: flex; align-items: center; gap: 2px; }
+.composer-toolbar .plugin-composer-action { width: auto; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; color: var(--purple); background: var(--purple-soft); }
+.plugin-composer-action span { font-size: 10px; font-weight: 700; }
 .send-area { display: flex; align-items: center; gap: 11px; }
 .send-area span { color: #aaacb4; font-size: 9px; }
 .composer-toolbar .send-button { background: var(--purple); color: white; }
@@ -145,16 +148,22 @@ button { color: inherit; }
 
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 8px; padding: 10px 15px; border-radius: 11px; background: #272a34; color: white; box-shadow: 0 10px 30px rgba(0,0,0,.18); font-size: 12px; }
 .drawer-backdrop, .modal-backdrop { position: fixed; inset: 38px 0 0; z-index: 30; background: rgba(25,27,36,.2); backdrop-filter: blur(2px); }
-.plugin-drawer { margin-left: auto; width: 390px; height: 100%; padding: 26px; background: white; box-shadow: -15px 0 40px rgba(30,32,42,.12); }
+.plugin-drawer { margin-left: auto; width: 420px; height: 100%; padding: 26px; overflow-y: auto; background: white; box-shadow: -15px 0 40px rgba(30,32,42,.12); }
 .drawer-header { display: flex; align-items: center; justify-content: space-between; }
 .drawer-header h2 { margin: 0; font-size: 21px; }
-.plugin-card { margin-top: 28px; display: grid; grid-template-columns: 46px 1fr auto; gap: 12px; align-items: center; padding: 14px; border: 1px solid #e4e3f4; border-radius: 15px; background: #faf9ff; }
+.plugin-list { margin-top: 24px; display: grid; gap: 11px; }
+.plugin-card { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; border: 1px solid #e4e3f4; border-radius: 15px; background: #faf9ff; }
+.plugin-card.failed { border-color: #efc9c9; background: #fff9f9; }
 .plugin-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 13px; background: var(--purple); color: white; }
+.plugin-copy { min-width: 0; }
 .plugin-card strong { display: block; font-size: 13px; }
 .plugin-card p { margin: 4px 0; color: #80838e; font-size: 10px; }
-.plugin-card small { color: #aaa8bb; font-size: 9px; }
-.enabled-pill { padding: 4px 7px; border-radius: 8px; background: #dcf5e9; color: #21855e; font-size: 9px; font-weight: 700; }
-.plugin-empty { margin-top: 56px; text-align: center; color: #9699a4; }
+.plugin-card small { display: block; overflow: hidden; color: #aaa8bb; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-error { display: block; margin-top: 7px; color: #b64d4d; font-size: 9px; line-height: 1.4; }
+.plugin-toggle { padding: 5px 9px; border: 0; border-radius: 8px; background: #eeeff4; color: #6f7280; font-size: 9px; font-weight: 700; cursor: pointer; }
+.plugin-toggle.active { background: #dcf5e9; color: #21855e; }
+.plugin-toggle:disabled { opacity: .55; cursor: wait; }
+.plugin-empty { margin-top: 42px; padding: 18px; text-align: center; color: #9699a4; border-radius: 15px; background: #f7f7fa; }
 .plugin-empty svg { color: #b7b3ed; }
 .plugin-empty h3 { margin: 14px 0 7px; color: #50535f; font-size: 15px; }
 .plugin-empty p { margin: 0 auto; max-width: 270px; line-height: 1.6; font-size: 11px; }

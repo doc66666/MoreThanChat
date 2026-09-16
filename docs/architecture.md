@@ -62,6 +62,8 @@ apps/pc-host (Electron utility process)
 
 ## 插件包与 ABI
 
+当前仓库已先落地 `packages/plugin-runtime` 的平台无关生命周期契约，以及 `plugins/hello-world` 的可信 `pc-ui` 示例。它验证动态加载、受控贡献、启停清理和失败回滚；任意磁盘插件、进程隔离与版本热替换仍按下述目标架构实现，不能把当前同 realm 示例视为安全沙箱。
+
 PC 与 Android 使用相同的元数据概念，但使用不同的 `target` 和产物：
 
 ```json

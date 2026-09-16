@@ -20,6 +20,12 @@ importers:
       '@more-than-chat/chat-core':
         specifier: workspace:*
         version: link:../../packages/chat-core
+      '@more-than-chat/plugin-hello-world':
+        specifier: workspace:*
+        version: link:../../plugins/hello-world
+      '@more-than-chat/plugin-runtime':
+        specifier: workspace:*
+        version: link:../../packages/plugin-runtime
       lucide-react:
         specifier: 1.39.0
         version: 1.39.0(react@19.2.8)
@@ -59,6 +65,28 @@ importers:
         version: 9.1.0(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2)
 
   packages/chat-core:
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
+
+  packages/plugin-runtime:
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
+
+  plugins/hello-world:
+    dependencies:
+      '@more-than-chat/plugin-runtime':
+        specifier: workspace:*
+        version: link:../../packages/plugin-runtime
     devDependencies:
       typescript:
         specifier: 5.9.3

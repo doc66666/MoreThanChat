@@ -22,7 +22,6 @@ import {
   X,
 } from 'lucide-react'
 import {
-  TransportRegistry,
   createSeedState,
   formatRelativeTime,
   normalizeState,
@@ -30,10 +29,17 @@ import {
   type ChatState,
   type Conversation,
 } from '@more-than-chat/chat-core'
-import { localTransportPlugin } from './local-transport'
-
-const registry = new TransportRegistry()
-registry.register(localTransportPlugin)
+import type {
+  ComposerAction,
+  PluginSnapshot,
+  RegisteredContribution,
+} from '@more-than-chat/plugin-runtime'
+import {
+  composerActionRegistry,
+  pluginRuntime,
+  startBundledPlugins,
+  transportRegistry,
+} from './plugin-host'
 
 function uid(): string {
   return crypto.randomUUID()
@@ -51,7 +57,26 @@ export function App() {
   const [showPlugins, setShowPlugins] = useState(false)
   const [showNewChat, setShowNewChat] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [plugins, setPlugins] = useState<PluginSnapshot[]>(() => pluginRuntime.list())
+  const [composerActions, setComposerActions] = useState<RegisteredContribution<ComposerAction>[]>(() => composerActionRegistry.list())
   const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const syncPlugins = () => setPlugins(pluginRuntime.list())
+    const syncActions = () => setComposerActions(composerActionRegistry.list())
+    const unsubscribePlugins = pluginRuntime.subscribe(syncPlugins)
+    const unsubscribeActions = composerActionRegistry.subscribe(syncActions)
+    syncPlugins()
+    syncActions()
+    void startBundledPlugins().catch(error => {
+      console.error(error)
+      setToast('插件启动失败，请打开插件面板查看诊断')
+    })
+    return () => {
+      void unsubscribePlugins()
+      void unsubscribeActions()
+    }
+  }, [])
 
   useEffect(() => {
     void window.moreThanChat.loadState().then(value => setState(value ? normalizeState(value) : createSeedState()))
@@ -121,7 +146,7 @@ export function App() {
     setDraft('')
     setState(current => current ? appendMessage(current, outgoing) : current)
 
-    const plugin = registry.get(active.transportId)
+    const plugin = transportRegistry.get(active.transportId)
     if (!plugin) {
       setState(current => current ? updateMessageStatus(current, active.id, clientMessageId, 'failed') : current)
       setToast('当前会话的传输插件不可用')
@@ -156,7 +181,43 @@ export function App() {
       setToast('消息发送失败')
     }
     finally {
-      await transport.disconnect()
+      try {
+        await transport.disconnect()
+      }
+      catch (error) {
+        console.error('[transport] disconnect failed', error)
+      }
+    }
+  }
+
+  async function runComposerAction(action: ComposerAction) {
+    if (!active) return
+    try {
+      const result = await action.run({
+        draft,
+        conversationId: active.id,
+        conversationTitle: active.title,
+        now: Date.now(),
+      })
+      setDraft(result.draft)
+      if (result.notice) setToast(result.notice)
+    }
+    catch (error) {
+      console.error(error)
+      setToast(`插件动作“${action.label}”执行失败`)
+    }
+  }
+
+  async function togglePlugin(plugin: PluginSnapshot) {
+    const enable = plugin.status !== 'active'
+    try {
+      if (enable) await pluginRuntime.activate(plugin.manifest.id)
+      else await pluginRuntime.deactivate(plugin.manifest.id)
+      setToast(`${plugin.manifest.displayName}已${enable ? '启用' : '停用'}`)
+    }
+    catch (error) {
+      console.error(error)
+      setToast(`${plugin.manifest.displayName}${enable ? '启用' : '停用'}失败`)
     }
   }
 
@@ -278,6 +339,16 @@ export function App() {
               <div>
                 <button title="添加附件" onClick={() => setToast('附件上传将在对象存储接入后开放')}><Paperclip size={19} /></button>
                 <button title="表情" onClick={() => setDraft(value => `${value} 🙂`)}><Smile size={19} /></button>
+                {composerActions.map(({ ownerId, contribution }) => (
+                  <button
+                    key={`${ownerId}:${contribution.id}`}
+                    className="plugin-composer-action"
+                    title={contribution.description}
+                    onClick={() => void runComposerAction(contribution)}
+                  >
+                    <Sparkles size={16} /><span>{contribution.label}</span>
+                  </button>
+                ))}
               </div>
               <div className="send-area"><span>Enter 发送 · Shift+Enter 换行</span><button className="send-button" disabled={!draft.trim()} onClick={() => void sendMessage()}><SendHorizontal size={18} /></button></div>
             </div>
@@ -285,8 +356,8 @@ export function App() {
         </footer>
       </main>
 
-      {showDetails && <DetailsPanel conversation={active} onClose={() => setShowDetails(false)} />}
-      {showPlugins && <PluginPanel onClose={() => setShowPlugins(false)} />}
+      {showDetails && <DetailsPanel conversation={active} transportName={transportRegistry.get(active.transportId)?.displayName ?? '插件不可用'} onClose={() => setShowDetails(false)} />}
+      {showPlugins && <PluginPanel plugins={plugins} onToggle={plugin => void togglePlugin(plugin)} onClose={() => setShowPlugins(false)} />}
       {showNewChat && <NewChatDialog onClose={() => setShowNewChat(false)} onCreate={createConversation} />}
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
     </div>
@@ -333,25 +404,44 @@ function MessageBubble({ message, compact }: { message: ChatMessage; compact: bo
   )
 }
 
-function DetailsPanel({ conversation, onClose }: { conversation: Conversation; onClose: () => void }) {
+function DetailsPanel({ conversation, transportName, onClose }: { conversation: Conversation; transportName: string; onClose: () => void }) {
   return (
     <aside className="details-panel">
       <div className="details-header"><strong>会话详情</strong><button className="icon-button" onClick={onClose}><X size={18} /></button></div>
       <div className="details-profile"><Avatar conversation={conversation} /><h2>{conversation.title}</h2><p>{conversation.subtitle}</p></div>
       <div className="details-actions"><button><Search size={18} /><span>搜索</span></button><button><Bot size={18} /><span>AI 总结</span></button><button><MoreHorizontal size={18} /><span>更多</span></button></div>
-      <div className="details-card"><div><span>传输插件</span><strong>本地演示</strong></div><div><span>消息存储</span><strong>此设备</strong></div><div><span>端到端加密</span><strong className="muted">尚未启用</strong></div></div>
+      <div className="details-card"><div><span>传输插件</span><strong>{transportName}</strong></div><div><span>消息存储</span><strong>此设备</strong></div><div><span>端到端加密</span><strong className="muted">尚未启用</strong></div></div>
       <div className="details-note"><PlugZap size={17} /><p>这块区域也是 UI Slot。未来插件可以添加成员面板、任务或知识库。</p></div>
     </aside>
   )
 }
 
-function PluginPanel({ onClose }: { onClose: () => void }) {
+function PluginPanel({ plugins, onToggle, onClose }: { plugins: readonly PluginSnapshot[]; onToggle: (plugin: PluginSnapshot) => void; onClose: () => void }) {
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside className="plugin-drawer" onMouseDown={event => event.stopPropagation()}>
         <div className="drawer-header"><div><p className="eyebrow">运行时</p><h2>插件</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
-        <div className="plugin-card"><span className="plugin-icon"><MessageCircleMore /></span><div><strong>本地演示传输</strong><p>提供消息发送与本地 AI 演示回复</p><small>builtin.local-demo · 0.1.0</small></div><span className="enabled-pill">已启用</span></div>
-        <div className="plugin-empty"><PlugZap /><h3>插件接口已就绪</h3><p>中心服务器、AI 模型和消息卡片都将通过同一套能力注册机制接入。</p></div>
+        <div className="plugin-list">
+          {plugins.map(plugin => {
+            const busy = plugin.status === 'activating' || plugin.status === 'deactivating'
+            const active = plugin.status === 'active'
+            return (
+              <div className={`plugin-card ${plugin.status === 'failed' ? 'failed' : ''}`} key={plugin.manifest.id}>
+                <span className="plugin-icon">{plugin.manifest.id === 'builtin.local-demo' ? <MessageCircleMore /> : <Sparkles />}</span>
+                <div className="plugin-copy">
+                  <strong>{plugin.manifest.displayName}</strong>
+                  <p>{plugin.manifest.description}</p>
+                  <small>{plugin.manifest.id} · {plugin.manifest.version} · {plugin.manifest.targets.join(', ')}</small>
+                  {plugin.error && <span className="plugin-error">{plugin.error}</span>}
+                </div>
+                <button className={`plugin-toggle ${active ? 'active' : ''}`} disabled={busy} onClick={() => onToggle(plugin)}>
+                  {busy ? '处理中' : active ? '停用' : '启用'}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+        <div className="plugin-empty"><PlugZap /><h3>可信插件模式</h3><p>示例插件经过版本化 manifest 和生命周期运行时接入。任意磁盘代码将在独立进程与权限代理完成后开放。</p></div>
       </aside>
     </div>
   )
