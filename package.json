@@ -1,0 +1,16 @@
+{
+  "name": "more-than-chat",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "dev": "pnpm --filter @more-than-chat/desktop dev",
+    "build": "pnpm --filter @more-than-chat/desktop build",
+    "test": "pnpm --filter @more-than-chat/chat-core test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

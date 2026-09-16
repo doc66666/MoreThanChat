@@ -1,0 +1,24 @@
+# Local upstream source checkouts used for architecture research.
+.research/
+
+# Dependencies and generated output.
+node_modules/
+dist/
+dist-main/
+dist-renderer/
+build/
+coverage/
+.turbo/
+.artifacts/
+
+# Local configuration and secrets.
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
