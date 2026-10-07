@@ -4,7 +4,7 @@
 
 ## Phase 0：架构钉子（1 周）
 
-当前进度（2026-10-07）：可信 `pc-ui` 插件生命周期、manifest 基础校验、v1 Host 协议与 JSON Schema、Electron Main↔utility process 握手、请求关联、超时、有限退避重启、状态 UI 和崩溃恢复 E2E 已完成。独立 `pc-host` 时间工具插件已接入，支持面板启停、工具结果插入输入框、100 次启停零重复注册，以及 Host 崩溃后恢复本次应用会话的启停选择。Host 使用环境变量白名单，fatal diagnostic report 不进入 Renderer，启动/关闭竞态已有测试。剩余重点是建立 `runtime-cordis` 适配层，以及补充 CI/打包后的 `extraResources` 验证。
+当前进度（2026-10-07）：可信 `pc-ui` 插件生命周期、manifest 基础校验、v1 Host 协议与 JSON Schema、Electron Main↔utility process 监督与崩溃恢复已完成。独立 `pc-host` 时间工具插件通过 `runtime-cordis` 运行，支持启停、工具执行、回滚与清理重试；Cordis Core 固定为非预发布的 `3.18.1`，插件不依赖其 Context 或 Scope。49 项单测与 Windows 桌面 E2E 已在本地通过。CI 配置覆盖 Windows/Linux 的锁定安装、类型检查、测试、构建与 Schema 一致性，以及 Windows 桌面交互验证。下一项重点是安装包 `extraResources` 路径验证；动态服务提供/撤销与依赖自动等待仍需后续扩展，当前缺失依赖会明确拒绝激活。
 
 交付：
 

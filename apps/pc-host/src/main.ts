@@ -80,7 +80,6 @@ async function handleRequest(request: HostRequest): Promise<void> {
         status,
       }))
       parentPort.postMessage(createHostEvent('host.statusChanged', status))
-      scheduleQaCrash()
       return
     }
     case 'diagnostics.ping': {
@@ -102,6 +101,7 @@ async function handleRequest(request: HostRequest): Promise<void> {
       return
     case 'plugins.setEnabled':
       parentPort.postMessage(createHostSuccessResponse(request, await plugins.setEnabled(request.payload.pluginId, request.payload.enabled)))
+      if (!request.payload.enabled) scheduleQaCrash()
       return
     case 'tools.invoke':
       parentPort.postMessage(createHostSuccessResponse(request, await plugins.invoke(request.payload.pluginId, request.payload.toolId)))
@@ -112,7 +112,7 @@ async function handleRequest(request: HostRequest): Promise<void> {
 function scheduleQaCrash(): void {
   if (qaCrashScheduled || generation !== 1 || process.env.MTC_HOST_QA_CRASH_ONCE !== '1') return
   qaCrashScheduled = true
-  setTimeout(() => process.exit(86), 2_500).unref()
+  setTimeout(() => process.exit(86), 350).unref()
 }
 
 function recoverRequestIdentity(raw: unknown): Pick<HostRequestEnvelope<HostMethod>, 'requestId' | 'method'> | undefined {

@@ -5,7 +5,7 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 ## 组件
 
 - `packages/protocol`：平台无关的 v1 request/response/event envelope、运行时校验和 JSON Schema；
-- `apps/pc-host`：独立进程入口，运行 `PluginRuntime({ target: 'pc-host' })`，处理 handshake、ping、插件控制、工具执行与 shutdown；
+- `apps/pc-host`：独立进程入口，运行 `CordisPluginRuntime({ target: 'pc-host' })`，处理 handshake、ping、插件控制、工具执行与 shutdown；
 - `host-supervisor.ts`：请求关联、超时、generation、崩溃检测、有限退避重启和退出清理；
 - `electron-host-process.ts`：对 Electron `utilityProcess.fork()` 的薄适配；
 - `preload.ts`：只暴露状态查询、状态事件、ping、插件清单/启停和工具调用，不暴露任意 channel；
@@ -65,4 +65,4 @@ pnpm verify:host
 - PC Host 仅运行随应用内置的可信插件，尚未运行第三方磁盘插件，也未持有 API Key；
 - utility process 是崩溃隔离与权限收敛边界，但不是完整恶意代码沙箱；
 - 当前开发构建从 `apps/pc-host/dist/main.js` 启动，正式安装包还需将 Host bundle 放入 `extraResources` 并验证 ASAR 路径；
-- 下一步是 `runtime-cordis` 适配与契约测试、CI 和安装包资源路径验证；随后进入 SQLite 与模型 Provider。当前启停是生命周期验证，插件版本更新/失败恢复旧版本的事务仍未实现。
+- Cordis 适配层和契约测试已接入，CI 配置已建立；下一步是安装包资源路径验证，随后进入 SQLite 与模型 Provider。当前启停是生命周期验证，插件版本更新/失败恢复旧版本的事务仍未实现。

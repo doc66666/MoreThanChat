@@ -1,4 +1,5 @@
-import { ContributionRegistry, PluginRuntime, hostToolsServiceId, type HostTool, type PluginSource } from '@more-than-chat/plugin-runtime'
+import { ContributionRegistry, hostToolsServiceId, type HostTool, type PluginSource } from '@more-than-chat/plugin-runtime'
+import { CordisPluginRuntime } from '@more-than-chat/runtime-cordis'
 import { timeToolPlugin } from '@more-than-chat/plugin-time-tool'
 import type { HostPluginCatalog } from '@more-than-chat/protocol'
 
@@ -11,7 +12,7 @@ export class HostPluginError extends Error {
 /** Serializes mutations and tool calls so deactivation cannot overlap execution. */
 export class HostPluginService {
   readonly #tools = new ContributionRegistry<HostTool>()
-  readonly #runtime = new PluginRuntime({ target: 'pc-host', services: { [hostToolsServiceId]: this.#tools } })
+  readonly #runtime = new CordisPluginRuntime({ target: 'pc-host', services: { [hostToolsServiceId]: this.#tools } })
   #operation: Promise<unknown> = Promise.resolve()
   #closing = false
 
@@ -63,7 +64,7 @@ export class HostPluginService {
   stop(): Promise<void> {
     this.#closing = true
     const stopped = this.#operation.catch(() => undefined).then(async () => {
-      for (const plugin of this.#runtime.list().reverse()) await this.#runtime.deactivate(plugin.manifest.id)
+      await this.#runtime.close()
     })
     this.#operation = stopped
     return stopped

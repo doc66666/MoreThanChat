@@ -1,0 +1,61 @@
+name: Verify desktop and plugin contracts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up pnpm
+        uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1 # v4.2.0
+        with:
+          version: 11.21.0
+          run_install: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.12.0
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test lifecycle and protocol contracts
+        run: pnpm test
+      - name: Build desktop and Host
+        run: pnpm build
+      - name: Verify Android protocol schema
+        run: node scripts/verify-protocol-schema.mjs
+      - name: Verify desktop plugin UI
+        if: runner.os == 'Windows'
+        run: node scripts/verify-plugin-ui.mjs
+      - name: Verify Host crash recovery and plugin preferences
+        if: runner.os == 'Windows'
+        run: node scripts/verify-plugin-ui.mjs --host
+      - name: Save desktop verification screenshots
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-verification-${{ matrix.os }}
+          path: .artifacts/*.png
+          if-no-files-found: ignore
+          retention-days: 14

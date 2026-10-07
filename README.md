@@ -20,11 +20,13 @@ pnpm test
 pnpm build
 pnpm verify:plugin-ui
 pnpm verify:host
+pnpm verify:protocol
 ```
 
 - [架构与安全边界](docs/architecture.md)
 - [插件运行时与示例](docs/plugin-runtime.md)
 - [PC Host 协议与进程监督](docs/host-supervision.md)
+- [Cordis 适配与 CI 基线](docs/runtime-cordis.md)
 - [开发路线图](docs/roadmap.md)
 - [DeepSeek Harness / Cordis 调研记录](docs/upstream-study.md)
 

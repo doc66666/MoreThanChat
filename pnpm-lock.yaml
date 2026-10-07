@@ -81,6 +81,9 @@ importers:
       '@more-than-chat/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@more-than-chat/runtime-cordis':
+        specifier: workspace:*
+        version: link:../../packages/runtime-cordis
     devDependencies:
       '@types/node':
         specifier: 24.13.3
@@ -114,6 +117,22 @@ importers:
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
 
   packages/protocol:
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
+
+  packages/runtime-cordis:
+    dependencies:
+      '@cordisjs/core':
+        specifier: 3.18.1
+        version: 3.18.1
+      '@more-than-chat/plugin-runtime':
+        specifier: workspace:*
+        version: link:../plugin-runtime
     devDependencies:
       typescript:
         specifier: 5.9.3
@@ -229,6 +248,9 @@ packages:
   '@babel/types@7.29.8':
     resolution: {integrity: sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==}
     engines: {node: '>=6.9.0'}
+
+  '@cordisjs/core@3.18.1':
+    resolution: {integrity: sha512-yRuATOamFxeD1ztE2L3o1SaHuT2zw5DTXijQYxt9azVNeILbvtomfGG6sLZegrynJO9XZbNvXbOlQ7LBJDOlAg==}
 
   '@electron-internal/extract-zip@1.0.5':
     resolution: {integrity: sha512-+bqFCP98pLI0Tt0XQo1TmlXtwjWchISndDOxCkEcIuUgXWpBnLyRI+2DU+mesvnMMX6L1XDqYNA0lXNDHd/yiA==}
@@ -718,6 +740,9 @@ packages:
 
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
+
+  cosmokit@1.8.1:
+    resolution: {integrity: sha512-PDBv4l90xZKrUsZ0vtoycgZpO/j4iFsqJXrAxsyBDsnQRI7ZMJXIjgDJsKNjd5L8jnVnnlrDCdhkFbTncgCVjQ==}
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
@@ -1276,6 +1301,10 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
+  '@cordisjs/core@3.18.1':
+    dependencies:
+      cosmokit: 1.8.1
+
   '@electron-internal/extract-zip@1.0.5': {}
 
   '@electron/get@5.1.0(supports-color@10.2.2)':
@@ -1654,6 +1683,8 @@ snapshots:
       yargs: 18.0.0
 
   convert-source-map@2.0.0: {}
+
+  cosmokit@1.8.1: {}
 
   csstype@3.2.3: {}
 

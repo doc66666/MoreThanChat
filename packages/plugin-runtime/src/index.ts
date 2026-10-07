@@ -60,6 +60,12 @@ export interface PluginSnapshot {
 export interface PluginRuntimeOptions {
   readonly target: PluginTarget
   readonly services?: Readonly<Record<string, unknown>>
+  readonly activationDriver?: PluginActivationDriver
+}
+
+/** Host-side lifecycle seam. Plugins never receive the implementation. */
+export interface PluginActivationDriver {
+  activate(module: PluginModule, context: PluginContext): Promise<void | PluginDisposer>
 }
 
 interface PluginRecord {
@@ -129,12 +135,14 @@ export function definePlugin(module: PluginModule): PluginModule {
 export class PluginRuntime {
   readonly #target: PluginTarget
   readonly #services: Readonly<Record<string, unknown>>
+  readonly #activationDriver: PluginActivationDriver | undefined
   readonly #records = new Map<string, PluginRecord>()
   readonly #listeners = new Set<() => void>()
 
   constructor(options: PluginRuntimeOptions) {
     this.#target = options.target
     this.#services = options.services ?? {}
+    this.#activationDriver = options.activationDriver
   }
 
   install(source: PluginSource): void {
@@ -239,7 +247,9 @@ export class PluginRuntime {
         assertMatchingManifest(record.source.manifest, module.manifest)
         if (typeof module.activate !== 'function') throw new Error(`Plugin '${id}' has no activate function.`)
 
-        const dispose = await module.activate(context)
+        const dispose = await (this.#activationDriver
+          ? this.#activationDriver.activate(module, context)
+          : module.activate(context))
         if (dispose !== undefined) context.effect(dispose)
         await module.healthCheck?.(context)
         acceptingEffects = false

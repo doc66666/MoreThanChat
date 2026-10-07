@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@more-than-chat/runtime-cordis": "workspace:*",
     "@more-than-chat/plugin-runtime": "workspace:*",
     "@more-than-chat/plugin-time-tool": "workspace:*",
     "@more-than-chat/protocol": "workspace:*"
