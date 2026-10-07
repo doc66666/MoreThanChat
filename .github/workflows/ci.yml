@@ -57,5 +57,6 @@ jobs:
         with:
           name: desktop-verification-${{ matrix.os }}
           path: .artifacts/*.png
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
           retention-days: 14
