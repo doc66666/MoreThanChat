@@ -1,0 +1,8 @@
+{
+  "name": "@more-than-chat/plugin-time-tool", "version": "0.1.0", "private": true,
+  "type": "commonjs", "main": "./dist/index.js", "types": "./src/index.ts",
+  "exports": { ".": { "types": "./src/index.ts", "require": "./dist/index.js", "import": "./dist/index.js" } },
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc --noEmit -p tsconfig.json" },
+  "dependencies": { "@more-than-chat/plugin-runtime": "workspace:*" },
+  "devDependencies": { "typescript": "5.9.3" }
+}

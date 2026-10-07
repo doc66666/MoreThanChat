@@ -18,9 +18,13 @@ catalog/install → inactive → activating → active
                           失败回滚 └→ failed  └→ deactivating → inactive
 ```
 
-插件只能在 `activate(context)` 中通过 host 服务注册贡献。每次注册都会返回 disposer，插件把它交给 `context.effect()`；停用时 runtime 会按逆序执行全部 disposer。激活或健康检查失败时，同一批 effect 会立即回滚，不会留下半注册项。单个 disposer 抛错不会阻止其余清理。
+插件只能在 `activate(context)` 中通过 host 服务注册贡献。优先使用 `context.contribute(registry, contribution)`，runtime 会自动绑定真实插件 owner 并追踪 disposer；其他资源可继续通过 `context.effect()` 登记。停用时 runtime 按逆序执行全部 disposer，失败项会保留以便再次清理，未清理完成的插件不能被卸载。激活或健康检查失败时，同一批 effect 会立即回滚，不会留下半注册项。
+
+同一插件的激活、停用与卸载操作会串行执行；卸载一开始即进入终止状态，晚到的激活和异步贡献都会被拒绝，从而避免无法再管理的孤儿插件。安装时 manifest 会被深拷贝并冻结，外部对象后续变化不会修改运行时认知。
 
 ## 示例插件
+
+`plugins/time-tool` 是可信 `pc-host` 示例，运行在独立 utility process 中。它通过 `host.tools` 注册无参数时间工具，Main 通过版本化协议控制启停，Renderer 只接收结构化清单与执行结果。其服务测试覆盖 100 次启停、未知工具拒绝、运行中的工具结束后再清理资源。
 
 `plugins/hello-world` 的 manifest 只声明 `pc-ui` target、零权限和一个所需服务：
 
@@ -35,7 +39,7 @@ services: { requires: ['ui.composer-actions'] }
 1. 在 `plugins/<id>` 创建 workspace 包和 `PluginManifestV1`；
 2. 默认导出由 `definePlugin()` 定义的模块；
 3. 只请求并使用公开 service；
-4. 将每个注册项的 disposer 交给 `context.effect()`；
+4. 使用 `context.contribute()` 注册结构化贡献；其他资源的 disposer 交给 `context.effect()`；
 5. 在 `plugin-host.ts` catalog 中登记 manifest 与动态 `import()` loader；
 6. 添加激活、执行、停用零残留和失败回滚测试。
 

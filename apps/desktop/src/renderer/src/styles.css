@@ -35,6 +35,15 @@ button { color: inherit; }
   user-select: none;
 }
 .window-title { display: flex; gap: 7px; align-items: center; font-size: 12px; font-weight: 650; letter-spacing: .02em; }
+.host-status { -webkit-app-region: no-drag; margin-left: 16px; height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid #dedfe6; border-radius: 8px; color: #737681; background: rgba(255,255,255,.7); cursor: pointer; font-size: 9px; }
+.host-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #a4a6af; }
+.host-status small { color: #a4a6af; font-size: 8px; }
+.host-status.host-ready { color: #237e5e; border-color: #cceadc; background: #edf9f3; }
+.host-status.host-ready::before { background: #2eb47d; box-shadow: 0 0 0 3px rgba(46,180,125,.12); }
+.host-status.host-starting::before, .host-status.host-restarting::before { background: #d79c37; animation: host-pulse 1s ease-in-out infinite; }
+.host-status.host-failed { color: #a94b4b; border-color: #efcece; background: #fff3f3; }
+.host-status.host-failed::before { background: #d85b5b; }
+@keyframes host-pulse { 50% { opacity: .35; transform: scale(.75); } }
 
 .app-rail {
   grid-row: 2;

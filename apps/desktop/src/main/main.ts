@@ -1,9 +1,15 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { createElectronHostProcessFactory } from './electron-host-process'
+import { HostSupervisor } from './host-supervisor'
+import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
 
 const MAX_STATE_BYTES = 8 * 1024 * 1024
 let mainWindow: BrowserWindow | null = null
+let hostSupervisor: HostSupervisor | null = null
+let hostStatusCleanup: (() => void) | null = null
+let quitAfterHostStops = false
 
 if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
   app.setPath('userData', path.join(app.getPath('temp'), 'MoreThanChat-QA'))
@@ -38,9 +44,74 @@ async function saveState(value: unknown): Promise<void> {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('chat:state:load', loadState)
-  ipcMain.handle('chat:state:save', (_event, value: unknown) => saveState(value))
-  ipcMain.handle('app:info', () => ({ version: app.getVersion(), platform: process.platform }))
+  ipcMain.handle('chat:state:load', event => {
+    assertTrustedIpc(event)
+    return loadState()
+  })
+  ipcMain.handle('chat:state:save', (event, value: unknown) => {
+    assertTrustedIpc(event)
+    return saveState(value)
+  })
+  ipcMain.handle('app:info', event => {
+    assertTrustedIpc(event)
+    return { version: app.getVersion(), platform: process.platform }
+  })
+  ipcMain.handle('host:status:get', event => {
+    assertTrustedIpc(event)
+    return hostSupervisor?.getStatus() ?? { state: 'stopped', generation: 0 }
+  })
+  ipcMain.handle('host:ping', event => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host supervisor is unavailable.')
+    return hostSupervisor.ping()
+  })
+  ipcMain.handle('host:plugins:list', event => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    return hostSupervisor.getPlugins()
+  })
+  ipcMain.handle('host:plugins:set-enabled', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('plugins.setEnabled', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'plugins.setEnabled') throw new Error('Invalid plugin request.')
+    return hostSupervisor.setPluginEnabled(request.payload.pluginId, request.payload.enabled)
+  })
+  ipcMain.handle('host:tools:invoke', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('tools.invoke', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'tools.invoke') throw new Error('Invalid tool request.')
+    return hostSupervisor.invokeTool(request.payload.pluginId, request.payload.toolId)
+  })
+}
+
+function assertTrustedIpc(event: IpcMainInvokeEvent): void {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error('Rejected IPC from an untrusted frame.')
+  }
+}
+
+function startHostSupervisor(): void {
+  const hostEntryPath = path.resolve(__dirname, '../../pc-host/dist/main.js')
+  hostSupervisor = new HostSupervisor({
+    clientVersion: app.getVersion(),
+    createProcess: createElectronHostProcessFactory({
+      entryPath: hostEntryPath,
+      cwd: path.dirname(hostEntryPath),
+      environment: {
+        MTC_HOST_QA_CRASH_ONCE: process.env.MTC_QA_HOST_CRASH_ONCE === '1' ? '1' : undefined,
+      },
+    }),
+  })
+  hostStatusCleanup = hostSupervisor.subscribe(status => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('host:status:changed', status)
+    }
+  })
+  void hostSupervisor.start().catch(error => {
+    if (!quitAfterHostStops) console.error('[pc-host] Failed to reach ready state:', error)
+  })
 }
 
 async function createWindow(): Promise<void> {
@@ -64,12 +135,21 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false,
     },
   })
+  mainWindow = window
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
   window.webContents.on('will-navigate', (event) => event.preventDefault())
+  window.webContents.on('console-message', details => {
+    if (details.level === 'warning' || details.level === 'error') {
+      console.error(`[renderer] ${details.message} (${details.sourceId}:${details.lineNumber})`)
+    }
+  })
+  window.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[renderer] Process exited:', details)
+  })
 
   if (process.argv.includes('--dev')) {
     await window.loadURL('http://127.0.0.1:5173')
@@ -78,7 +158,6 @@ async function createWindow(): Promise<void> {
     await window.loadFile(path.join(__dirname, '../dist-renderer/index.html'))
   }
 
-  mainWindow = window
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
   })
@@ -86,13 +165,17 @@ async function createWindow(): Promise<void> {
   const screenshotPath = process.env.MTC_SCREENSHOT_PATH
   if (screenshotPath) {
     setTimeout(() => {
-      void window.webContents.capturePage().then(image => writeFile(screenshotPath, image.toPNG())).finally(() => app.quit())
+      void window.webContents.capturePage()
+        .then(image => writeFile(screenshotPath, image.toPNG()))
+        .catch(error => console.error('[qa] Failed to capture screenshot:', error))
+        .finally(() => app.quit())
     }, 900)
   }
 }
 
 app.whenReady().then(async () => {
   registerIpc()
+  startHostSupervisor()
   await createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow()
@@ -104,4 +187,15 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', event => {
+  if (quitAfterHostStops || !hostSupervisor) return
+  event.preventDefault()
+  quitAfterHostStops = true
+  hostStatusCleanup?.()
+  hostStatusCleanup = null
+  void hostSupervisor.stop().catch(error => {
+    console.error('[pc-host] Failed to stop cleanly:', error)
+  }).finally(() => app.quit())
 })

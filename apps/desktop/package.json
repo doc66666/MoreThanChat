@@ -10,12 +10,14 @@
     "build:renderer": "vite build",
     "build": "pnpm run build:main && pnpm run build:renderer",
     "start": "electron .",
+    "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.renderer.json && tsc --noEmit -p tsconfig.main.json"
   },
   "dependencies": {
     "@more-than-chat/chat-core": "workspace:*",
     "@more-than-chat/plugin-hello-world": "workspace:*",
     "@more-than-chat/plugin-runtime": "workspace:*",
+    "@more-than-chat/protocol": "workspace:*",
     "lucide-react": "1.39.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -29,6 +31,7 @@
     "electron": "43.5.1",
     "typescript": "5.9.3",
     "vite": "7.3.1",
+    "vitest": "4.1.11",
     "wait-on": "9.1.0"
   }
 }

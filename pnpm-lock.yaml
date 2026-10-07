@@ -26,6 +26,9 @@ importers:
       '@more-than-chat/plugin-runtime':
         specifier: workspace:*
         version: link:../../packages/plugin-runtime
+      '@more-than-chat/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       lucide-react:
         specifier: 1.39.0
         version: 1.39.0(react@19.2.8)
@@ -60,9 +63,37 @@ importers:
       vite:
         specifier: 7.3.1
         version: 7.3.1(@types/node@24.13.3)
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
       wait-on:
         specifier: 9.1.0
         version: 9.1.0(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2)
+
+  apps/pc-host:
+    dependencies:
+      '@more-than-chat/plugin-runtime':
+        specifier: workspace:*
+        version: link:../../packages/plugin-runtime
+      '@more-than-chat/plugin-time-tool':
+        specifier: workspace:*
+        version: link:../../plugins/time-tool
+      '@more-than-chat/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      electron:
+        specifier: 43.5.1
+        version: 43.5.1(supports-color@10.2.2)
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
 
   packages/chat-core:
     devDependencies:
@@ -74,6 +105,15 @@ importers:
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
 
   packages/plugin-runtime:
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
+
+  packages/protocol:
     devDependencies:
       typescript:
         specifier: 5.9.3
@@ -94,6 +134,16 @@ importers:
       vitest:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3))
+
+  plugins/time-tool:
+    dependencies:
+      '@more-than-chat/plugin-runtime':
+        specifier: workspace:*
+        version: link:../../packages/plugin-runtime
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
 
 packages:
 

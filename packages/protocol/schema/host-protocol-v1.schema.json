@@ -1,0 +1,899 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://more-than-chat.dev/schema/host-protocol-v1.schema.json",
+  "title": "MoreThanChat Host Protocol v1",
+  "description": "Platform-neutral IPC protocol shared by desktop and future Android hosts.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/handshakeRequest"
+    },
+    {
+      "$ref": "#/$defs/pingRequest"
+    },
+    {
+      "$ref": "#/$defs/shutdownRequest"
+    },
+    {
+      "$ref": "#/$defs/handshakeSuccessResponse"
+    },
+    {
+      "$ref": "#/$defs/pingSuccessResponse"
+    },
+    {
+      "$ref": "#/$defs/shutdownSuccessResponse"
+    },
+    {
+      "$ref": "#/$defs/errorResponse"
+    },
+    {
+      "$ref": "#/$defs/statusChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/pluginListRequest"
+    },
+    {
+      "$ref": "#/$defs/pluginSetEnabledRequest"
+    },
+    {
+      "$ref": "#/$defs/toolInvokeRequest"
+    },
+    {
+      "$ref": "#/$defs/pluginListResponse"
+    },
+    {
+      "$ref": "#/$defs/pluginSetEnabledResponse"
+    },
+    {
+      "$ref": "#/$defs/toolInvokeResponse"
+    }
+  ],
+  "$defs": {
+    "protocolError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "INVALID_MESSAGE",
+            "UNSUPPORTED_PROTOCOL_VERSION",
+            "UNKNOWN_KIND",
+            "UNKNOWN_METHOD",
+            "UNKNOWN_EVENT",
+            "INVALID_PAYLOAD",
+            "RESPONSE_MISMATCH",
+            "INTERNAL_ERROR",
+            "REQUEST_TIMEOUT",
+            "HOST_UNAVAILABLE",
+            "HOST_START_FAILED",
+            "HOST_CRASHED",
+            "SHUTTING_DOWN",
+            "PLUGIN_NOT_FOUND",
+            "TOOL_UNAVAILABLE"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": true
+      }
+    },
+    "hostStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "generation"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "starting",
+            "ready",
+            "restarting",
+            "failed",
+            "stopped"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "$ref": "#/$defs/protocolError"
+        }
+      }
+    },
+    "handshakeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "host.handshake"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "clientName",
+            "clientVersion",
+            "supportedProtocolVersions"
+          ],
+          "properties": {
+            "clientName": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            },
+            "clientVersion": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            },
+            "supportedProtocolVersions": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "contains": {
+                "const": 1
+              },
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "pingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "diagnostics.ping"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sentAtMs"
+          ],
+          "properties": {
+            "sentAtMs": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "shutdownRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "host.shutdown"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            }
+          }
+        }
+      }
+    },
+    "handshakeSuccessResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "host.handshake"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "selectedProtocolVersion",
+            "hostName",
+            "hostVersion",
+            "status"
+          ],
+          "properties": {
+            "selectedProtocolVersion": {
+              "const": 1
+            },
+            "hostName": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            },
+            "hostVersion": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            },
+            "status": {
+              "$ref": "#/$defs/hostStatus"
+            }
+          }
+        }
+      }
+    },
+    "pingSuccessResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "diagnostics.ping"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sentAtMs",
+            "receivedAtMs"
+          ],
+          "properties": {
+            "sentAtMs": {
+              "type": "number"
+            },
+            "receivedAtMs": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "shutdownSuccessResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "host.shutdown"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "accepted"
+          ],
+          "properties": {
+            "accepted": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "errorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "error"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "enum": [
+            "host.handshake",
+            "diagnostics.ping",
+            "host.shutdown",
+            "plugins.list",
+            "plugins.setEnabled",
+            "tools.invoke"
+          ]
+        },
+        "ok": {
+          "const": false
+        },
+        "error": {
+          "$ref": "#/$defs/protocolError"
+        }
+      }
+    },
+    "statusChangedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "event",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "event"
+        },
+        "event": {
+          "const": "host.statusChanged"
+        },
+        "payload": {
+          "$ref": "#/$defs/hostStatus"
+        }
+      }
+    },
+    "pluginListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "plugins.list"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    "pluginSetEnabledRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "plugins.setEnabled"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pluginId",
+            "enabled"
+          ],
+          "properties": {
+            "pluginId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "toolInvokeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "tools.invoke"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pluginId",
+            "toolId"
+          ],
+          "properties": {
+            "pluginId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            },
+            "toolId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            }
+          }
+        }
+      }
+    },
+    "pluginListResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "plugins.list"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generation",
+            "plugins"
+          ],
+          "properties": {
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "plugins": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "displayName",
+                  "description",
+                  "version",
+                  "status",
+                  "error",
+                  "tools"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "status": {
+                    "enum": [
+                      "inactive",
+                      "activating",
+                      "active",
+                      "deactivating",
+                      "failed"
+                    ]
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "id",
+                        "label"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "pluginSetEnabledResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "plugins.setEnabled"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generation",
+            "plugins"
+          ],
+          "properties": {
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "plugins": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "displayName",
+                  "description",
+                  "version",
+                  "status",
+                  "error",
+                  "tools"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "displayName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": ".*\\S.*"
+                  },
+                  "status": {
+                    "enum": [
+                      "inactive",
+                      "activating",
+                      "active",
+                      "deactivating",
+                      "failed"
+                    ]
+                  },
+                  "error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "id",
+                        "label"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "toolInvokeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "tools.invoke"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generation",
+            "text"
+          ],
+          "properties": {
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*"
+            }
+          }
+        }
+      }
+    }
+  }
+}

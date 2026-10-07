@@ -14,6 +14,7 @@ import {
   PlugZap,
   Search,
   SendHorizontal,
+  Server,
   Settings,
   Smile,
   Sparkles,
@@ -34,6 +35,7 @@ import type {
   PluginSnapshot,
   RegisteredContribution,
 } from '@more-than-chat/plugin-runtime'
+import type { HostPluginSnapshot, HostStatusSnapshot } from '@more-than-chat/protocol'
 import {
   composerActionRegistry,
   pluginRuntime,
@@ -59,6 +61,11 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null)
   const [plugins, setPlugins] = useState<PluginSnapshot[]>(() => pluginRuntime.list())
   const [composerActions, setComposerActions] = useState<RegisteredContribution<ComposerAction>[]>(() => composerActionRegistry.list())
+  const [hostStatus, setHostStatus] = useState<HostStatusSnapshot>({ state: 'starting', generation: 0 })
+  const [hostPlugins, setHostPlugins] = useState<HostPluginSnapshot[]>([])
+  const [hostPluginBusy, setHostPluginBusy] = useState(false)
+  const hostStatusRef = useRef(hostStatus)
+  hostStatusRef.current = hostStatus
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -77,6 +84,40 @@ export function App() {
       void unsubscribeActions()
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    let receivedEvent = false
+    const unsubscribe = window.moreThanChat.onHostStatusChanged(status => {
+      receivedEvent = true
+      if (active) setHostStatus(status)
+    })
+    void window.moreThanChat.getHostStatus().then(status => {
+      if (active && !receivedEvent) setHostStatus(status)
+    }).catch(error => {
+      console.error(error)
+      if (active) setHostStatus({
+        state: 'failed',
+        generation: 0,
+        error: { code: 'HOST_UNAVAILABLE', message: '无法读取 PC Host 状态。', retryable: true },
+      })
+    })
+    return () => {
+      active = false
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (hostStatus.state !== 'ready') { setHostPlugins([]); return }
+    let active = true
+    void window.moreThanChat.getHostPlugins().then(catalog => {
+      if (active && catalog.generation === hostStatus.generation) setHostPlugins(catalog.plugins)
+    }).catch(error => {
+      if (active) { console.error(error); setToast('无法读取后台插件，请稍后重试') }
+    })
+    return () => { active = false }
+  }, [hostStatus.state, hostStatus.generation])
 
   useEffect(() => {
     void window.moreThanChat.loadState().then(value => setState(value ? normalizeState(value) : createSeedState()))
@@ -221,6 +262,45 @@ export function App() {
     }
   }
 
+  async function pingHost() {
+    if (hostStatus.state !== 'ready') {
+      setToast(`PC Host 当前${hostStatusLabel(hostStatus)}，请稍候`)
+      return
+    }
+    try {
+      const result = await window.moreThanChat.pingHost()
+      setToast(`PC Host G${result.generation} 响应正常 · ${result.roundTripMs} ms`)
+    }
+    catch (error) {
+      console.error(error)
+      setToast('PC Host ping 失败，Supervisor 将尝试恢复')
+    }
+  }
+
+  async function toggleHostPlugin(plugin: HostPluginSnapshot) {
+    if (hostPluginBusy || hostStatus.state !== 'ready') return
+    setHostPluginBusy(true)
+    try {
+      const catalog = await window.moreThanChat.setHostPluginEnabled(plugin.id, plugin.status !== 'active')
+      if (hostStatusRef.current.state === 'ready' && hostStatusRef.current.generation === catalog.generation) setHostPlugins(catalog.plugins)
+    }
+    catch (error) { console.error(error); setToast('后台插件操作失败，请稍后重试') }
+    finally { setHostPluginBusy(false) }
+  }
+
+  async function runHostTool(pluginId: string, toolId: string) {
+    if (hostPluginBusy || hostStatus.state !== 'ready') return
+    setHostPluginBusy(true)
+    try {
+      const result = await window.moreThanChat.invokeHostTool(pluginId, toolId)
+      if (hostStatusRef.current.state !== 'ready' || hostStatusRef.current.generation !== result.generation) return
+      setDraft(draft => draft.trim() ? `${draft}\n${result.text}` : result.text)
+      setToast('时间工具已写入输入框')
+    }
+    catch (error) { console.error(error); setToast('工具暂时不可用，请稍后重试') }
+    finally { setHostPluginBusy(false) }
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -257,6 +337,17 @@ export function App() {
     <div className="app-shell">
       <div className="window-drag-region">
         <span className="window-title"><Sparkles size={14} /> MoreThanChat</span>
+        <button
+          className={`host-status host-${hostStatus.state}`}
+          data-host-state={hostStatus.state}
+          data-host-generation={hostStatus.generation}
+          title={hostStatus.error?.message ?? '点击检测 PC Host'}
+          onClick={() => void pingHost()}
+        >
+          <Server size={13} />
+          <span>{hostStatusLabel(hostStatus)}</span>
+          {hostStatus.generation > 0 && <small>G{hostStatus.generation}</small>}
+        </button>
       </div>
 
       <nav className="app-rail" aria-label="主导航">
@@ -349,6 +440,13 @@ export function App() {
                     <Sparkles size={16} /><span>{contribution.label}</span>
                   </button>
                 ))}
+                {hostPlugins.filter(plugin => plugin.status === 'active').flatMap(plugin => plugin.tools.map(tool => (
+                  <button key={`${plugin.id}:${tool.id}`} className="plugin-composer-action host-tool-action"
+                    data-plugin-id={plugin.id} data-tool-id={tool.id} disabled={hostPluginBusy}
+                    title={plugin.description} onClick={() => void runHostTool(plugin.id, tool.id)}>
+                    <Server size={16} /><span>{tool.label}</span>
+                  </button>
+                )))}
               </div>
               <div className="send-area"><span>Enter 发送 · Shift+Enter 换行</span><button className="send-button" disabled={!draft.trim()} onClick={() => void sendMessage()}><SendHorizontal size={18} /></button></div>
             </div>
@@ -357,7 +455,8 @@ export function App() {
       </main>
 
       {showDetails && <DetailsPanel conversation={active} transportName={transportRegistry.get(active.transportId)?.displayName ?? '插件不可用'} onClose={() => setShowDetails(false)} />}
-      {showPlugins && <PluginPanel plugins={plugins} onToggle={plugin => void togglePlugin(plugin)} onClose={() => setShowPlugins(false)} />}
+      {showPlugins && <PluginPanel plugins={plugins} hostPlugins={hostPlugins} hostBusy={hostPluginBusy}
+        onHostToggle={plugin => void toggleHostPlugin(plugin)} onToggle={plugin => void togglePlugin(plugin)} onClose={() => setShowPlugins(false)} />}
       {showNewChat && <NewChatDialog onClose={() => setShowNewChat(false)} onCreate={createConversation} />}
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
     </div>
@@ -416,7 +515,10 @@ function DetailsPanel({ conversation, transportName, onClose }: { conversation: 
   )
 }
 
-function PluginPanel({ plugins, onToggle, onClose }: { plugins: readonly PluginSnapshot[]; onToggle: (plugin: PluginSnapshot) => void; onClose: () => void }) {
+function PluginPanel({ plugins, hostPlugins, hostBusy, onHostToggle, onToggle, onClose }: {
+  plugins: readonly PluginSnapshot[]; hostPlugins: readonly HostPluginSnapshot[]; hostBusy: boolean;
+  onHostToggle: (plugin: HostPluginSnapshot) => void; onToggle: (plugin: PluginSnapshot) => void; onClose: () => void;
+}) {
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside className="plugin-drawer" onMouseDown={event => event.stopPropagation()}>
@@ -440,6 +542,20 @@ function PluginPanel({ plugins, onToggle, onClose }: { plugins: readonly PluginS
               </div>
             )
           })}
+          {hostPlugins.map(plugin => (
+            <div className={`plugin-card host-plugin-card ${plugin.status === 'failed' ? 'failed' : ''}`} key={plugin.id} data-plugin-id={plugin.id}>
+              <span className="plugin-icon"><Server /></span>
+              <div className="plugin-copy">
+                <strong>{plugin.displayName}</strong><p>{plugin.description}</p>
+                <small>{plugin.id} · {plugin.version} · 独立后台进程</small>
+                {plugin.error && <span className="plugin-error">{plugin.error}</span>}
+              </div>
+              <button className={`plugin-toggle ${plugin.status === 'active' ? 'active' : ''}`}
+                disabled={hostBusy || plugin.status === 'activating' || plugin.status === 'deactivating'} onClick={() => onHostToggle(plugin)}>
+                {hostBusy ? '处理中' : plugin.status === 'active' ? '停用' : '启用'}
+              </button>
+            </div>
+          ))}
         </div>
         <div className="plugin-empty"><PlugZap /><h3>可信插件模式</h3><p>示例插件经过版本化 manifest 和生命周期运行时接入。任意磁盘代码将在独立进程与权限代理完成后开放。</p></div>
       </aside>
@@ -468,4 +584,14 @@ function NewChatDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (
 
 function LoadingScreen() {
   return <div className="loading-screen"><div className="loading-mark">M</div><p>正在恢复会话…</p></div>
+}
+
+function hostStatusLabel(status: HostStatusSnapshot): string {
+  switch (status.state) {
+    case 'starting': return 'Host 连接中'
+    case 'ready': return 'Host 已连接'
+    case 'restarting': return 'Host 重连中'
+    case 'failed': return 'Host 不可用'
+    case 'stopped': return 'Host 已停止'
+  }
 }

@@ -4,10 +4,12 @@
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "scripts": {
-    "dev": "pnpm --filter @more-than-chat/desktop dev",
-    "build": "pnpm --filter @more-than-chat/desktop build",
-    "test": "pnpm -r --if-present test",
+    "dev": "pnpm build:host && pnpm --filter @more-than-chat/desktop dev",
+    "build:host": "pnpm --filter @more-than-chat/protocol build && pnpm --filter @more-than-chat/plugin-runtime build && pnpm --filter @more-than-chat/plugin-time-tool build && pnpm --filter @more-than-chat/pc-host build",
+    "build": "pnpm build:host && pnpm --filter @more-than-chat/desktop build",
+    "test": "pnpm build:host && pnpm -r --if-present test",
     "verify:plugin-ui": "pnpm build && node scripts/verify-plugin-ui.mjs",
+    "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {

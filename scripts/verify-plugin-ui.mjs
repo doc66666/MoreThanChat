@@ -8,7 +8,8 @@ import process from 'node:process'
 const workspaceDir = path.resolve(import.meta.dirname, '..')
 const desktopDir = path.join(workspaceDir, 'apps', 'desktop')
 const artifactDir = path.join(workspaceDir, '.artifacts')
-const screenshotPath = path.join(artifactDir, 'plugin-panel-e2e.png')
+const verifyHost = process.argv.includes('--host')
+const screenshotPath = path.join(artifactDir, verifyHost ? 'host-supervision-e2e.png' : 'plugin-panel-e2e.png')
 const requireFromDesktop = createRequire(path.join(desktopDir, 'package.json'))
 const electronPath = requireFromDesktop('electron')
 let stderr = ''
@@ -17,7 +18,11 @@ async function run() {
   const port = await reservePort()
   const electron = spawn(electronPath, [`--remote-debugging-port=${port}`, '.'], {
     cwd: desktopDir,
-    env: { ...process.env, MTC_QA_MODE: '1' },
+    env: {
+      ...process.env,
+      MTC_QA_MODE: '1',
+      ...(verifyHost ? { MTC_QA_HOST_CRASH_ONCE: '1' } : {}),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
@@ -26,37 +31,21 @@ async function run() {
   electron.stderr.on('data', chunk => { stderr += chunk })
 
   let client
+  let verificationFailed = false
   try {
     const target = await waitForTarget(port)
     client = await CdpClient.connect(target.webSocketDebuggerUrl)
-    await waitForExpression(client, `Boolean(document.querySelector('.plugin-composer-action'))`)
-
-    await evaluate(client, `document.querySelector('button[title="插件"]')?.click()`)
-    await waitForExpression(client, `Boolean([...document.querySelectorAll('.plugin-card')].find(card => card.textContent?.includes('快捷问候')))`)
-
-    const listedPlugins = await evaluate(client, `[...document.querySelectorAll('.plugin-card strong')].map(node => node.textContent)`)
-    assert(listedPlugins.includes('本地演示传输'), 'The local transport plugin is missing from the plugin panel.')
-    assert(listedPlugins.includes('快捷问候'), 'The quick greeting plugin is missing from the plugin panel.')
-
-    await clickGreetingToggle(client)
-    await waitForExpression(client, `!document.querySelector('.plugin-composer-action')`)
-    const disabledLabel = await greetingToggleLabel(client)
-    assert(disabledLabel === '启用', `Expected disabled plugin label, received '${disabledLabel}'.`)
-
-    await clickGreetingToggle(client)
-    await waitForExpression(client, `document.querySelectorAll('.plugin-composer-action').length === 1`)
-    const enabledLabel = await greetingToggleLabel(client)
-    assert(enabledLabel === '停用', `Expected enabled plugin label, received '${enabledLabel}'.`)
-
-    await evaluate(client, `document.querySelector('.plugin-composer-action')?.click()`)
-    await waitForExpression(client, `document.querySelector('.composer textarea')?.value === '你好，插件！ 👋'`)
-    const draft = await evaluate(client, `document.querySelector('.composer textarea')?.value`)
-    assert(draft === '你好，插件！ 👋', 'The plugin did not write the expected greeting into the composer.')
+    if (verifyHost) await verifyHostSupervision(client)
+    else await verifyPluginUi(client)
 
     const capture = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
     await mkdir(artifactDir, { recursive: true })
     await writeFile(screenshotPath, Buffer.from(capture.data, 'base64'))
-    console.log(`Plugin UI verification passed. Screenshot: ${screenshotPath}`)
+    console.log(`${verifyHost ? 'Host supervision' : 'Plugin UI'} verification passed. Screenshot: ${screenshotPath}`)
+  }
+  catch (error) {
+    verificationFailed = true
+    throw error
   }
   finally {
     try {
@@ -68,8 +57,82 @@ async function run() {
     client?.close()
     await waitForExit(electron, 4_000)
     if (electron.exitCode === null) electron.kill()
-    if (process.exitCode && stderr) console.error(stderr)
+    if (stderr && verificationFailed) console.error(stderr)
   }
+}
+
+async function verifyPluginUi(client) {
+  await waitForExpression(client, `Boolean(document.querySelector('.plugin-composer-action:not(.host-tool-action)'))`)
+  await evaluate(client, `document.querySelector('button[title="插件"]')?.click()`)
+  await waitForExpression(client, `Boolean([...document.querySelectorAll('.plugin-card')].find(card => card.textContent?.includes('快捷问候')))`)
+
+  const listedPlugins = await evaluate(client, `[...document.querySelectorAll('.plugin-card strong')].map(node => node.textContent)`)
+  assert(listedPlugins.includes('本地演示传输'), 'The local transport plugin is missing from the plugin panel.')
+  assert(listedPlugins.includes('快捷问候'), 'The quick greeting plugin is missing from the plugin panel.')
+
+  await clickGreetingToggle(client)
+  await waitForExpression(client, `!document.querySelector('.plugin-composer-action:not(.host-tool-action)')`)
+  const disabledLabel = await greetingToggleLabel(client)
+  assert(disabledLabel === '启用', `Expected disabled plugin label, received '${disabledLabel}'.`)
+
+  await clickGreetingToggle(client)
+  await waitForExpression(client, `document.querySelectorAll('.plugin-composer-action:not(.host-tool-action)').length === 1`)
+  const enabledLabel = await greetingToggleLabel(client)
+  assert(enabledLabel === '停用', `Expected enabled plugin label, received '${enabledLabel}'.`)
+
+  await evaluate(client, `document.querySelector('.plugin-composer-action:not(.host-tool-action)')?.click()`)
+  await waitForExpression(client, `document.querySelector('.composer textarea')?.value === '你好，插件！ 👋'`)
+  const draft = await evaluate(client, `document.querySelector('.composer textarea')?.value`)
+  assert(draft === '你好，插件！ 👋', 'The plugin did not write the expected greeting into the composer.')
+}
+
+async function verifyHostSupervision(client) {
+  await waitForExpression(client, `document.querySelector('.host-status')?.dataset.hostState === 'ready'`)
+  const initial = await evaluate(client, `window.moreThanChat.getHostPlugins()`)
+  assert(initial.generation === 1, 'Could not control the first Host before the injected crash.')
+  assert(initial.plugins.some(plugin => plugin.id === 'builtin.time-tool' && plugin.status === 'active'), 'Host time plugin did not start.')
+  await evaluate(client, `window.moreThanChat.setHostPluginEnabled('builtin.time-tool', false)`)
+  try {
+    await waitForExpression(client, `(() => {
+      const node = document.querySelector('.host-status')
+      return node?.dataset.hostState === 'ready' && Number(node?.dataset.hostGeneration) >= 2
+    })()`)
+  }
+  catch (error) {
+    const debugState = await evaluate(client, `(() => {
+      const node = document.querySelector('.host-status')
+      return { state: node?.dataset.hostState, generation: node?.dataset.hostGeneration, text: node?.textContent, title: node?.title, body: document.body.innerText, html: document.querySelector('#root')?.innerHTML, url: location.href, readyState: document.readyState }
+    })()`)
+    throw new Error(`${error.message}\nHost UI state: ${JSON.stringify(debugState)}`)
+  }
+  const state = await evaluate(client, `(() => {
+    const node = document.querySelector('.host-status')
+    return { state: node?.dataset.hostState, generation: Number(node?.dataset.hostGeneration), text: node?.textContent }
+  })()`)
+  assert(state.state === 'ready', `Expected a ready host, received '${state.state}'.`)
+  assert(state.generation >= 2, `Expected the crashed host to restart, received generation ${state.generation}.`)
+  const recovered = await evaluate(client, `window.moreThanChat.getHostPlugins()`)
+  assert(recovered.plugins.find(plugin => plugin.id === 'builtin.time-tool')?.status === 'inactive', 'Host restart lost the disabled plugin preference.')
+  const disabledToolRejected = await evaluate(client, `window.moreThanChat.invokeHostTool('builtin.time-tool', 'current-time').then(() => false, () => true)`)
+  assert(disabledToolRejected, 'A disabled Host plugin tool was callable.')
+
+  await evaluate(client, `document.querySelector('button[title="插件"]')?.click()`)
+  await waitForExpression(client, `document.querySelector('.host-plugin-card .plugin-toggle')?.textContent?.trim() === '启用'`)
+  await evaluate(client, `document.querySelector('.host-plugin-card .plugin-toggle')?.click()`)
+  await waitForExpression(client, `document.querySelectorAll('.host-tool-action').length === 1`)
+  await evaluate(client, `document.querySelector('.host-tool-action')?.click()`)
+  await waitForExpression(client, `document.querySelector('.composer textarea')?.value?.includes('当前时间：')`)
+  await evaluate(client, `document.querySelector('.host-plugin-card .plugin-toggle')?.click()`)
+  await waitForExpression(client, `document.querySelectorAll('.host-tool-action').length === 0`)
+  await evaluate(client, `document.querySelector('.host-plugin-card .plugin-toggle')?.click()`)
+  await waitForExpression(client, `document.querySelectorAll('.host-tool-action').length === 1`)
+
+  const sandbox = await evaluate(client, `({ requireType: typeof window.require, processType: typeof window.process })`)
+  assert(sandbox.requireType === 'undefined', 'Renderer unexpectedly exposes window.require.')
+  assert(sandbox.processType === 'undefined', 'Renderer unexpectedly exposes window.process.')
+
+  await evaluate(client, `document.querySelector('.host-status')?.click()`)
+  await waitForExpression(client, `document.querySelector('.toast')?.textContent?.includes('响应正常')`)
 }
 
 async function clickGreetingToggle(client) {
@@ -131,6 +194,7 @@ class CdpClient {
   #socket
   #sequence = 0
   #pending = new Map()
+  #events = new Map()
 
   static async connect(url) {
     const socket = new WebSocket(url)
@@ -152,7 +216,10 @@ class CdpClient {
     this.#socket = socket
     socket.addEventListener('message', event => {
       const message = JSON.parse(String(event.data))
-      if (!message.id) return
+      if (!message.id) {
+        for (const listener of this.#events.get(message.method) ?? []) listener(message.params)
+        return
+      }
       const pending = this.#pending.get(message.id)
       if (!pending) return
       this.#pending.delete(message.id)
@@ -167,6 +234,13 @@ class CdpClient {
       this.#pending.set(id, { resolve, reject })
       this.#socket.send(JSON.stringify({ id, method, params }))
     })
+  }
+
+  on(method, listener) {
+    const listeners = this.#events.get(method) ?? new Set()
+    listeners.add(listener)
+    this.#events.set(method, listeners)
+    return () => listeners.delete(listener)
   }
 
   close() {

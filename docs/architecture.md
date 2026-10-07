@@ -29,6 +29,8 @@ PC 第一版建议使用：
 
 ## 分层
 
+当前实现已经建立 `apps/pc-host` utility process、`packages/protocol` v1 envelope，以及 Electron Main 中的 Host Supervisor。PC Host 已运行可信 `pc-host` 时间工具插件，提供清单、启停、执行和退出清理；模型、SQLite、Cordis 适配层与产品级热更新事务仍按后续阶段推进。
+
 ```text
 apps/desktop (Electron)           apps/android (后续)
         │ typed IPC / events             │ 同一协议族

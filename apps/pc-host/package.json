@@ -1,0 +1,22 @@
+{
+  "name": "@more-than-chat/pc-host",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@more-than-chat/plugin-runtime": "workspace:*",
+    "@more-than-chat/plugin-time-tool": "workspace:*",
+    "@more-than-chat/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "electron": "43.5.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

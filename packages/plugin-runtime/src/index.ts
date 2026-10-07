@@ -5,6 +5,10 @@ export type PluginTrust = 'builtin' | 'trusted'
 export type PluginStatus = 'inactive' | 'activating' | 'active' | 'deactivating' | 'failed'
 export type PluginDisposer = () => void | Promise<void>
 
+export interface ContributionRegistrar<T> {
+  register(ownerId: string, contribution: T): PluginDisposer
+}
+
 export interface PluginManifestV1 {
   readonly manifestVersion: 1
   readonly id: string
@@ -27,6 +31,7 @@ export interface PluginContext {
   readonly target: PluginTarget
   getService<T>(id: string): T
   effect(disposer: PluginDisposer): void
+  contribute<T>(registry: ContributionRegistrar<T>, contribution: T): void
 }
 
 export interface PluginModule {
@@ -58,12 +63,14 @@ export interface PluginRuntimeOptions {
 }
 
 interface PluginRecord {
-  readonly source: PluginSource
+  readonly source: Readonly<PluginSource>
   status: PluginStatus
   error: string | null
   effects: PluginDisposer[]
   module: PluginModule | undefined
   operation: Promise<void>
+  terminationRequested: boolean
+  uninstallPromise: Promise<void> | undefined
 }
 
 const pluginIdPattern = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/
@@ -132,41 +139,79 @@ export class PluginRuntime {
 
   install(source: PluginSource): void {
     validatePluginManifest(source.manifest)
-    if (!source.manifest.targets.includes(this.#target)) {
-      throw new Error(`Plugin '${source.manifest.id}' does not support target '${this.#target}'.`)
+    const manifest = snapshotManifest(source.manifest)
+    if (!manifest.targets.includes(this.#target)) {
+      throw new Error(`Plugin '${manifest.id}' does not support target '${this.#target}'.`)
     }
-    if (this.#records.has(source.manifest.id)) {
-      throw new Error(`Plugin '${source.manifest.id}' is already installed.`)
+    if (this.#records.has(manifest.id)) {
+      throw new Error(`Plugin '${manifest.id}' is already installed.`)
     }
-    this.#records.set(source.manifest.id, {
-      source,
+    const load = source.load.bind(source)
+    this.#records.set(manifest.id, {
+      source: Object.freeze({ manifest, trust: source.trust, load }),
       status: 'inactive',
       error: null,
       effects: [],
       module: undefined,
       operation: Promise.resolve(),
+      terminationRequested: false,
+      uninstallPromise: undefined,
     })
     this.#emit()
   }
 
-  async uninstall(id: string): Promise<void> {
+  uninstall(id: string): Promise<void> {
     const record = this.#requireRecord(id)
-    await this.deactivate(id)
-    if (record.status === 'failed') throw new Error(`Plugin '${id}' could not be cleanly uninstalled.`)
-    this.#records.delete(id)
-    this.#emit()
+    if (record.uninstallPromise) return record.uninstallPromise
+
+    // Close the record synchronously. Operations accepted before this call stay
+    // ordered ahead of uninstall; operations arriving afterwards cannot be
+    // queued onto a record that is about to disappear.
+    record.terminationRequested = true
+    const operation = this.#enqueue(record, async () => {
+      await this.#deactivateRecord(id, record)
+      if (record.effects.length > 0 || record.status === 'failed') {
+        throw new Error(`Plugin '${id}' could not be cleanly uninstalled.`)
+      }
+      if (this.#records.get(id) === record) {
+        this.#records.delete(id)
+        this.#emit()
+      }
+    })
+    const trackedOperation = operation.finally(() => {
+      if (this.#records.get(id) === record) {
+        record.terminationRequested = false
+        record.uninstallPromise = undefined
+      }
+    })
+    record.uninstallPromise = trackedOperation
+    return trackedOperation
   }
 
   activate(id: string): Promise<void> {
     const record = this.#requireRecord(id)
+    if (record.terminationRequested) {
+      return Promise.reject(new Error(`Plugin '${id}' is being uninstalled.`))
+    }
     return this.#enqueue(record, async () => {
       if (record.status === 'active') return
+      if (record.effects.length > 0) {
+        throw new Error(`Plugin '${id}' still has effects awaiting cleanup.`)
+      }
       record.status = 'activating'
       record.error = null
       this.#emit()
 
       const effects: PluginDisposer[] = []
       let acceptingEffects = true
+      const assertAcceptingEffects = (): void => {
+        if (!acceptingEffects) throw new Error(`Plugin '${id}' registered an effect after activation completed.`)
+      }
+      const trackEffect = (disposer: PluginDisposer): void => {
+        assertAcceptingEffects()
+        if (typeof disposer !== 'function') throw new Error(`Plugin '${id}' registered an invalid disposer.`)
+        effects.push(disposer)
+      }
       const context: PluginContext = {
         manifest: record.source.manifest,
         target: this.#target,
@@ -176,10 +221,13 @@ export class PluginRuntime {
           }
           return this.#services[serviceId] as T
         },
-        effect: (disposer: PluginDisposer): void => {
-          if (!acceptingEffects) throw new Error(`Plugin '${id}' registered an effect after activation completed.`)
-          if (typeof disposer !== 'function') throw new Error(`Plugin '${id}' registered an invalid disposer.`)
-          effects.push(disposer)
+        effect: trackEffect,
+        contribute: <T>(registry: ContributionRegistrar<T>, contribution: T): void => {
+          assertAcceptingEffects()
+          if (!registry || typeof registry.register !== 'function') {
+            throw new Error(`Plugin '${id}' requested an invalid contribution registry.`)
+          }
+          trackEffect(registry.register(id, contribution))
         },
       }
 
@@ -203,14 +251,14 @@ export class PluginRuntime {
       }
       catch (error) {
         acceptingEffects = false
-        const cleanupErrors = await disposeAll(effects)
+        const cleanup = await disposeAll(effects)
         record.module = undefined
-        record.effects = []
+        record.effects = cleanup.remaining
         record.status = 'failed'
-        record.error = describeActivationError(error, cleanupErrors)
+        record.error = describeActivationError(error, cleanup.errors)
         this.#emit()
-        if (cleanupErrors.length > 0) {
-          throw new AggregateError([error, ...cleanupErrors], record.error)
+        if (cleanup.errors.length > 0) {
+          throw new AggregateError([error, ...cleanup.errors], record.error)
         }
         throw error
       }
@@ -219,34 +267,10 @@ export class PluginRuntime {
 
   deactivate(id: string): Promise<void> {
     const record = this.#requireRecord(id)
-    return this.#enqueue(record, async () => {
-      if (record.status === 'inactive') return
-      if (record.status === 'failed' && record.effects.length === 0) {
-        record.status = 'inactive'
-        record.error = null
-        this.#emit()
-        return
-      }
-
-      record.status = 'deactivating'
-      record.error = null
-      const effects = record.effects
-      record.effects = []
-      record.module = undefined
-      this.#emit()
-
-      const cleanupErrors = await disposeAll(effects)
-      if (cleanupErrors.length > 0) {
-        record.status = 'failed'
-        record.error = `Plugin '${id}' cleanup failed: ${cleanupErrors.map(formatError).join('; ')}`
-        this.#emit()
-        throw new AggregateError(cleanupErrors, record.error)
-      }
-
-      record.status = 'inactive'
-      record.error = null
-      this.#emit()
-    })
+    if (record.terminationRequested) {
+      return Promise.reject(new Error(`Plugin '${id}' is being uninstalled.`))
+    }
+    return this.#enqueue(record, () => this.#deactivateRecord(id, record))
   }
 
   async reload(id: string): Promise<void> {
@@ -282,6 +306,34 @@ export class PluginRuntime {
     return next
   }
 
+  async #deactivateRecord(id: string, record: PluginRecord): Promise<void> {
+    if (record.status === 'inactive') return
+    if (record.status === 'failed' && record.effects.length === 0) {
+      record.status = 'inactive'
+      record.error = null
+      this.#emit()
+      return
+    }
+
+    record.status = 'deactivating'
+    record.error = null
+    record.module = undefined
+    this.#emit()
+
+    const cleanup = await disposeAll(record.effects)
+    record.effects = cleanup.remaining
+    if (cleanup.errors.length > 0) {
+      record.status = 'failed'
+      record.error = `Plugin '${id}' cleanup failed: ${cleanup.errors.map(formatError).join('; ')}`
+      this.#emit()
+      throw new AggregateError(cleanup.errors, record.error)
+    }
+
+    record.status = 'inactive'
+    record.error = null
+    this.#emit()
+  }
+
   #emit(): void {
     for (const listener of this.#listeners) {
       try {
@@ -299,7 +351,7 @@ export interface RegisteredContribution<T> {
   readonly contribution: T
 }
 
-export class ContributionRegistry<T extends { readonly id: string }> {
+export class ContributionRegistry<T extends { readonly id: string }> implements ContributionRegistrar<T> {
   readonly #entries = new Map<string, RegisteredContribution<T>>()
   readonly #listeners = new Set<() => void>()
 
@@ -346,6 +398,14 @@ export class ContributionRegistry<T extends { readonly id: string }> {
 }
 
 export const composerActionsServiceId = 'ui.composer-actions'
+export const hostToolsServiceId = 'host.tools'
+
+/** Trusted host tool contract. Only serializable results cross the IPC boundary. */
+export interface HostTool {
+  readonly id: string
+  readonly label: string
+  run(): string | Promise<string>
+}
 
 export interface ComposerActionContext {
   readonly draft: string
@@ -396,17 +456,47 @@ function manifestFingerprint(manifest: PluginManifestV1): string {
   })
 }
 
-async function disposeAll(effects: readonly PluginDisposer[]): Promise<unknown[]> {
+function snapshotManifest(manifest: PluginManifestV1): PluginManifestV1 {
+  const services = manifest.services === undefined
+    ? undefined
+    : Object.freeze({
+        requires: Object.freeze([...manifest.services.requires]),
+        ...(manifest.services.provides === undefined
+          ? {}
+          : { provides: Object.freeze([...manifest.services.provides]) }),
+      })
+
+  return Object.freeze({
+    manifestVersion: manifest.manifestVersion,
+    id: manifest.id,
+    version: manifest.version,
+    displayName: manifest.displayName,
+    description: manifest.description,
+    targets: Object.freeze([...manifest.targets]),
+    engine: Object.freeze({ moreThanChat: manifest.engine.moreThanChat }),
+    permissions: Object.freeze([...manifest.permissions]),
+    ...(services === undefined ? {} : { services }),
+  })
+}
+
+interface DisposeResult {
+  readonly errors: unknown[]
+  readonly remaining: PluginDisposer[]
+}
+
+async function disposeAll(effects: readonly PluginDisposer[]): Promise<DisposeResult> {
   const errors: unknown[] = []
+  const remainingInCleanupOrder: PluginDisposer[] = []
   for (const dispose of [...effects].reverse()) {
     try {
       await dispose()
     }
     catch (error) {
       errors.push(error)
+      remainingInCleanupOrder.push(dispose)
     }
   }
-  return errors
+  return { errors, remaining: remainingInCleanupOrder.reverse() }
 }
 
 function describeActivationError(error: unknown, cleanupErrors: readonly unknown[]): string {
