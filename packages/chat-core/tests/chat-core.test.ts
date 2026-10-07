@@ -49,8 +49,8 @@ describe('chat state', () => {
   })
 
   it('formats a same-day timestamp as a clock time', () => {
-    const now = new Date('2026-09-03T10:30:00+08:00').getTime()
-    const value = formatRelativeTime(new Date('2026-09-03T09:15:00+08:00').getTime(), now)
+    const now = new Date(2026, 8, 3, 10, 30).getTime()
+    const value = formatRelativeTime(new Date(2026, 8, 3, 9, 15).getTime(), now)
     expect(value).toMatch(/09:15/)
   })
 })
