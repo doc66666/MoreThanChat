@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   TransportRegistry,
   applyModelChatUpdate,
+  authorToolLabel,
   createSeedState,
   formatRelativeTime,
   interruptStreamingMessages,
@@ -77,6 +78,56 @@ describe('model chat updates', () => {
     expect(transcript.some(message => message.content === '先前取消的回复')).toBe(true)
     expect(JSON.stringify(transcript)).not.toContain(secret)
     expect(transcript.some(message => message.content === '')).toBe(false)
+  })
+
+  it('keeps author-tool progress on the message and out of the model transcript', () => {
+    const secret = 'sk-test-more-than-chat-secret'
+    const source = 'globalThis.__mtcAuthorToolRan = true'
+    const streaming = withAssistant('streaming', '')
+    const noted = applyModelChatUpdate(streaming, {
+      type: 'author-tool',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      note: {
+        phase: 'finished',
+        tool: 'create_draft',
+        ok: true,
+        summary: `校验通过。这份草稿尚未安装。${secret}`,
+        pendingInstall: true,
+        draft: { id: 'example.note', displayName: '草稿示例', revision: 1, ok: true },
+      },
+    })
+    const failed = applyModelChatUpdate(noted, {
+      type: 'author-tool',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      note: {
+        phase: 'finished',
+        tool: 'install_draft',
+        ok: false,
+        summary: '安装需要用户在界面确认。模型不能安装插件，源码也不会执行。',
+        pendingInstall: false,
+        draft: null,
+      },
+    })
+    const done = applyModelChatUpdate(failed, {
+      type: 'completed',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      text: '草稿已创建',
+    })
+    const message = done.messages['conversation-assistant']?.at(-1)
+    expect(message).toMatchObject({ status: 'sent', text: '草稿已创建' })
+    expect(message?.authorNotes).toHaveLength(2)
+    expect(authorToolLabel(message!.authorNotes![0]!)).toBe('待安装草稿：草稿示例（example.note）。校验通过。这份草稿尚未安装。[redacted]')
+    expect(authorToolLabel(message!.authorNotes![1]!)).toContain('模型不能安装插件')
+    const transcript = toModelTranscript(done.messages['conversation-assistant'] ?? [])
+    expect(transcript.some(item => item.content === '草稿已创建')).toBe(true)
+    expect(JSON.stringify(transcript)).not.toContain('尚未安装')
+    expect(JSON.stringify(transcript)).not.toContain('模型不能安装插件')
+    expect(JSON.stringify(transcript)).not.toContain(secret)
+    expect(JSON.stringify(transcript)).not.toContain(source)
+    expect(JSON.stringify(message)).not.toContain(source)
   })
 })
 

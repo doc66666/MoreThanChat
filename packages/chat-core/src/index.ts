@@ -21,6 +21,20 @@ export interface Conversation {
   transportId: string
 }
 
+export interface AuthorToolNote {
+  phase: 'started' | 'finished'
+  tool: 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  ok: boolean
+  summary: string
+  pendingInstall: boolean
+  draft: {
+    id: string
+    displayName: string
+    revision: number
+    ok: boolean
+  } | null
+}
+
 export interface ChatMessage {
   id: string
   clientMessageId: string
@@ -33,6 +47,7 @@ export interface ChatMessage {
   text: string
   createdAt: number
   status: MessageStatus
+  authorNotes?: readonly AuthorToolNote[]
 }
 
 export interface ChatState {
@@ -73,6 +88,7 @@ export type ModelChatUpdate =
   | { type: 'completed'; conversationId: string; assistantMessageId: string; text: string }
   | { type: 'failed'; conversationId: string; assistantMessageId: string; partialText: string }
   | { type: 'cancelled'; conversationId: string; assistantMessageId: string; partialText: string }
+  | { type: 'author-tool'; conversationId: string; assistantMessageId: string; note: AuthorToolNote }
 
 /** Stable capability boundary implemented by local, central-server, or P2P plugins. */
 export interface ChatTransport {
@@ -242,7 +258,12 @@ export function applyModelChatUpdate(state: ChatState, update: ModelChatUpdate):
   const index = list.findIndex(message => message.id === update.assistantMessageId)
   if (index < 0) return state
   const current = list[index]
-  if (!current || current.status === 'sent') return state
+  if (!current) return state
+  if (update.type === 'author-tool') {
+    const authorNotes = [...(current.authorNotes ?? []), update.note].slice(-32)
+    return replaceMessage(state, update.conversationId, index, { ...current, authorNotes })
+  }
+  if (current.status === 'sent') return state
   if (current.status === 'cancelled' || current.status === 'failed') {
     const partial = update.type === current.status ? update.partialText : undefined
     if (partial === undefined) return state
@@ -297,6 +318,24 @@ function replaceMessage(state: ChatState, conversationId: string, index: number,
     conversations: state.conversations.map(item => item.id === conversationId ? { ...item, updatedAt: message.createdAt } : item),
     messages: { ...state.messages, [conversationId]: next },
   }
+}
+
+/** Visible author-tool line. Pending drafts name the draft; failures keep the summary. */
+export function authorToolLabel(note: AuthorToolNote): string {
+  const summary = redactPublicText(note.summary).slice(0, 240).trim() || '作者工具没有完成。源码没有执行。'
+  const draft = note.draft
+  if (note.pendingInstall && draft) {
+    const name = redactPublicText(draft.displayName).trim().slice(0, 80)
+    const id = redactPublicText(draft.id).trim().slice(0, 128)
+    if (name && id) return `待安装草稿：${name}（${id}）。${summary}`
+  }
+  return summary
+}
+
+function redactPublicText(value: string): string {
+  return value
+    .replace(/bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, '[redacted]')
 }
 
 export function formatRelativeTime(timestamp: number, now = Date.now()): string {

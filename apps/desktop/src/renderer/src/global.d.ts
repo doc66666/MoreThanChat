@@ -12,17 +12,34 @@ import type {
   PluginDraftReport,
 } from '@more-than-chat/protocol'
 
-export interface ModelClientEvent {
-  type: 'delta' | 'completed' | 'failed' | 'cancelled'
+export interface ModelClientIdentity {
   streamId: string
   conversationId: string
   assistantMessageId: string
   generation: number
-  textDelta?: string
-  text?: string
-  partialText?: string
-  errorMessage?: string
 }
+
+export interface ModelAuthorToolClientEvent extends ModelClientIdentity {
+  type: 'author-tool'
+  phase: 'started' | 'finished'
+  tool: 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  ok: boolean
+  summary: string
+  pendingInstall: boolean
+  draft: {
+    id: string
+    displayName: string
+    revision: number
+    ok: boolean
+  } | null
+}
+
+export type ModelClientEvent =
+  | (ModelClientIdentity & { type: 'delta'; textDelta: string })
+  | (ModelClientIdentity & { type: 'completed'; text: string })
+  | (ModelClientIdentity & { type: 'failed'; partialText: string; errorMessage: string })
+  | (ModelClientIdentity & { type: 'cancelled'; partialText: string })
+  | ModelAuthorToolClientEvent
 
 export interface ModelSettingsInput {
   baseUrl?: string

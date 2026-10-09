@@ -159,6 +159,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/modelChatCompletedEvent' },
     { $ref: '#/$defs/modelChatFailedEvent' },
     { $ref: '#/$defs/modelChatCancelledEvent' },
+    { $ref: '#/$defs/modelAuthorToolEvent' },
     { $ref: '#/$defs/pluginDraftInspectRequest' },
     { $ref: '#/$defs/pluginDraftCreateRequest' },
     { $ref: '#/$defs/pluginDraftValidateRequest' },
@@ -477,6 +478,40 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
           type: 'object', additionalProperties: false,
           required: ['streamId', 'conversationId', 'assistantMessageId', 'generation', 'partialText'],
           properties: { ...streamRefProperties, partialText: { type: 'string', maxLength: 500000 } },
+        },
+      },
+    },
+    modelAuthorToolEvent: {
+      type: 'object', additionalProperties: false,
+      required: ['protocolVersion', 'kind', 'event', 'payload'],
+      properties: {
+        protocolVersion, kind: { const: 'event' }, event: { const: 'model.authorTool' },
+        payload: {
+          type: 'object', additionalProperties: false,
+          required: ['streamId', 'conversationId', 'assistantMessageId', 'generation', 'phase', 'tool', 'ok', 'summary', 'pendingInstall', 'draft'],
+          properties: {
+            ...streamRefProperties,
+            phase: { enum: ['started', 'finished'] },
+            tool: { enum: ['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'] },
+            ok: { type: 'boolean' },
+            summary: { type: 'string', minLength: 1, maxLength: 240 },
+            pendingInstall: { type: 'boolean' },
+            draft: {
+              anyOf: [
+                { type: 'null' },
+                {
+                  type: 'object', additionalProperties: false,
+                  required: ['id', 'displayName', 'revision', 'ok'],
+                  properties: {
+                    id: { ...nonEmptyString, maxLength: 128 },
+                    displayName: { ...nonEmptyString, maxLength: 80 },
+                    revision: generation,
+                    ok: { type: 'boolean' },
+                  },
+                },
+              ],
+            },
+          },
         },
       },
     },

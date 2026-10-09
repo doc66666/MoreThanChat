@@ -32,4 +32,34 @@ describe('toClientModelEvent', () => {
       partialText: '',
     }))).toMatchObject({ type: 'cancelled', partialText: '' })
   })
+
+  it('copies author-tool progress without draft source or an API key', () => {
+    const secret = 'sk-test-more-than-chat-secret'
+    const source = 'globalThis.__mtcAuthorToolRan = true'
+    const event = createHostEvent('model.authorTool', {
+      streamId: 'stream-1',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      generation: 2,
+      phase: 'finished',
+      tool: 'create_draft',
+      ok: true,
+      summary: `校验通过。这份草稿尚未安装。${secret}`,
+      pendingInstall: true,
+      draft: { id: 'example.note', displayName: `草稿示例 ${secret}`, revision: 1, ok: true },
+    })
+    const client = toClientModelEvent(event)
+    expect(client).toMatchObject({
+      type: 'author-tool',
+      phase: 'finished',
+      tool: 'create_draft',
+      ok: true,
+      pendingInstall: true,
+      draft: { id: 'example.note', revision: 1, ok: true },
+    })
+    expect(JSON.stringify(client)).not.toContain(secret)
+    expect(JSON.stringify(client)).not.toContain(source)
+    expect(JSON.stringify(client)).toContain('[redacted]')
+    expect(JSON.stringify(client)).not.toContain('source')
+  })
 })

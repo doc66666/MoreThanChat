@@ -24,11 +24,13 @@ import {
 } from 'lucide-react'
 import {
   applyModelChatUpdate,
+  authorToolLabel,
   createSeedState,
   formatRelativeTime,
   interruptStreamingMessages,
   normalizeState,
   toModelTranscript,
+  type AuthorToolNote,
   type ChatMessage,
   type ChatState,
   type Conversation,
@@ -162,8 +164,8 @@ export function App() {
     return window.moreThanChat.onModelChatEvent(event => {
       if (event.generation !== hostStatusRef.current.generation) return
       setState(current => current ? applyIncomingModelEvent(current, event, pendingModelEventsRef.current) : current)
-      if (event.type === 'failed') setToast(event.errorMessage ?? '回复失败')
-      if (event.type !== 'delta') streamIdsRef.current.delete(event.assistantMessageId)
+      if (event.type === 'failed') setToast(event.errorMessage)
+      if (event.type !== 'delta' && event.type !== 'author-tool') streamIdsRef.current.delete(event.assistantMessageId)
     })
   }, [])
 
@@ -731,7 +733,17 @@ function MessageBubble({ message, compact }: { message: ChatMessage; compact: bo
       {!own && <span className="message-avatar">{message.senderAvatar}</span>}
       <div className="message-content">
         {!compact && !own && <span className="sender-name">{message.senderName}</span>}
-        <div className="bubble"><p>{displayText(message)}</p><span className="bubble-meta">{messageMeta(message)}</span></div>
+        <div className="bubble">
+          <p>{displayText(message)}</p>
+          {message.authorNotes && message.authorNotes.length > 0 && (
+            <ul className="author-tool-notes">
+              {message.authorNotes.map((note, index) => (
+                <li key={`${note.phase}-${note.tool}-${index}`} className={authorToolClass(note)}>{authorToolLabel(note)}</li>
+              ))}
+            </ul>
+          )}
+          <span className="bubble-meta">{messageMeta(message)}</span>
+        </div>
       </div>
     </article>
   )
@@ -980,17 +992,37 @@ function errorText(error: unknown): string {
   return message.replace(/bearer\s+\S+/gi, 'Bearer [redacted]').slice(0, 240)
 }
 
+function authorToolClass(note: AuthorToolNote): string {
+  if (note.pendingInstall) return 'author-tool-note pending'
+  if (!note.ok) return 'author-tool-note failed'
+  if (note.phase === 'started') return 'author-tool-note progress'
+  return 'author-tool-note'
+}
+
 function toModelUpdate(event: ModelClientEvent): ModelChatUpdate {
   const identity = { conversationId: event.conversationId, assistantMessageId: event.assistantMessageId }
   switch (event.type) {
     case 'delta':
-      return { type: 'delta', ...identity, textDelta: event.textDelta ?? '' }
+      return { type: 'delta', ...identity, textDelta: event.textDelta }
     case 'completed':
-      return { type: 'completed', ...identity, text: event.text ?? '' }
+      return { type: 'completed', ...identity, text: event.text }
     case 'failed':
-      return { type: 'failed', ...identity, partialText: event.partialText ?? '' }
+      return { type: 'failed', ...identity, partialText: event.partialText }
     case 'cancelled':
-      return { type: 'cancelled', ...identity, partialText: event.partialText ?? '' }
+      return { type: 'cancelled', ...identity, partialText: event.partialText }
+    case 'author-tool':
+      return {
+        type: 'author-tool',
+        ...identity,
+        note: {
+          phase: event.phase,
+          tool: event.tool,
+          ok: event.ok,
+          summary: event.summary,
+          pendingInstall: event.pendingInstall,
+          draft: event.draft,
+        },
+      }
   }
 }
 

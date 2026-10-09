@@ -54,6 +54,27 @@ describe('plugin author tool loop', () => {
     expect(seen.join('\n')).toContain('尚未安装')
     expect(seen.join('\n')).not.toContain(source)
     expect(seen.join('\n')).not.toContain(secret)
+    const toolEvents = events.filter(event => event.event === 'model.authorTool')
+    expect(toolEvents.map(event => `${event.payload.phase}:${event.payload.tool}`)).toEqual([
+      'started:create_draft',
+      'finished:create_draft',
+      'started:validate_draft',
+      'finished:validate_draft',
+      'started:diagnose_draft',
+      'finished:diagnose_draft',
+    ])
+    for (const event of toolEvents) {
+      if (event.payload.phase === 'finished') {
+        expect(event.payload.pendingInstall).toBe(true)
+        expect(event.payload.ok).toBe(true)
+        expect(event.payload.draft).toMatchObject({ id: 'example.note' })
+      }
+      else {
+        expect(event.payload.pendingInstall).toBe(false)
+        expect(event.payload.draft).toBeNull()
+        expect(event.payload.summary.startsWith('正在')).toBe(true)
+      }
+    }
     expect((globalThis as { __mtcAuthorToolRan?: boolean }).__mtcAuthorToolRan).toBeUndefined()
     const inspection = await drafts.inspect()
     expect(inspection.drafts.map(draft => draft.id)).toEqual(['example.note'])
@@ -79,6 +100,15 @@ describe('plugin author tool loop', () => {
     expect(events.at(-1)).toMatchObject({ payload: { text: '没有安装' } })
     expect(seen.join('\n')).toContain('模型不能安装插件')
     expect(seen.join('\n')).not.toContain(source)
+    const finished = events.filter(event => event.event === 'model.authorTool' && event.payload.phase === 'finished')
+    expect(finished).toHaveLength(1)
+    expect(finished[0]?.payload).toMatchObject({
+      tool: 'install_draft',
+      ok: false,
+      pendingInstall: false,
+      draft: null,
+    })
+    expect(finished[0]?.payload.summary).toContain('模型不能安装插件')
     expect((await drafts.inspect()).installed).toEqual([])
     expect((await drafts.inspect()).drafts).toEqual([])
   })
@@ -113,6 +143,9 @@ describe('plugin author tool loop', () => {
     expect(JSON.stringify(events)).not.toContain(source)
     expect(JSON.stringify(events)).not.toContain(secret)
     expect(bodies[0]?.tools?.map(tool => tool.function?.name)).toEqual(['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'])
+    const inspected = events.find(event => event.event === 'model.authorTool' && event.payload.phase === 'finished')
+    expect(inspected?.payload).toMatchObject({ tool: 'inspect_drafts', ok: true, pendingInstall: false, draft: null })
+    expect(inspected?.payload.summary).toContain('1')
     expect(JSON.stringify(bodies[1]?.messages)).toContain('example.note')
     expect(JSON.stringify(bodies[1]?.messages)).not.toContain(source)
     expect(JSON.stringify(bodies)).not.toContain(secret)
@@ -133,13 +166,47 @@ describe('plugin author tool loop', () => {
     expect((globalThis as { __mtcAuthorToolRan?: boolean }).__mtcAuthorToolRan).toBeUndefined()
   })
 
+  it('reports a missing draft as a failure and does not mark it pending', async () => {
+    const provider: ChatModelProvider = {
+      async stream(request, onDelta) {
+        const round = request.messages.filter(message => message.role === 'tool').length
+        if (round === 0) {
+          return { toolCalls: [{ id: 'call-missing', name: 'validate_draft', arguments: JSON.stringify({ draftId: 'missing.draft' }) }] }
+        }
+        onDelta('没有这份草稿')
+        return { toolCalls: [] }
+      },
+    }
+    const { service, events } = await createLoop(provider)
+    service.start(startInput(), event => events.push(event))
+    await waitFor(() => events.some(event => event.event === 'model.chat.completed'))
+    const finished = events.find(event => event.event === 'model.authorTool' && event.payload.phase === 'finished')
+    expect(finished?.payload).toMatchObject({
+      tool: 'validate_draft',
+      ok: false,
+      pendingInstall: false,
+      draft: null,
+    })
+    expect(finished?.payload.summary).toContain('没有找到')
+    expect(JSON.stringify(events)).not.toContain(source)
+    expect(JSON.stringify(events)).not.toContain(secret)
+  })
+
   it('keeps the mock reply path when the model does not call a tool', async () => {
     const directory = await tempDir()
     let calls = 0
     const service = new ModelService({
       dataDir: directory,
       generation: 3,
-      authorTools: { async execute() { calls += 1; return '不应调用' } },
+      authorTools: {
+        async execute() {
+          calls += 1
+          return {
+            content: '不应调用',
+            notice: { tool: 'unknown' as const, ok: false, summary: '不应调用', pendingInstall: false, draft: null },
+          }
+        },
+      },
       providers: { mock: createMockProvider() },
     })
     await service.load()

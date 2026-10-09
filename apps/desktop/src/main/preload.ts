@@ -68,17 +68,28 @@ const api = {
   },
 }
 
-interface ModelClientEvent {
-  type: 'delta' | 'completed' | 'failed' | 'cancelled'
+interface ModelClientIdentity {
   streamId: string
   conversationId: string
   assistantMessageId: string
   generation: number
+}
+
+interface ModelClientEventBase extends ModelClientIdentity {
+  type: 'delta' | 'completed' | 'failed' | 'cancelled' | 'author-tool'
   textDelta?: string
   text?: string
   partialText?: string
   errorMessage?: string
+  phase?: 'started' | 'finished'
+  tool?: 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  ok?: boolean
+  summary?: string
+  pendingInstall?: boolean
+  draft?: { id: string; displayName: string; revision: number; ok: boolean } | null
 }
+
+type ModelClientEvent = ModelClientEventBase
 
 const hostStates = new Set(['starting', 'ready', 'restarting', 'failed', 'stopped'])
 const pluginStates = new Set(['inactive', 'activating', 'active', 'deactivating', 'failed'])
@@ -148,7 +159,10 @@ const modelProviderModes = new Set(['mock', 'openai-compatible'])
 const modelEventFields = new Set([
   'type', 'streamId', 'conversationId', 'assistantMessageId', 'generation',
   'textDelta', 'text', 'partialText', 'errorMessage',
+  'phase', 'tool', 'ok', 'summary', 'pendingInstall', 'draft',
 ])
+const authorToolNames = new Set(['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'])
+const authorToolPhases = new Set(['started', 'finished'])
 
 function parseModelSettings(value: unknown): ModelSettingsSnapshot {
   const record = asRecord(value, 'Invalid model settings.')
@@ -216,7 +230,55 @@ function parseModelClientEvent(value: unknown): ModelClientEvent {
     if (typeof record.partialText !== 'string') throw new Error('Invalid model event.')
     return { type: 'cancelled', ...identity, partialText: record.partialText }
   }
+  if (record.type === 'author-tool') return parseAuthorToolClientEvent(record, identity)
   throw new Error('Invalid model event.')
+}
+
+function parseAuthorToolClientEvent(
+  record: Record<string, unknown>,
+  identity: { streamId: string; conversationId: string; assistantMessageId: string; generation: number },
+): ModelClientEvent {
+  if (typeof record.phase !== 'string' || !authorToolPhases.has(record.phase)) throw new Error('Invalid model event.')
+  if (typeof record.tool !== 'string' || !authorToolNames.has(record.tool)) throw new Error('Invalid model event.')
+  if (typeof record.ok !== 'boolean' || typeof record.pendingInstall !== 'boolean') throw new Error('Invalid model event.')
+  if (typeof record.summary !== 'string' || record.summary.trim().length === 0 || record.summary.length > 240) {
+    throw new Error('Invalid model event.')
+  }
+  const draft = parseAuthorToolDraft(record.draft)
+  const summary = redactBridgeText(record.summary).trim().slice(0, 240) || '作者工具没有完成。源码没有执行。'
+  return {
+    type: 'author-tool',
+    ...identity,
+    phase: record.phase as 'started' | 'finished',
+    tool: record.tool as 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown',
+    ok: record.ok,
+    summary,
+    pendingInstall: record.pendingInstall && draft !== null,
+    draft,
+  }
+}
+
+function parseAuthorToolDraft(value: unknown): { id: string; displayName: string; revision: number; ok: boolean } | null {
+  if (value === null) return null
+  const record = asRecord(value, 'Invalid model event.')
+  assertExactKeys(record, ['id', 'displayName', 'revision', 'ok'], 'Invalid model event.')
+  if (typeof record.ok !== 'boolean' || !Number.isSafeInteger(record.revision) || Number(record.revision) < 0) {
+    throw new Error('Invalid model event.')
+  }
+  if (typeof record.id !== 'string' || record.id.trim().length === 0 || record.id.length > 128) throw new Error('Invalid model event.')
+  if (typeof record.displayName !== 'string' || record.displayName.trim().length === 0 || record.displayName.length > 80) {
+    throw new Error('Invalid model event.')
+  }
+  const id = redactBridgeText(record.id).trim().slice(0, 128)
+  const displayName = redactBridgeText(record.displayName).trim().slice(0, 80)
+  if (!id || !displayName) return null
+  return { id, displayName, revision: record.revision as number, ok: record.ok }
+}
+
+function redactBridgeText(value: string): string {
+  return value
+    .replace(/bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, '[redacted]')
 }
 
 function asRecord(value: unknown, message: string): Record<string, unknown> {

@@ -188,7 +188,7 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(36);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(37);
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.handshakeRequest).toBeDefined();
   });
@@ -245,15 +245,28 @@ describe("Host protocol v1", () => {
       error: { code: 'MODEL_REQUEST_FAILED', message: 'The model request failed.', retryable: true },
     });
     const cancelled = createHostEvent('model.chat.cancelled', { ...started.payload, partialText: 'he' });
+    const authorTool = createHostEvent('model.authorTool', {
+      ...started.payload,
+      phase: 'finished',
+      tool: 'validate_draft',
+      ok: false,
+      summary: '没有找到这份插件草稿。',
+      pendingInstall: false,
+      draft: null,
+    });
     const cancel = createHostRequest('model.chat.cancel', 'cancel-model', { streamId: 'stream-1' });
     const cancelResponse = createHostSuccessResponse(cancel, { streamId: 'stream-1', cancelled: true });
 
     expect(parseHostMessage(update)).toEqual(update);
     expect(JSON.stringify(update)).toContain(secret);
-    for (const message of [saved, read, start, started, delta, completed, failed, cancelled, cancel, cancelResponse]) {
+    for (const message of [saved, read, start, started, delta, completed, failed, cancelled, authorTool, cancel, cancelResponse]) {
       expect(parseHostMessage(message)).toEqual(message);
       expect(JSON.stringify(message)).not.toContain(secret);
     }
+    expectProtocolError(
+      { ...authorTool, payload: { ...authorTool.payload, source: `token ${secret}` } },
+      'INVALID_PAYLOAD',
+    );
     expectProtocolError(
       { ...saved, payload: { ...snapshot, apiKey: secret } },
       'INVALID_PAYLOAD',

@@ -9,7 +9,7 @@ import {
   type ModelProviderMode,
   type ModelSettingsSnapshot,
 } from '@more-than-chat/protocol'
-import { type AuthorToolCall, type AuthorToolExecutor } from './author-tools'
+import { authorToolStarted, type AuthorToolCall, type AuthorToolExecutor, type AuthorToolNotice } from './author-tools'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
   createMockProvider,
@@ -236,17 +236,35 @@ export class ModelService {
         this.#finishCancelled(stream)
         return
       }
-      const result = this.#authorTools
+      this.#emitAuthorTool(stream, 'started', authorToolStarted(call.name), secret)
+      const execution = this.#authorTools
         ? await this.#authorTools.execute(call)
-        : '作者工具不可用。源码没有执行。'
+        : {
+            content: '作者工具不可用。源码没有执行。',
+            notice: { ...authorToolStarted(call.name), ok: false, summary: '作者工具不可用。源码没有执行。' },
+          }
       if (stream.state !== 'running') return
+      this.#emitAuthorTool(stream, 'finished', execution.notice, secret)
       transcript.push({
         role: 'tool',
         toolCallId: call.id,
         name: call.name,
-        content: redactSecret(result, secret),
+        content: redactSecret(execution.content, secret),
       })
     }
+  }
+
+  #emitAuthorTool(stream: ActiveStream, phase: 'started' | 'finished', notice: AuthorToolNotice, secret: string): void {
+    const draft = publishDraft(notice.draft, secret)
+    stream.emit(createHostEvent('model.authorTool', {
+      ...stream.ref,
+      phase,
+      tool: notice.tool,
+      ok: notice.ok,
+      summary: publishSummary(redactSecret(notice.summary, secret)),
+      pendingInstall: notice.pendingInstall && draft !== null,
+      draft,
+    }))
   }
 
   #appendDelta(stream: ActiveStream, delta: string): void {
@@ -332,8 +350,24 @@ function normalizeModelName(value: string): string {
 
 function redactSecret(text: string, secret: string): string {
   const token = secret.trim()
-  if (token.length < 4) return text
-  return text.split(token).join('[redacted]')
+  const withoutToken = token.length < 4 ? text : text.split(token).join('[redacted]')
+  return withoutToken
+    .replace(/bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, '[redacted]')
+}
+
+function publishSummary(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return '作者工具没有完成。源码没有执行。'
+  return trimmed.length > 240 ? `${trimmed.slice(0, 239)}…` : trimmed
+}
+
+function publishDraft(draft: AuthorToolNotice['draft'], secret: string): AuthorToolNotice['draft'] {
+  if (!draft) return null
+  const id = redactSecret(draft.id, secret).trim().slice(0, 128)
+  const displayName = redactSecret(draft.displayName, secret).trim().slice(0, 80)
+  if (!id || !displayName || !Number.isSafeInteger(draft.revision) || draft.revision < 0) return null
+  return { id, displayName, revision: draft.revision, ok: draft.ok }
 }
 
 function providerMessages(messages: readonly ModelChatMessage[]): ProviderMessage[] {

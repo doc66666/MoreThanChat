@@ -26,6 +26,7 @@ export const HOST_EVENTS = [
   "model.chat.completed",
   "model.chat.failed",
   "model.chat.cancelled",
+  "model.authorTool",
 ] as const;
 
 export type HostEvent = (typeof HOST_EVENTS)[number];
@@ -252,12 +253,45 @@ export interface HostResponsePayloadMap {
   "pluginDrafts.install": PluginDraftInstallResult;
 }
 
+export const AUTHOR_TOOL_PUBLIC_NAMES = [
+  "inspect_drafts",
+  "create_draft",
+  "validate_draft",
+  "diagnose_draft",
+  "install_draft",
+  "unknown",
+] as const;
+
+export type AuthorToolPublicName = (typeof AUTHOR_TOOL_PUBLIC_NAMES)[number];
+
+export const AUTHOR_TOOL_PHASES = ["started", "finished"] as const;
+
+export type AuthorToolPhase = (typeof AUTHOR_TOOL_PHASES)[number];
+
+/** Identifies a draft in chat progress. It never includes source or credentials. */
+export interface AuthorToolDraftRef {
+  id: string;
+  displayName: string;
+  revision: number;
+  ok: boolean;
+}
+
+export interface ModelAuthorToolPayload extends ModelChatStreamRef {
+  phase: AuthorToolPhase;
+  tool: AuthorToolPublicName;
+  ok: boolean;
+  summary: string;
+  pendingInstall: boolean;
+  draft: AuthorToolDraftRef | null;
+}
+
 export interface HostEventPayloadMap {
   "host.statusChanged": HostStatusSnapshot;
   "model.chat.delta": ModelChatStreamRef & { textDelta: string };
   "model.chat.completed": ModelChatStreamRef & { text: string };
   "model.chat.failed": ModelChatStreamRef & { partialText: string; error: ProtocolErrorPayload };
   "model.chat.cancelled": ModelChatStreamRef & { partialText: string };
+  "model.authorTool": ModelAuthorToolPayload;
 }
 
 export interface HostRequestEnvelope<M extends HostMethod = HostMethod> {
@@ -748,6 +782,58 @@ export const parseModelChatCancelledEvent = (value: unknown): HostEventPayloadMa
     throw new ProtocolValidationError("INVALID_PAYLOAD", "partialText must be a string", `${path}.partialText`);
   }
   return { ...parseModelChatStreamRef(object, path), partialText: object.partialText };
+};
+
+export const parseModelAuthorToolEvent = (value: unknown): HostEventPayloadMap["model.authorTool"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(
+    object,
+    ["streamId", "conversationId", "assistantMessageId", "generation", "phase", "tool", "ok", "summary", "pendingInstall", "draft"],
+    [],
+    path,
+    "INVALID_PAYLOAD",
+  );
+  if (!isOneOf(AUTHOR_TOOL_PHASES, object.phase)) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.phase is invalid`, `${path}.phase`);
+  }
+  if (!isOneOf(AUTHOR_TOOL_PUBLIC_NAMES, object.tool)) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.tool is invalid`, `${path}.tool`);
+  }
+  if (typeof object.ok !== "boolean") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.ok must be a boolean`, `${path}.ok`);
+  }
+  if (typeof object.pendingInstall !== "boolean") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.pendingInstall must be a boolean`, `${path}.pendingInstall`);
+  }
+  return {
+    ...parseModelChatStreamRef(object, path),
+    phase: object.phase,
+    tool: object.tool,
+    ok: object.ok,
+    summary: parseBoundedText(object.summary, `${path}.summary`, 240),
+    pendingInstall: object.pendingInstall,
+    draft: parseAuthorToolDraftRef(object.draft, `${path}.draft`),
+  };
+};
+
+const parseAuthorToolDraftRef = (value: unknown, path: string): AuthorToolDraftRef | null => {
+  if (value === null) return null;
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["id", "displayName", "revision", "ok"], [], path, "INVALID_PAYLOAD");
+  if (typeof object.ok !== "boolean") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.ok must be a boolean`, `${path}.ok`);
+  }
+  const revision = object.revision;
+  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.revision must be a non-negative safe integer`, `${path}.revision`);
+  }
+  return {
+    id: parseBoundedText(object.id, `${path}.id`, 128),
+    displayName: parseBoundedText(object.displayName, `${path}.displayName`, 80),
+    revision,
+    ok: object.ok,
+  };
 };
 
 
@@ -1264,6 +1350,13 @@ const parseEvent = (object: Record<string, unknown>): HostEventMessage => {
         kind: "event",
         event: "model.chat.cancelled",
         payload: parseModelChatCancelledEvent(object.payload),
+      };
+    case "model.authorTool":
+      return {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        kind: "event",
+        event: "model.authorTool",
+        payload: parseModelAuthorToolEvent(object.payload),
       };
   }
 };

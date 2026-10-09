@@ -115,6 +115,11 @@ button { color: inherit; }
 .bubble { padding: 10px 12px 7px; border-radius: 6px 16px 16px 16px; background: #f1f2f5; color: #343641; box-shadow: 0 1px 1px rgba(30,32,42,.03); }
 .own .bubble { color: white; background: linear-gradient(140deg, #7167eb, #5a50d6); border-radius: 16px 6px 16px 16px; box-shadow: 0 6px 16px rgba(91,80,214,.16); }
 .bubble p { margin: 0; white-space: pre-wrap; line-height: 1.55; font-size: 13px; }
+.author-tool-notes { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.author-tool-note { margin: 0; padding: 4px 6px; border-radius: 8px; background: rgba(255,255,255,.72); color: #4d5160; font-size: 11px; line-height: 1.45; }
+.author-tool-note.progress { background: #eef8f4; color: #24614d; }
+.author-tool-note.pending { background: #eef1ff; color: #31406b; }
+.author-tool-note.failed { background: #fff1f1; color: #8a3b3b; }
 .bubble-meta { display: block; margin-top: 4px; text-align: right; color: #a3a5ae; font-size: 9px; }
 .own .bubble-meta { color: rgba(255,255,255,.7); }
 .empty-conversation { height: 100%; display: grid; place-content: center; justify-items: center; text-align: center; color: #9699a4; }
