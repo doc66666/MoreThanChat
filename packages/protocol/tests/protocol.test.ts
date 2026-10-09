@@ -188,7 +188,7 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(14);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(26);
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.handshakeRequest).toBeDefined();
   });
@@ -207,5 +207,60 @@ describe("Host protocol v1", () => {
     expect(parseHostMessage(response)).toEqual(response);
     expectProtocolError({ ...response, payload: { ...response.payload, plugins: [{ ...response.payload.plugins[0], status: 'invalid' }] } }, 'INVALID_PAYLOAD');
     expectProtocolError({ ...createHostRequest('plugins.setEnabled', 'bad', { pluginId: 'time', enabled: true }), payload: { pluginId: 'time', enabled: 'yes' } }, 'INVALID_PAYLOAD');
+  });
+
+  it('round-trips model settings and chat streams without returning an API key', () => {
+    const secret = 'sk-test-should-not-appear-in-snapshots';
+    const update = createHostRequest('model.setSettings', 'set-model', {
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      providerMode: 'openai-compatible',
+      apiKey: secret,
+    });
+    const snapshot = {
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      providerMode: 'openai-compatible' as const,
+      hasApiKey: true,
+    };
+    const saved = createHostSuccessResponse(update, snapshot);
+    const read = createHostRequest('model.getSettings', 'get-model', {});
+    const start = createHostRequest('model.chat.start', 'start-model', {
+      streamId: 'stream-1',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    const started = createHostSuccessResponse(start, {
+      streamId: 'stream-1',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      generation: 2,
+    });
+    const delta = createHostEvent('model.chat.delta', { ...started.payload, textDelta: 'he' });
+    const completed = createHostEvent('model.chat.completed', { ...started.payload, text: 'hello' });
+    const failed = createHostEvent('model.chat.failed', {
+      ...started.payload,
+      partialText: 'he',
+      error: { code: 'MODEL_REQUEST_FAILED', message: 'The model request failed.', retryable: true },
+    });
+    const cancelled = createHostEvent('model.chat.cancelled', { ...started.payload, partialText: 'he' });
+    const cancel = createHostRequest('model.chat.cancel', 'cancel-model', { streamId: 'stream-1' });
+    const cancelResponse = createHostSuccessResponse(cancel, { streamId: 'stream-1', cancelled: true });
+
+    expect(parseHostMessage(update)).toEqual(update);
+    expect(JSON.stringify(update)).toContain(secret);
+    for (const message of [saved, read, start, started, delta, completed, failed, cancelled, cancel, cancelResponse]) {
+      expect(parseHostMessage(message)).toEqual(message);
+      expect(JSON.stringify(message)).not.toContain(secret);
+    }
+    expectProtocolError(
+      { ...saved, payload: { ...snapshot, apiKey: secret } },
+      'INVALID_PAYLOAD',
+    );
+    expectProtocolError(
+      { ...failed, payload: { ...failed.payload, partialText: undefined } },
+      'INVALID_PAYLOAD',
+    );
   });
 });

@@ -23,19 +23,24 @@ import {
   X,
 } from 'lucide-react'
 import {
+  applyModelChatUpdate,
   createSeedState,
   formatRelativeTime,
+  interruptStreamingMessages,
   normalizeState,
+  toModelTranscript,
   type ChatMessage,
   type ChatState,
   type Conversation,
+  type ModelChatUpdate,
 } from '@more-than-chat/chat-core'
 import type {
   ComposerAction,
   PluginSnapshot,
   RegisteredContribution,
 } from '@more-than-chat/plugin-runtime'
-import type { HostPluginSnapshot, HostStatusSnapshot } from '@more-than-chat/protocol'
+import type { HostPluginSnapshot, HostStatusSnapshot, ModelProviderMode, ModelSettingsSnapshot } from '@more-than-chat/protocol'
+import type { ModelClientEvent, ModelSettingsInput } from './global'
 import {
   composerActionRegistry,
   pluginRuntime,
@@ -64,6 +69,10 @@ export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatusSnapshot>({ state: 'starting', generation: 0 })
   const [hostPlugins, setHostPlugins] = useState<HostPluginSnapshot[]>([])
   const [hostPluginBusy, setHostPluginBusy] = useState(false)
+  const [modelSettings, setModelSettings] = useState<ModelSettingsSnapshot | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const streamIdsRef = useRef(new Map<string, string>())
+  const pendingModelEventsRef = useRef<ModelClientEvent[]>([])
   const hostStatusRef = useRef(hostStatus)
   hostStatusRef.current = hostStatus
   const endRef = useRef<HTMLDivElement>(null)
@@ -120,6 +129,32 @@ export function App() {
   }, [hostStatus.state, hostStatus.generation])
 
   useEffect(() => {
+    if (hostStatus.state === 'ready') return
+    setState(current => current ? interruptStreamingMessages(current) : current)
+  }, [hostStatus.state, hostStatus.generation])
+
+  useEffect(() => {
+    if (hostStatus.state !== 'ready') return
+    let alive = true
+    void window.moreThanChat.getModelSettings().then(snapshot => {
+      if (alive) setModelSettings(snapshot)
+    }).catch(error => {
+      console.error(error instanceof Error ? error.message : 'model settings')
+      if (alive) setToast('无法读取模型设置')
+    })
+    return () => { alive = false }
+  }, [hostStatus.state, hostStatus.generation])
+
+  useEffect(() => {
+    return window.moreThanChat.onModelChatEvent(event => {
+      if (event.generation !== hostStatusRef.current.generation) return
+      setState(current => current ? applyIncomingModelEvent(current, event, pendingModelEventsRef.current) : current)
+      if (event.type === 'failed') setToast(event.errorMessage ?? '回复失败')
+      if (event.type !== 'delta') streamIdsRef.current.delete(event.assistantMessageId)
+    })
+  }, [])
+
+  useEffect(() => {
     void window.moreThanChat.loadState().then(value => setState(value ? normalizeState(value) : createSeedState()))
   }, [])
 
@@ -169,6 +204,14 @@ export function App() {
   async function sendMessage() {
     const text = draft.trim()
     if (!text || !active) return
+    if (messages.some(message => message.status === 'streaming')) {
+      setToast('请等待当前回复结束，或先停止生成')
+      return
+    }
+    if (active.kind === 'assistant') {
+      await sendAssistantMessage(text)
+      return
+    }
     const now = Date.now()
     const clientMessageId = uid()
     const outgoing: ChatMessage = {
@@ -229,6 +272,111 @@ export function App() {
         console.error('[transport] disconnect failed', error)
       }
     }
+  }
+
+  async function sendAssistantMessage(text: string) {
+    if (!active) return
+    if (hostStatusRef.current.state !== 'ready') {
+      setToast('PC Host 还没有就绪，暂时不能生成回复')
+      return
+    }
+    const now = Date.now()
+    const userId = uid()
+    const assistantId = uid()
+    const streamId = uid()
+    const conversationId = active.id
+    const userMessage: ChatMessage = {
+      id: userId,
+      clientMessageId: userId,
+      conversationId,
+      senderId: readyState.profile.id,
+      senderName: readyState.profile.displayName,
+      senderAvatar: readyState.profile.avatar,
+      role: 'self',
+      type: 'text',
+      text,
+      createdAt: now,
+      status: 'sending',
+    }
+    const assistantMessage: ChatMessage = {
+      id: assistantId,
+      clientMessageId: assistantId,
+      conversationId,
+      senderId: 'more-ai',
+      senderName: 'More AI',
+      senderAvatar: 'AI',
+      role: 'peer',
+      type: 'text',
+      text: '',
+      createdAt: now + 1,
+      status: 'streaming',
+    }
+    const transcript = toModelTranscript(messages, text)
+    setDraft('')
+    streamIdsRef.current.set(assistantId, streamId)
+    setState(current => {
+      if (!current) return current
+      return drainModelEvents(
+        appendMessage(appendMessage(current, userMessage), assistantMessage),
+        pendingModelEventsRef.current,
+      )
+    })
+    try {
+      const ref = await window.moreThanChat.startModelChat({
+        streamId,
+        conversationId,
+        assistantMessageId: assistantId,
+        messages: transcript,
+      })
+      if (ref.generation !== hostStatusRef.current.generation) {
+        setState(current => current ? interruptStreamingMessages(current) : current)
+        void window.moreThanChat.cancelModelChat(streamId).catch(() => undefined)
+        return
+      }
+      setState(current => current ? updateMessageStatus(current, conversationId, userId, 'sent') : current)
+    }
+    catch (error) {
+      streamIdsRef.current.delete(assistantId)
+      setState(current => {
+        if (!current) return current
+        const failedUser = updateMessageStatus(current, conversationId, userId, 'failed')
+        return applyModelChatUpdate(failedUser, {
+          type: 'failed',
+          conversationId,
+          assistantMessageId: assistantId,
+          partialText: '',
+        })
+      })
+      setToast(errorText(error))
+    }
+  }
+
+  async function cancelGeneration() {
+    if (!active) return
+    const streaming = (state?.messages[active.id] ?? []).find(message => message.status === 'streaming')
+    if (!streaming) return
+    const streamId = streamIdsRef.current.get(streaming.id)
+    streamIdsRef.current.delete(streaming.id)
+    setState(current => current ? interruptStreamingMessages(current) : current)
+    if (!streamId || hostStatusRef.current.state !== 'ready') return
+    try {
+      await window.moreThanChat.cancelModelChat(streamId)
+    }
+    catch (error) {
+      console.error(error instanceof Error ? error.message : 'cancel failed')
+    }
+  }
+
+  async function saveModelSettings(input: ModelSettingsInput) {
+    const snapshot = await window.moreThanChat.setModelSettings(input)
+    setModelSettings(snapshot)
+    setToast(snapshot.hasApiKey ? '模型设置已保存，密钥只留在本机 Host' : '模型设置已保存')
+  }
+
+  async function clearModelKey() {
+    const snapshot = await window.moreThanChat.setModelSettings({ clearApiKey: true })
+    setModelSettings(snapshot)
+    setToast('API Key 已从本机凭据中删除')
   }
 
   async function runComposerAction(action: ComposerAction) {
@@ -315,7 +463,7 @@ export function App() {
     const next: Conversation = {
       id,
       title: clean,
-      subtitle: kind === 'group' ? '新群聊' : '本地联系人',
+      subtitle: kind === 'group' ? '新群聊' : kind === 'assistant' ? 'AI 助手' : '本地联系人',
       avatar: initials(clean),
       accent: ['#6671e5', '#1e9c76', '#dc7d4c', '#a361c2'][readyState.conversations.length % 4]!,
       kind,
@@ -359,8 +507,8 @@ export function App() {
           <RailButton icon={<Archive />} label="归档" onClick={() => setToast('暂无已归档会话')} />
         </div>
         <div className="rail-bottom">
-          <RailButton icon={<CircleHelp />} label="帮助" onClick={() => setToast('MoreThanChat 0.1 · 本地演示')} />
-          <RailButton icon={<Settings />} label="设置" onClick={() => setToast('设置页将在接入服务端时开放')} />
+          <RailButton icon={<CircleHelp />} label="帮助" onClick={() => setToast('MoreThanChat 0.1 · AI 回复由 PC Host 生成')} />
+          <RailButton icon={<Settings />} label="设置" active={showSettings} onClick={() => setShowSettings(true)} />
           <div className="profile-avatar">M<span className="online-dot" /></div>
         </div>
       </nav>
@@ -406,7 +554,10 @@ export function App() {
 
       <main className="chat-panel">
         <header className="chat-header">
-          <div className="chat-identity"><Avatar conversation={active} small /><div><h1>{active.title}</h1><p><span className="status-dot" /> {active.subtitle}</p></div></div>
+          <div className="chat-identity" data-model-mode={active.kind === 'assistant' ? (modelSettings?.providerMode ?? 'unknown') : 'chat'}>
+            <Avatar conversation={active} small />
+            <div><h1>{active.title}</h1><p><span className="status-dot" /> {active.kind === 'assistant' ? modelSubtitle(modelSettings) : active.subtitle}</p></div>
+          </div>
           <div className="header-actions">
             <button className="icon-button" title="语音通话" onClick={() => setToast('通话将由 WebRTC 插件提供')}><Phone size={18} /></button>
             <button className="icon-button" title="视频通话" onClick={() => setToast('视频将由 WebRTC 插件提供')}><Video size={19} /></button>
@@ -423,7 +574,7 @@ export function App() {
           <div ref={endRef} />
         </section>
 
-        <footer className="composer-wrap">
+        <footer className="composer-wrap" data-generating={messages.some(message => message.status === 'streaming') ? 'true' : 'false'}>
           <div className="composer">
             <textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={`发消息给 ${active.title}`} rows={1} />
             <div className="composer-toolbar">
@@ -448,16 +599,22 @@ export function App() {
                   </button>
                 )))}
               </div>
-              <div className="send-area"><span>Enter 发送 · Shift+Enter 换行</span><button className="send-button" disabled={!draft.trim()} onClick={() => void sendMessage()}><SendHorizontal size={18} /></button></div>
+              <div className="send-area">
+                <span>{messages.some(message => message.status === 'streaming') ? '正在生成' : 'Enter 发送 · Shift+Enter 换行'}</span>
+                {messages.some(message => message.status === 'streaming')
+                  ? <button className="send-button stop" onClick={() => void cancelGeneration()}>停止</button>
+                  : <button className="send-button" disabled={!draft.trim()} onClick={() => void sendMessage()}><SendHorizontal size={18} /></button>}
+              </div>
             </div>
           </div>
         </footer>
       </main>
 
-      {showDetails && <DetailsPanel conversation={active} transportName={transportRegistry.get(active.transportId)?.displayName ?? '插件不可用'} onClose={() => setShowDetails(false)} />}
+      {showDetails && <DetailsPanel conversation={active} transportName={active.kind === 'assistant' ? 'PC Host 模型' : (transportRegistry.get(active.transportId)?.displayName ?? '插件不可用')} {...(active.kind === 'assistant' ? { modelLabel: modelSubtitle(modelSettings) } : {})} onClose={() => setShowDetails(false)} />}
       {showPlugins && <PluginPanel plugins={plugins} hostPlugins={hostPlugins} hostBusy={hostPluginBusy}
         onHostToggle={plugin => void toggleHostPlugin(plugin)} onToggle={plugin => void togglePlugin(plugin)} onClose={() => setShowPlugins(false)} />}
       {showNewChat && <NewChatDialog onClose={() => setShowNewChat(false)} onCreate={createConversation} />}
+      {showSettings && <ModelSettingsPanel snapshot={modelSettings} onClose={() => setShowSettings(false)} onSave={saveModelSettings} onClearKey={clearModelKey} />}
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
     </div>
   )
@@ -493,23 +650,23 @@ function MessageBubble({ message, compact }: { message: ChatMessage; compact: bo
   if (message.type === 'system') return <div className="system-message">{message.text}</div>
   const own = message.role === 'self'
   return (
-    <article className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''}`}>
+    <article className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status}`}>
       {!own && <span className="message-avatar">{message.senderAvatar}</span>}
       <div className="message-content">
         {!compact && !own && <span className="sender-name">{message.senderName}</span>}
-        <div className="bubble"><p>{message.text}</p><span className="bubble-meta">{formatRelativeTime(message.createdAt)} {own && (message.status === 'sending' ? '· 发送中' : message.status === 'failed' ? '· 失败' : '✓')}</span></div>
+        <div className="bubble"><p>{displayText(message)}</p><span className="bubble-meta">{messageMeta(message)}</span></div>
       </div>
     </article>
   )
 }
 
-function DetailsPanel({ conversation, transportName, onClose }: { conversation: Conversation; transportName: string; onClose: () => void }) {
+function DetailsPanel({ conversation, transportName, modelLabel, onClose }: { conversation: Conversation; transportName: string; modelLabel?: string; onClose: () => void }) {
   return (
     <aside className="details-panel">
       <div className="details-header"><strong>会话详情</strong><button className="icon-button" onClick={onClose}><X size={18} /></button></div>
       <div className="details-profile"><Avatar conversation={conversation} /><h2>{conversation.title}</h2><p>{conversation.subtitle}</p></div>
       <div className="details-actions"><button><Search size={18} /><span>搜索</span></button><button><Bot size={18} /><span>AI 总结</span></button><button><MoreHorizontal size={18} /><span>更多</span></button></div>
-      <div className="details-card"><div><span>传输插件</span><strong>{transportName}</strong></div><div><span>消息存储</span><strong>此设备</strong></div><div><span>端到端加密</span><strong className="muted">尚未启用</strong></div></div>
+      <div className="details-card"><div><span>传输插件</span><strong>{transportName}</strong></div>{modelLabel && <div><span>模型</span><strong>{modelLabel}</strong></div>}<div><span>消息存储</span><strong>此设备</strong></div><div><span>端到端加密</span><strong className="muted">尚未启用</strong></div></div>
       <div className="details-note"><PlugZap size={17} /><p>这块区域也是 UI Slot。未来插件可以添加成员面板、任务或知识库。</p></div>
     </aside>
   )
@@ -575,11 +732,160 @@ function NewChatDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (
       <form className="new-chat-dialog" onSubmit={submit} onMouseDown={event => event.stopPropagation()}>
         <div className="dialog-icon"><PencilLine /></div><h2>新建会话</h2><p>先创建一个本地会话，接入中心服务器后将由 transport 自动同步。</p>
         <label><span>会话名称</span><input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="例如：周末计划" /></label>
-        <div className="kind-picker"><button type="button" className={kind === 'direct' ? 'active' : ''} onClick={() => setKind('direct')}><MessageCircleMore />单聊</button><button type="button" className={kind === 'group' ? 'active' : ''} onClick={() => setKind('group')}><Users />群聊</button></div>
+        <div className="kind-picker">
+          <button type="button" className={kind === 'direct' ? 'active' : ''} onClick={() => setKind('direct')}><MessageCircleMore />单聊</button>
+          <button type="button" className={kind === 'group' ? 'active' : ''} onClick={() => setKind('group')}><Users />群聊</button>
+          <button type="button" className={kind === 'assistant' ? 'active' : ''} onClick={() => setKind('assistant')}><Bot />AI</button>
+        </div>
         <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!title.trim()}>创建会话</button></div>
       </form>
     </div>
   )
+}
+
+function ModelSettingsPanel({ snapshot, onClose, onSave, onClearKey }: {
+  snapshot: ModelSettingsSnapshot | null
+  onClose: () => void
+  onSave: (input: ModelSettingsInput) => Promise<void>
+  onClearKey: () => Promise<void>
+}) {
+  const [baseUrl, setBaseUrl] = useState(snapshot?.baseUrl ?? 'https://api.deepseek.com')
+  const [model, setModel] = useState(snapshot?.model ?? 'deepseek-chat')
+  const [providerMode, setProviderMode] = useState<ModelProviderMode>(snapshot?.providerMode ?? 'mock')
+  const [apiKey, setApiKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!snapshot) return
+    setBaseUrl(snapshot.baseUrl)
+    setModel(snapshot.model)
+    setProviderMode(snapshot.providerMode)
+  }, [snapshot])
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!snapshot) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onSave({
+        baseUrl: baseUrl.trim(),
+        model: model.trim(),
+        providerMode,
+        ...(apiKey.trim() ? { apiKey } : {}),
+      })
+      setApiKey('')
+    }
+    catch (caught) {
+      setError(errorText(caught))
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  async function clearKey() {
+    setBusy(true)
+    setError(null)
+    try {
+      await onClearKey()
+      setApiKey('')
+    }
+    catch (caught) {
+      setError(errorText(caught))
+    }
+    finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="drawer-backdrop" onMouseDown={onClose}>
+      <form className="plugin-drawer settings-drawer" onSubmit={event => void submit(event)} onMouseDown={event => event.stopPropagation()} data-provider-mode={providerMode} data-has-api-key={snapshot?.hasApiKey ? 'true' : 'false'}>
+        <div className="drawer-header"><h2>模型设置</h2><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div>
+        <p className="settings-note">API Key 只写入 PC Host 的本机凭据文件。界面只知道是否已保存，聊天记录、日志和插件都拿不到原始密钥。</p>
+        <label className="settings-field"><span>提供方</span>
+          <select value={providerMode} onChange={event => setProviderMode(event.target.value as ModelProviderMode)}>
+            <option value="mock">模拟（不访问网络）</option>
+            <option value="openai-compatible">OpenAI 兼容 / DeepSeek</option>
+          </select>
+        </label>
+        <label className="settings-field"><span>Base URL</span>
+          <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com" autoComplete="off" spellCheck={false} />
+        </label>
+        <label className="settings-field"><span>模型</span>
+          <input value={model} onChange={event => setModel(event.target.value)} placeholder="deepseek-chat" autoComplete="off" spellCheck={false} />
+        </label>
+        <label className="settings-field"><span>API Key</span>
+          <input type="password" value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder={snapshot?.hasApiKey ? '已保存，留空则不修改' : '未设置'} autoComplete="off" spellCheck={false} />
+        </label>
+        {error && <p className="settings-error">{error}</p>}
+        <div className="dialog-actions">
+          {snapshot?.hasApiKey && <button type="button" className="secondary-button" disabled={busy} onClick={() => void clearKey()}>删除密钥</button>}
+          <button className="primary-button" disabled={busy || !snapshot || !baseUrl.trim() || !model.trim()}>{busy ? '保存中' : '保存'}</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function modelSubtitle(settings: ModelSettingsSnapshot | null): string {
+  if (!settings) return '正在连接模型'
+  if (settings.providerMode === 'mock') return '模拟回复 · 未调用网络'
+  return settings.hasApiKey ? settings.model : `${settings.model} · 未保存密钥`
+}
+
+function displayText(message: ChatMessage): string {
+  if (message.text) return message.text
+  if (message.status === 'streaming') return '正在生成…'
+  if (message.status === 'cancelled') return '回复已取消。'
+  if (message.status === 'failed') return '回复没有完成。'
+  return ''
+}
+
+function messageMeta(message: ChatMessage): string {
+  const time = formatRelativeTime(message.createdAt)
+  if (message.status === 'streaming') return `${time} · 生成中`
+  if (message.status === 'cancelled') return `${time} · 已取消`
+  if (message.status === 'failed') return `${time} · 失败`
+  if (message.role === 'self' && message.status === 'sending') return `${time} · 发送中`
+  if (message.role === 'self') return `${time} ✓`
+  return time
+}
+
+function errorText(error: unknown): string {
+  const message = error instanceof Error && error.message.trim() ? error.message : '模型请求失败'
+  return message.replace(/bearer\s+\S+/gi, 'Bearer [redacted]').slice(0, 240)
+}
+
+function toModelUpdate(event: ModelClientEvent): ModelChatUpdate {
+  const identity = { conversationId: event.conversationId, assistantMessageId: event.assistantMessageId }
+  switch (event.type) {
+    case 'delta':
+      return { type: 'delta', ...identity, textDelta: event.textDelta ?? '' }
+    case 'completed':
+      return { type: 'completed', ...identity, text: event.text ?? '' }
+    case 'failed':
+      return { type: 'failed', ...identity, partialText: event.partialText ?? '' }
+    case 'cancelled':
+      return { type: 'cancelled', ...identity, partialText: event.partialText ?? '' }
+  }
+}
+
+function applyIncomingModelEvent(state: ChatState, event: ModelClientEvent, pending: ModelClientEvent[]): ChatState {
+  const list = state.messages[event.conversationId] ?? []
+  if (!list.some(message => message.id === event.assistantMessageId)) {
+    pending.push(event)
+    return state
+  }
+  return applyModelChatUpdate(state, toModelUpdate(event))
+}
+
+function drainModelEvents(state: ChatState, pending: ModelClientEvent[]): ChatState {
+  if (pending.length === 0) return state
+  const queued = pending.splice(0, pending.length)
+  return queued.reduce((current, event) => applyModelChatUpdate(current, toModelUpdate(event)), state)
 }
 
 function LoadingScreen() {

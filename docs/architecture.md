@@ -29,7 +29,7 @@ PC 第一版建议使用：
 
 ## 分层
 
-当前实现已经建立 `apps/pc-host` utility process、`packages/protocol` v1 envelope，以及 Electron Main 中的 Host Supervisor。PC Host 通过 `packages/runtime-cordis` 运行可信时间工具插件，提供清单、启停、执行和退出清理。适配层锁定 `@cordisjs/core 3.18.1`；通用 SDK 负责状态、逆序清理与失败项保留，Cordis 负责每次激活的独立作用域，框架对象不进入插件接口。模型、SQLite、动态服务依赖与产品级热更新事务仍按后续阶段推进。
+当前实现已经建立 `apps/pc-host` utility process、`packages/protocol` v1 envelope，以及 Electron Main 中的 Host Supervisor。PC Host 通过 `packages/runtime-cordis` 运行可信时间工具插件，提供清单、启停、执行和退出清理，并在同一进程内完成 OpenAI 兼容模型的流式调用。API Key 留在 Host 凭据文件，不进入插件上下文。适配层锁定 `@cordisjs/core 3.18.1`；通用 SDK 负责状态、逆序清理与失败项保留，Cordis 负责每次激活的独立作用域，框架对象不进入插件接口。SQLite、动态服务依赖与产品级热更新事务仍按后续阶段推进。
 
 ```text
 apps/desktop (Electron)           apps/android (后续)

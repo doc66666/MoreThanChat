@@ -8,7 +8,7 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 - `apps/pc-host`：独立进程入口，运行 `CordisPluginRuntime({ target: 'pc-host' })`，处理 handshake、ping、插件控制、工具执行与 shutdown；
 - `host-supervisor.ts`：请求关联、超时、generation、崩溃检测、有限退避重启和退出清理；
 - `electron-host-process.ts`：对 Electron `utilityProcess.fork()` 的薄适配；
-- `preload.ts`：只暴露状态查询、状态事件、ping、插件清单/启停和工具调用，不暴露任意 channel；
+- `preload.ts`：只暴露状态查询、状态事件、ping、插件清单/启停、工具调用，以及模型设置和聊天流事件，不暴露任意 channel，也不回传 API Key；
 - Renderer 状态按钮：显示连接中、已连接、重连中、失败或已停止。
 
 ## v1 消息
@@ -23,10 +23,13 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 - `plugins.list`：读取这一代 Host 的插件状态与可用工具；
 - `plugins.setEnabled`：启用/停用已安装可信插件；
 - `tools.invoke`：按插件 id 与工具 id 执行无参数工具，返回带 generation 的文本结果。
+- `model.getSettings` / `model.setSettings`：读取或更新 Base URL、模型名和提供方。响应只有 `hasApiKey`，不回传原始密钥。
+- `model.chat.start` / `model.chat.cancel`：在 Host 内开始或取消一次流式回复。
 
 当前事件：
 
 - `host.statusChanged`。
+- `model.chat.delta` / `model.chat.completed` / `model.chat.failed` / `model.chat.cancelled`。取消和失败都带已生成的部分文本，不能当成正常完成。
 
 畸形消息、未知 kind/method、错误 payload 和版本不兼容都会被运行时 parser 拒绝。Schema 位于 `packages/protocol/schema/host-protocol-v1.schema.json`，未来 Android Host Adapter 使用同一协议概念。
 
@@ -62,7 +65,8 @@ pnpm verify:host
 
 ## 当前边界
 
-- PC Host 仅运行随应用内置的可信插件，尚未运行第三方磁盘插件，也未持有 API Key；
+- PC Host 仅运行随应用内置的可信插件，尚未运行第三方磁盘插件；
+- API Key 只写在 Host 数据目录的 `model-credentials.json`（权限 0600）。设置快照、聊天记录、插件服务和 Renderer 都不接收原始密钥。模拟模式不会把密钥交给提供方，也不会访问网络；
 - utility process 是崩溃隔离与权限收敛边界，但不是完整恶意代码沙箱；
 - 当前开发构建从 `apps/pc-host/dist/main.js` 启动，正式安装包还需将 Host bundle 放入 `extraResources` 并验证 ASAR 路径；
 - Cordis 适配层和契约测试已接入，CI 配置已建立；下一步是安装包资源路径验证，随后进入 SQLite 与模型 Provider。当前启停是生命周期验证，插件版本更新/失败恢复旧版本的事务仍未实现。

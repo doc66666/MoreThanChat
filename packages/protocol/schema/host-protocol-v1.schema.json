@@ -45,6 +45,42 @@
     },
     {
       "$ref": "#/$defs/toolInvokeResponse"
+    },
+    {
+      "$ref": "#/$defs/modelGetSettingsRequest"
+    },
+    {
+      "$ref": "#/$defs/modelSetSettingsRequest"
+    },
+    {
+      "$ref": "#/$defs/modelChatStartRequest"
+    },
+    {
+      "$ref": "#/$defs/modelChatCancelRequest"
+    },
+    {
+      "$ref": "#/$defs/modelGetSettingsResponse"
+    },
+    {
+      "$ref": "#/$defs/modelSetSettingsResponse"
+    },
+    {
+      "$ref": "#/$defs/modelChatStartResponse"
+    },
+    {
+      "$ref": "#/$defs/modelChatCancelResponse"
+    },
+    {
+      "$ref": "#/$defs/modelChatDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/modelChatCompletedEvent"
+    },
+    {
+      "$ref": "#/$defs/modelChatFailedEvent"
+    },
+    {
+      "$ref": "#/$defs/modelChatCancelledEvent"
     }
   ],
   "$defs": {
@@ -73,7 +109,11 @@
             "HOST_CRASHED",
             "SHUTTING_DOWN",
             "PLUGIN_NOT_FOUND",
-            "TOOL_UNAVAILABLE"
+            "TOOL_UNAVAILABLE",
+            "MODEL_NOT_CONFIGURED",
+            "MODEL_REQUEST_FAILED",
+            "MODEL_STREAM_NOT_FOUND",
+            "CREDENTIAL_UNAVAILABLE"
           ]
         },
         "message": {
@@ -436,7 +476,11 @@
             "host.shutdown",
             "plugins.list",
             "plugins.setEnabled",
-            "tools.invoke"
+            "tools.invoke",
+            "model.getSettings",
+            "model.setSettings",
+            "model.chat.start",
+            "model.chat.cancel"
           ]
         },
         "ok": {
@@ -890,6 +934,722 @@
               "type": "string",
               "minLength": 1,
               "pattern": ".*\\S.*"
+            }
+          }
+        }
+      }
+    },
+    "modelGetSettingsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.getSettings"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    "modelSetSettingsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.setSettings"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 2048
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "providerMode": {
+              "enum": [
+                "mock",
+                "openai-compatible"
+              ]
+            },
+            "apiKey": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 4096
+            },
+            "clearApiKey": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "modelChatStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.chat.start"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId",
+            "conversationId",
+            "assistantMessageId",
+            "messages"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "assistantMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "messages": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 200,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "role",
+                  "content"
+                ],
+                "properties": {
+                  "role": {
+                    "enum": [
+                      "system",
+                      "user",
+                      "assistant"
+                    ]
+                  },
+                  "content": {
+                    "type": "string",
+                    "maxLength": 100000
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "modelChatCancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.chat.cancel"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            }
+          }
+        }
+      }
+    },
+    "modelGetSettingsResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.getSettings"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "baseUrl",
+            "model",
+            "providerMode",
+            "hasApiKey"
+          ],
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 2048
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "providerMode": {
+              "enum": [
+                "mock",
+                "openai-compatible"
+              ]
+            },
+            "hasApiKey": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "modelSetSettingsResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.setSettings"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "baseUrl",
+            "model",
+            "providerMode",
+            "hasApiKey"
+          ],
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 2048
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "providerMode": {
+              "enum": [
+                "mock",
+                "openai-compatible"
+              ]
+            },
+            "hasApiKey": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "modelChatStartResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.chat.start"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId",
+            "conversationId",
+            "assistantMessageId",
+            "generation"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "assistantMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "modelChatCancelResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "model.chat.cancel"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId",
+            "cancelled"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "cancelled": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "modelChatDeltaEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "event",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "event"
+        },
+        "event": {
+          "const": "model.chat.delta"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId",
+            "conversationId",
+            "assistantMessageId",
+            "generation",
+            "textDelta"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "assistantMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "textDelta": {
+              "type": "string",
+              "maxLength": 100000
+            }
+          }
+        }
+      }
+    },
+    "modelChatCompletedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "event",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "event"
+        },
+        "event": {
+          "const": "model.chat.completed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId",
+            "conversationId",
+            "assistantMessageId",
+            "generation",
+            "text"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "assistantMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 500000
+            }
+          }
+        }
+      }
+    },
+    "modelChatFailedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "event",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "event"
+        },
+        "event": {
+          "const": "model.chat.failed"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId",
+            "conversationId",
+            "assistantMessageId",
+            "generation",
+            "partialText",
+            "error"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "assistantMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "partialText": {
+              "type": "string",
+              "maxLength": 500000
+            },
+            "error": {
+              "$ref": "#/$defs/protocolError"
+            }
+          }
+        }
+      }
+    },
+    "modelChatCancelledEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "event",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "event"
+        },
+        "event": {
+          "const": "model.chat.cancelled"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "streamId",
+            "conversationId",
+            "assistantMessageId",
+            "generation",
+            "partialText"
+          ],
+          "properties": {
+            "streamId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "assistantMessageId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "partialText": {
+              "type": "string",
+              "maxLength": 500000
             }
           }
         }

@@ -1,5 +1,5 @@
 export type ConversationKind = 'direct' | 'group' | 'assistant'
-export type MessageStatus = 'sending' | 'sent' | 'failed'
+export type MessageStatus = 'sending' | 'sent' | 'failed' | 'streaming' | 'cancelled'
 export type ParticipantRole = 'self' | 'peer' | 'system'
 
 export interface Profile {
@@ -62,6 +62,17 @@ export interface SendReceipt {
   acceptedAt: number
   reply?: IncomingMessageDraft
 }
+
+export type ModelTranscriptMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+export type ModelChatUpdate =
+  | { type: 'delta'; conversationId: string; assistantMessageId: string; textDelta: string }
+  | { type: 'completed'; conversationId: string; assistantMessageId: string; text: string }
+  | { type: 'failed'; conversationId: string; assistantMessageId: string; partialText: string }
+  | { type: 'cancelled'; conversationId: string; assistantMessageId: string; partialText: string }
 
 /** Stable capability boundary implemented by local, central-server, or P2P plugins. */
 export interface ChatTransport {
@@ -204,7 +215,88 @@ export function normalizeState(candidate: unknown): ChatState {
   }
   if (!value.profile || typeof value.activeConversationId !== 'string') return createSeedState()
   if (!value.conversations.some(item => item.id === value.activeConversationId)) return createSeedState()
-  return value as ChatState
+  for (const list of Object.values(value.messages)) {
+    if (!Array.isArray(list)) return createSeedState()
+  }
+  return interruptStreamingMessages(value as ChatState)
+}
+
+/** An interrupted reply is restored as cancelled, never as a normal completion. */
+export function interruptStreamingMessages(state: ChatState): ChatState {
+  let changed = false
+  const messages: ChatState['messages'] = {}
+  for (const [conversationId, list] of Object.entries(state.messages)) {
+    if (!Array.isArray(list)) return state
+    messages[conversationId] = list.map(message => {
+      if (!message || message.status !== 'streaming') return message
+      changed = true
+      return { ...message, status: 'cancelled' }
+    })
+  }
+  return changed ? { ...state, messages } : state
+}
+
+export function applyModelChatUpdate(state: ChatState, update: ModelChatUpdate): ChatState {
+  const list = state.messages[update.conversationId]
+  if (!list) return state
+  const index = list.findIndex(message => message.id === update.assistantMessageId)
+  if (index < 0) return state
+  const current = list[index]
+  if (!current || current.status === 'sent') return state
+  if (current.status === 'cancelled' || current.status === 'failed') {
+    const partial = update.type === current.status ? update.partialText : undefined
+    if (partial === undefined) return state
+    const text = partial || current.text
+    if (text === current.text) return state
+    return replaceMessage(state, update.conversationId, index, { ...current, text })
+  }
+  if (current.status !== 'streaming') return state
+  switch (update.type) {
+    case 'delta':
+      return replaceMessage(state, update.conversationId, index, {
+        ...current,
+        text: `${current.text}${update.textDelta}`,
+        status: 'streaming',
+      })
+    case 'completed':
+      return replaceMessage(state, update.conversationId, index, { ...current, text: update.text, status: 'sent' })
+    case 'failed':
+      return replaceMessage(state, update.conversationId, index, {
+        ...current,
+        text: update.partialText || current.text,
+        status: 'failed',
+      })
+    case 'cancelled':
+      return replaceMessage(state, update.conversationId, index, {
+        ...current,
+        text: update.partialText || current.text,
+        status: 'cancelled',
+      })
+  }
+}
+
+export function toModelTranscript(messages: readonly ChatMessage[], outgoingText?: string): ModelTranscriptMessage[] {
+  const transcript: ModelTranscriptMessage[] = []
+  for (const message of messages) {
+    if (message.type !== 'text') continue
+    if (message.status === 'sending' || message.status === 'failed' || message.status === 'streaming') continue
+    if (!message.text.trim()) continue
+    const role = message.role === 'self' ? 'user' : message.role === 'system' ? 'system' : 'assistant'
+    transcript.push({ role, content: message.text })
+  }
+  if (outgoingText?.trim()) transcript.push({ role: 'user', content: outgoingText })
+  return transcript.slice(-40)
+}
+
+function replaceMessage(state: ChatState, conversationId: string, index: number, message: ChatMessage): ChatState {
+  const list = state.messages[conversationId] ?? []
+  const next = list.slice()
+  next[index] = message
+  return {
+    ...state,
+    conversations: state.conversations.map(item => item.id === conversationId ? { ...item, updatedAt: message.createdAt } : item),
+    messages: { ...state.messages, [conversationId]: next },
+  }
 }
 
 export function formatRelativeTime(timestamp: number, now = Date.now()): string {

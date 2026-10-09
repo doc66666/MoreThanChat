@@ -6,6 +6,7 @@ import {
   safeParseHostMessage,
   type HostMethod,
   type HostPluginCatalog,
+  type HostEventMessage,
   type HostRequestEnvelope,
   type HostRequestPayloadMap,
   type HostResponsePayloadMap,
@@ -89,6 +90,7 @@ export class HostSupervisor {
   readonly #restartDelaysMs: readonly number[]
   readonly #stableResetMs: number
   readonly #listeners = new Set<(status: HostStatusSnapshot) => void>()
+  readonly #eventListeners = new Set<(event: HostEventMessage) => void>()
   readonly #pending = new Map<string, PendingRequest>()
   readonly #exitWaiters = new Map<number, Set<() => void>>()
   readonly #pluginPreferences = new Map<string, boolean>()
@@ -121,6 +123,13 @@ export class HostSupervisor {
     this.#listeners.add(listener)
     return () => {
       this.#listeners.delete(listener)
+    }
+  }
+
+  subscribeEvents(listener: (event: HostEventMessage) => void): () => void {
+    this.#eventListeners.add(listener)
+    return () => {
+      this.#eventListeners.delete(listener)
     }
   }
 
@@ -172,6 +181,22 @@ export class HostSupervisor {
 
   invokeTool(pluginId: string, toolId: string): Promise<HostResponsePayloadMap['tools.invoke']> {
     return this.#request('tools.invoke', { pluginId, toolId })
+  }
+
+  getModelSettings(): Promise<HostResponsePayloadMap['model.getSettings']> {
+    return this.#request('model.getSettings', {})
+  }
+
+  setModelSettings(payload: HostRequestPayloadMap['model.setSettings']): Promise<HostResponsePayloadMap['model.setSettings']> {
+    return this.#request('model.setSettings', payload)
+  }
+
+  startModelChat(payload: HostRequestPayloadMap['model.chat.start']): Promise<HostResponsePayloadMap['model.chat.start']> {
+    return this.#request('model.chat.start', payload)
+  }
+
+  cancelModelChat(streamId: string): Promise<HostResponsePayloadMap['model.chat.cancel']> {
+    return this.#request('model.chat.cancel', { streamId })
   }
 
   stop(): Promise<void> {
@@ -302,6 +327,10 @@ export class HostSupervisor {
       this.#terminateFailedBinding(binding, parsed.error.toPayload())
       return
     }
+    if (parsed.data.kind === 'event') {
+      this.#onEvent(binding, parsed.data)
+      return
+    }
     if (parsed.data.kind !== 'response') return
     const pending = this.#pending.get(parsed.data.requestId)
     if (!pending || pending.generation !== binding.generation) return
@@ -324,6 +353,26 @@ export class HostSupervisor {
       return
     }
     this.#settlePending(pending, parsed.data.payload)
+  }
+
+  #onEvent(binding: ProcessBinding, event: HostEventMessage): void {
+    if (event.event === 'host.statusChanged') return
+    if (event.payload.generation !== binding.generation) {
+      this.#terminateFailedBinding(binding, {
+        code: 'RESPONSE_MISMATCH',
+        message: 'PC Host event generation did not match the supervised process.',
+        retryable: true,
+      })
+      return
+    }
+    for (const listener of this.#eventListeners) {
+      try {
+        listener(event)
+      }
+      catch {
+        // A desktop listener must not take down the supervised host.
+      }
+    }
   }
 
   #onFatal(binding: ProcessBinding, message: string): void {

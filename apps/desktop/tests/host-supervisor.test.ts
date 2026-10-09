@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  createHostEvent,
   createHostSuccessResponse,
   type HostMethod,
   type HostRequest,
@@ -288,6 +289,39 @@ describe('HostSupervisor', () => {
     await failed
     expect(spawnCalls).toBe(2)
     expect(supervisor.getStatus()).toMatchObject({ state: 'failed', generation: 2 })
+    await supervisor.stop()
+  })
+
+  it('forwards current model events and stops the host when an event generation mismatches', async () => {
+    const processes: FakeHostProcess[] = []
+    const supervisor = createSupervisor(processes)
+    const events: unknown[] = []
+    supervisor.subscribeEvents(event => { events.push(event) })
+    const started = supervisor.start()
+    processes[0]!.emitSpawn()
+    respondToHandshake(processes[0]!)
+    await started
+    processes[0]!.emitMessage(createHostEvent('host.statusChanged', { state: 'ready', generation: 1 }))
+    const delta = createHostEvent('model.chat.delta', {
+      streamId: 'stream-1',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      generation: 1,
+      textDelta: 'hi',
+    })
+    processes[0]!.emitMessage(delta)
+    expect(events).toEqual([delta])
+    processes[0]!.emitMessage(createHostEvent('model.chat.cancelled', {
+      streamId: 'stream-1',
+      conversationId: 'conversation-assistant',
+      assistantMessageId: 'assistant-1',
+      generation: 9,
+      partialText: 'hi',
+    }))
+    expect(processes[0]!.terminateCalls).toBe(1)
+    expect(events).toHaveLength(1)
+    expect(JSON.stringify(events)).not.toContain('sk-')
+    processes[0]!.emitExit(1)
     await supervisor.stop()
   })
 })

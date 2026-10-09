@@ -1,6 +1,39 @@
 export {}
 
-import type { HostPluginCatalog, HostStatusSnapshot } from '@more-than-chat/protocol'
+import type {
+  HostPluginCatalog,
+  HostStatusSnapshot,
+  ModelChatMessage,
+  ModelProviderMode,
+  ModelSettingsSnapshot,
+} from '@more-than-chat/protocol'
+
+export interface ModelClientEvent {
+  type: 'delta' | 'completed' | 'failed' | 'cancelled'
+  streamId: string
+  conversationId: string
+  assistantMessageId: string
+  generation: number
+  textDelta?: string
+  text?: string
+  partialText?: string
+  errorMessage?: string
+}
+
+export interface ModelSettingsInput {
+  baseUrl?: string
+  model?: string
+  providerMode?: ModelProviderMode
+  apiKey?: string
+  clearApiKey?: boolean
+}
+
+export interface ModelStreamRef {
+  streamId: string
+  conversationId: string
+  assistantMessageId: string
+  generation: number
+}
 
 declare global {
   interface Window {
@@ -18,7 +51,17 @@ declare global {
         sentAtMs: number
         hostReceivedAtMs: number
       }>
+      getModelSettings(): Promise<ModelSettingsSnapshot>
+      setModelSettings(input: ModelSettingsInput): Promise<ModelSettingsSnapshot>
+      startModelChat(input: {
+        streamId: string
+        conversationId: string
+        assistantMessageId: string
+        messages: ModelChatMessage[]
+      }): Promise<ModelStreamRef>
+      cancelModelChat(streamId: string): Promise<{ streamId: string; cancelled: true }>
       onHostStatusChanged(listener: (status: HostStatusSnapshot) => void): () => void
+      onModelChatEvent(listener: (event: ModelClientEvent) => void): () => void
     }
   }
 }

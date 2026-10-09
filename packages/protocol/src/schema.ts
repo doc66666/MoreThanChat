@@ -2,7 +2,36 @@ const protocolVersion = { const: 1 } as const;
 const nonEmptyString = { type: "string", minLength: 1, pattern: ".*\\S.*" } as const;
 const requestId = { ...nonEmptyString, maxLength: 256 } as const;
 const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke'] as const;
+const modelMethods = ['model.getSettings', 'model.setSettings', 'model.chat.start', 'model.chat.cancel'] as const;
+const boundedId = { ...nonEmptyString, maxLength: 256 } as const;
+const modelSettings = {
+  type: 'object', additionalProperties: false, required: ['baseUrl', 'model', 'providerMode', 'hasApiKey'],
+  properties: {
+    baseUrl: { ...nonEmptyString, maxLength: 2048 },
+    model: { ...nonEmptyString, maxLength: 256 },
+    providerMode: { enum: ['mock', 'openai-compatible'] },
+    hasApiKey: { type: 'boolean' },
+  },
+} as const;
+const modelMessages = {
+  type: 'array', minItems: 1, maxItems: 200, items: {
+    type: 'object', additionalProperties: false, required: ['role', 'content'],
+    properties: {
+      role: { enum: ['system', 'user', 'assistant'] },
+      content: { type: 'string', maxLength: 100000 },
+    },
+  },
+} as const;
 const generation = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } as const;
+const streamIdentityProperties = {
+  streamId: boundedId,
+  conversationId: boundedId,
+  assistantMessageId: boundedId,
+} as const;
+const streamRefProperties = {
+  ...streamIdentityProperties,
+  generation,
+} as const;
 const pluginCatalog = {
   type: 'object', additionalProperties: false, required: ['generation', 'plugins'],
   properties: {
@@ -53,6 +82,18 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/pluginListResponse' },
     { $ref: '#/$defs/pluginSetEnabledResponse' },
     { $ref: '#/$defs/toolInvokeResponse' },
+    { $ref: '#/$defs/modelGetSettingsRequest' },
+    { $ref: '#/$defs/modelSetSettingsRequest' },
+    { $ref: '#/$defs/modelChatStartRequest' },
+    { $ref: '#/$defs/modelChatCancelRequest' },
+    { $ref: '#/$defs/modelGetSettingsResponse' },
+    { $ref: '#/$defs/modelSetSettingsResponse' },
+    { $ref: '#/$defs/modelChatStartResponse' },
+    { $ref: '#/$defs/modelChatCancelResponse' },
+    { $ref: '#/$defs/modelChatDeltaEvent' },
+    { $ref: '#/$defs/modelChatCompletedEvent' },
+    { $ref: '#/$defs/modelChatFailedEvent' },
+    { $ref: '#/$defs/modelChatCancelledEvent' },
   ],
   $defs: {
     protocolError: {
@@ -77,6 +118,10 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
             "SHUTTING_DOWN",
             'PLUGIN_NOT_FOUND',
             'TOOL_UNAVAILABLE',
+            'MODEL_NOT_CONFIGURED',
+            'MODEL_REQUEST_FAILED',
+            'MODEL_STREAM_NOT_FOUND',
+            'CREDENTIAL_UNAVAILABLE',
           ],
         },
         message: nonEmptyString,
@@ -224,7 +269,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
         protocolVersion,
         kind: { const: "response" },
         requestId,
-        method: { enum: ["host.handshake", "diagnostics.ping", "host.shutdown", ...pluginMethods] },
+        method: { enum: ["host.handshake", "diagnostics.ping", "host.shutdown", ...pluginMethods, ...modelMethods] },
         ok: { const: false },
         error: { $ref: "#/$defs/protocolError" },
       },
@@ -249,5 +294,90 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     pluginSetEnabledResponse: response('plugins.setEnabled', pluginCatalog),
     toolInvokeResponse: response('tools.invoke', { type: 'object', additionalProperties: false,
       required: ['generation', 'text'], properties: { generation, text: nonEmptyString } }),
+    modelGetSettingsRequest: request('model.getSettings', { type: 'object', additionalProperties: false }),
+    modelSetSettingsRequest: request('model.setSettings', {
+      type: 'object', additionalProperties: false,
+      properties: {
+        baseUrl: { ...nonEmptyString, maxLength: 2048 },
+        model: { ...nonEmptyString, maxLength: 256 },
+        providerMode: { enum: ['mock', 'openai-compatible'] },
+        apiKey: { ...nonEmptyString, maxLength: 4096 },
+        clearApiKey: { type: 'boolean' },
+      },
+    }),
+    modelChatStartRequest: request('model.chat.start', {
+      type: 'object', additionalProperties: false,
+      required: ['streamId', 'conversationId', 'assistantMessageId', 'messages'],
+      properties: { ...streamIdentityProperties, messages: modelMessages },
+    }),
+    modelChatCancelRequest: request('model.chat.cancel', {
+      type: 'object', additionalProperties: false,
+      required: ['streamId'],
+      properties: { streamId: boundedId },
+    }),
+    modelGetSettingsResponse: response('model.getSettings', modelSettings),
+    modelSetSettingsResponse: response('model.setSettings', modelSettings),
+    modelChatStartResponse: response('model.chat.start', {
+      type: 'object', additionalProperties: false,
+      required: ['streamId', 'conversationId', 'assistantMessageId', 'generation'],
+      properties: streamRefProperties,
+    }),
+    modelChatCancelResponse: response('model.chat.cancel', {
+      type: 'object', additionalProperties: false,
+      required: ['streamId', 'cancelled'],
+      properties: { streamId: boundedId, cancelled: { const: true } },
+    }),
+    modelChatDeltaEvent: {
+      type: 'object', additionalProperties: false,
+      required: ['protocolVersion', 'kind', 'event', 'payload'],
+      properties: {
+        protocolVersion, kind: { const: 'event' }, event: { const: 'model.chat.delta' },
+        payload: {
+          type: 'object', additionalProperties: false,
+          required: ['streamId', 'conversationId', 'assistantMessageId', 'generation', 'textDelta'],
+          properties: { ...streamRefProperties, textDelta: { type: 'string', maxLength: 100000 } },
+        },
+      },
+    },
+    modelChatCompletedEvent: {
+      type: 'object', additionalProperties: false,
+      required: ['protocolVersion', 'kind', 'event', 'payload'],
+      properties: {
+        protocolVersion, kind: { const: 'event' }, event: { const: 'model.chat.completed' },
+        payload: {
+          type: 'object', additionalProperties: false,
+          required: ['streamId', 'conversationId', 'assistantMessageId', 'generation', 'text'],
+          properties: { ...streamRefProperties, text: { type: 'string', maxLength: 500000 } },
+        },
+      },
+    },
+    modelChatFailedEvent: {
+      type: 'object', additionalProperties: false,
+      required: ['protocolVersion', 'kind', 'event', 'payload'],
+      properties: {
+        protocolVersion, kind: { const: 'event' }, event: { const: 'model.chat.failed' },
+        payload: {
+          type: 'object', additionalProperties: false,
+          required: ['streamId', 'conversationId', 'assistantMessageId', 'generation', 'partialText', 'error'],
+          properties: {
+            ...streamRefProperties,
+            partialText: { type: 'string', maxLength: 500000 },
+            error: { $ref: '#/$defs/protocolError' },
+          },
+        },
+      },
+    },
+    modelChatCancelledEvent: {
+      type: 'object', additionalProperties: false,
+      required: ['protocolVersion', 'kind', 'event', 'payload'],
+      properties: {
+        protocolVersion, kind: { const: 'event' }, event: { const: 'model.chat.cancelled' },
+        payload: {
+          type: 'object', additionalProperties: false,
+          required: ['streamId', 'conversationId', 'assistantMessageId', 'generation', 'partialText'],
+          properties: { ...streamRefProperties, partialText: { type: 'string', maxLength: 500000 } },
+        },
+      },
+    },
   },
 } as const;

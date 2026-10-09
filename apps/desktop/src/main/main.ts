@@ -3,12 +3,15 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createElectronHostProcessFactory } from './electron-host-process'
 import { HostSupervisor } from './host-supervisor'
+import { toClientModelEvent } from './model-client-event'
+import { redactSecretFields } from './secret-redaction'
 import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
 
 const MAX_STATE_BYTES = 8 * 1024 * 1024
 let mainWindow: BrowserWindow | null = null
 let hostSupervisor: HostSupervisor | null = null
 let hostStatusCleanup: (() => void) | null = null
+let hostEventCleanup: (() => void) | null = null
 let quitAfterHostStops = false
 
 if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
@@ -33,7 +36,7 @@ async function loadState(): Promise<unknown | null> {
 }
 
 async function saveState(value: unknown): Promise<void> {
-  const raw = JSON.stringify(value)
+  const raw = JSON.stringify(redactSecretFields(value))
   if (Buffer.byteLength(raw, 'utf8') > MAX_STATE_BYTES) throw new Error('Chat state exceeds the local storage limit.')
 
   const target = statePath()
@@ -84,6 +87,32 @@ function registerIpc(): void {
     if (request.kind !== 'request' || request.method !== 'tools.invoke') throw new Error('Invalid tool request.')
     return hostSupervisor.invokeTool(request.payload.pluginId, request.payload.toolId)
   })
+  ipcMain.handle('host:model:get-settings', event => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    return hostSupervisor.getModelSettings()
+  })
+  ipcMain.handle('host:model:set-settings', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('model.setSettings', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'model.setSettings') throw new Error('Invalid model settings.')
+    return hostSupervisor.setModelSettings(request.payload)
+  })
+  ipcMain.handle('host:model:chat-start', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('model.chat.start', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'model.chat.start') throw new Error('Invalid model chat request.')
+    return hostSupervisor.startModelChat(request.payload)
+  })
+  ipcMain.handle('host:model:chat-cancel', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('model.chat.cancel', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'model.chat.cancel') throw new Error('Invalid model cancel request.')
+    return hostSupervisor.cancelModelChat(request.payload.streamId)
+  })
 }
 
 function assertTrustedIpc(event: IpcMainInvokeEvent): void {
@@ -100,6 +129,7 @@ function startHostSupervisor(): void {
       entryPath: hostEntryPath,
       cwd: path.dirname(hostEntryPath),
       environment: {
+        MTC_HOST_DATA_DIR: path.join(app.getPath('userData'), 'host-private'),
         MTC_HOST_QA_CRASH_ONCE: process.env.MTC_QA_HOST_CRASH_ONCE === '1' ? '1' : undefined,
       },
     }),
@@ -107,6 +137,13 @@ function startHostSupervisor(): void {
   hostStatusCleanup = hostSupervisor.subscribe(status => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('host:status:changed', status)
+    }
+  })
+  hostEventCleanup = hostSupervisor.subscribeEvents(event => {
+    const clientEvent = toClientModelEvent(event)
+    if (!clientEvent) return
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('host:model:event', clientEvent)
     }
   })
   void hostSupervisor.start().catch(error => {
@@ -195,6 +232,8 @@ app.on('before-quit', event => {
   quitAfterHostStops = true
   hostStatusCleanup?.()
   hostStatusCleanup = null
+  hostEventCleanup?.()
+  hostEventCleanup = null
   void hostSupervisor.stop().catch(error => {
     console.error('[pc-host] Failed to stop cleanly:', error)
   }).finally(() => app.quit())

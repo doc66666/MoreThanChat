@@ -135,7 +135,11 @@ button { color: inherit; }
 .send-area { display: flex; align-items: center; gap: 11px; }
 .send-area span { color: #aaacb4; font-size: 9px; }
 .composer-toolbar .send-button { background: var(--purple); color: white; }
+.composer-toolbar .send-button.stop { width: auto; padding: 0 12px; background: #a94b4b; font-size: 12px; font-weight: 700; }
 .composer-toolbar .send-button:disabled { background: #d7d8df; cursor: default; }
+.message-row.status-failed:not(.own) .bubble { background: #fff1f1; }
+.message-row.status-cancelled:not(.own) .bubble { background: #f3f4f7; }
+.message-row.status-streaming:not(.own) .bubble { background: #eef8f4; }
 
 .details-panel { grid-row: 2; background: #fbfbfc; border-left: 1px solid var(--border); padding: 17px 16px; overflow: auto; }
 .details-header { height: 38px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
@@ -157,7 +161,14 @@ button { color: inherit; }
 
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 8px; padding: 10px 15px; border-radius: 11px; background: #272a34; color: white; box-shadow: 0 10px 30px rgba(0,0,0,.18); font-size: 12px; }
 .drawer-backdrop, .modal-backdrop { position: fixed; inset: 38px 0 0; z-index: 30; background: rgba(25,27,36,.2); backdrop-filter: blur(2px); }
-.plugin-drawer { margin-left: auto; width: 420px; height: 100%; padding: 26px; overflow-y: auto; background: white; box-shadow: -15px 0 40px rgba(30,32,42,.12); }
+.plugin-drawer { margin-left: auto; width: min(420px, 100%); height: 100%; padding: 26px; overflow-y: auto; background: white; box-shadow: -15px 0 40px rgba(30,32,42,.12); }
+.settings-drawer { display: flex; flex-direction: column; gap: 12px; }
+.settings-note { margin: 8px 0 4px; color: #6f7280; font-size: 12px; line-height: 1.55; }
+.settings-field { display: grid; gap: 6px; }
+.settings-field span { font-size: 11px; font-weight: 700; }
+.settings-field input, .settings-field select { width: 100%; height: 40px; padding: 0 12px; border: 1px solid #dedfe5; border-radius: 11px; background: white; outline: none; }
+.settings-field input:focus, .settings-field select:focus { border-color: #aaa4ef; box-shadow: 0 0 0 3px rgba(101,91,231,.08); }
+.settings-error { margin: 0; color: #b64d4d; font-size: 12px; line-height: 1.45; }
 .drawer-header { display: flex; align-items: center; justify-content: space-between; }
 .drawer-header h2 { margin: 0; font-size: 21px; }
 .plugin-list { margin-top: 24px; display: grid; gap: 11px; }
@@ -177,14 +188,14 @@ button { color: inherit; }
 .plugin-empty h3 { margin: 14px 0 7px; color: #50535f; font-size: 15px; }
 .plugin-empty p { margin: 0 auto; max-width: 270px; line-height: 1.6; font-size: 11px; }
 .modal-backdrop { display: grid; place-items: center; }
-.new-chat-dialog { width: 430px; padding: 30px; border-radius: 21px; background: white; box-shadow: 0 22px 70px rgba(25,27,36,.2); }
+.new-chat-dialog { width: min(430px, calc(100% - 32px)); padding: 30px; border-radius: 21px; background: white; box-shadow: 0 22px 70px rgba(25,27,36,.2); }
 .dialog-icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; color: var(--purple); background: var(--purple-soft); }
 .new-chat-dialog h2 { margin: 17px 0 6px; font-size: 20px; }
 .new-chat-dialog > p { margin: 0 0 22px; color: #858894; line-height: 1.55; font-size: 11px; }
 .new-chat-dialog label span { display: block; margin-bottom: 7px; font-size: 11px; font-weight: 700; }
 .new-chat-dialog input { width: 100%; height: 42px; padding: 0 12px; border: 1px solid #dedfe5; border-radius: 11px; outline: none; }
 .new-chat-dialog input:focus { border-color: #aaa4ef; box-shadow: 0 0 0 3px rgba(101,91,231,.08); }
-.kind-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+.kind-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
 .kind-picker button { height: 46px; border: 1px solid #e2e3e8; border-radius: 11px; background: white; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-size: 12px; }
 .kind-picker button.active { border-color: #aaa4ef; color: var(--purple); background: #f5f4fe; }
 .kind-picker svg { width: 17px; }

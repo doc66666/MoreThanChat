@@ -1,5 +1,9 @@
 import type { ParentPort } from 'electron'
+import os from 'node:os'
+import path from 'node:path'
 import { HostPluginError, HostPluginService } from './plugin-service'
+import { ModelService } from './model-service'
+import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
   HOST_METHODS,
   HOST_PROTOCOL_VERSION,
@@ -17,8 +21,14 @@ const HOST_NAME = 'MoreThanChat PC Host'
 const HOST_VERSION = '0.1.0'
 const generation = parseGeneration(process.env.MTC_HOST_GENERATION)
 const plugins = new HostPluginService(generation)
+const model = new ModelService({
+  dataDir: process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private'),
+  generation,
+})
 const pluginsReady = plugins.start()
+const modelReady = model.load()
 void pluginsReady.catch(reportFatalError)
+void modelReady.catch(reportFatalError)
 const parentPort = (process as NodeJS.Process & { parentPort?: ParentPort }).parentPort
 let shuttingDown = false
 let qaCrashScheduled = false
@@ -43,16 +53,13 @@ async function handleIncoming(raw: unknown): Promise<void> {
     await handleRequest(parsed.data)
   }
   catch (error) {
-    parentPort.postMessage(createHostErrorResponse(parsed.data, {
-      code: error instanceof HostPluginError ? error.code : 'INTERNAL_ERROR',
-      message: error instanceof Error ? error.message : String(error),
-      retryable: false,
-    }))
+    parentPort.postMessage(createHostErrorResponse(parsed.data, protocolError(error)))
   }
 }
 
 async function handleRequest(request: HostRequest): Promise<void> {
   await pluginsReady
+  await modelReady
   if (shuttingDown && request.method !== 'host.shutdown') {
     parentPort.postMessage(createHostErrorResponse(request, {
       code: 'SHUTTING_DOWN',
@@ -91,6 +98,7 @@ async function handleRequest(request: HostRequest): Promise<void> {
     }
     case 'host.shutdown': {
       shuttingDown = true
+      model.close()
       await plugins.stop()
       parentPort.postMessage(createHostSuccessResponse(request, { accepted: true }))
       setTimeout(() => process.exit(0), 20).unref()
@@ -106,6 +114,33 @@ async function handleRequest(request: HostRequest): Promise<void> {
     case 'tools.invoke':
       parentPort.postMessage(createHostSuccessResponse(request, await plugins.invoke(request.payload.pluginId, request.payload.toolId)))
       return
+    case 'model.getSettings':
+      parentPort.postMessage(createHostSuccessResponse(request, model.getSettings()))
+      return
+    case 'model.setSettings':
+      parentPort.postMessage(createHostSuccessResponse(request, await model.setSettings(request.payload)))
+      return
+    case 'model.chat.start':
+      parentPort.postMessage(createHostSuccessResponse(request, model.start(request.payload, emitModelEvent)))
+      return
+    case 'model.chat.cancel':
+      parentPort.postMessage(createHostSuccessResponse(request, model.cancel(request.payload.streamId)))
+      return
+    default:
+      parentPort.postMessage(createHostErrorResponse(request, {
+        code: 'UNKNOWN_METHOD',
+        message: 'PC Host does not implement this method.',
+        retryable: false,
+      }))
+  }
+}
+
+function emitModelEvent(event: unknown): void {
+  try {
+    parentPort.postMessage(event)
+  }
+  catch {
+    // The parent may already be gone while a stream is finishing.
   }
 }
 
@@ -131,12 +166,21 @@ function parseGeneration(value: string | undefined): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1
 }
 
+function protocolError(error: unknown): ProtocolErrorPayload {
+  if (error instanceof ModelServiceError) {
+    return { code: error.code, message: sanitizeProviderText(error.message, ''), retryable: error.retryable }
+  }
+  if (error instanceof HostPluginError) return { code: error.code, message: error.message, retryable: false }
+  const message = error instanceof Error ? error.message : 'PC Host failed to handle the request.'
+  return { code: 'INTERNAL_ERROR', message: sanitizeProviderText(message, ''), retryable: false }
+}
+
 function reportFatalError(error: unknown): void {
   if (fatalExitScheduled) return
   fatalExitScheduled = true
   const payload: ProtocolErrorPayload = {
     code: 'INTERNAL_ERROR',
-    message: error instanceof Error ? error.message : String(error),
+    message: sanitizeProviderText(error instanceof Error ? error.message : 'PC Host failed.', ''),
     retryable: false,
   }
   try {

@@ -7,11 +7,21 @@ export const HOST_METHODS = [
   "plugins.list",
   "plugins.setEnabled",
   "tools.invoke",
+  "model.getSettings",
+  "model.setSettings",
+  "model.chat.start",
+  "model.chat.cancel",
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];
 
-export const HOST_EVENTS = ["host.statusChanged"] as const;
+export const HOST_EVENTS = [
+  "host.statusChanged",
+  "model.chat.delta",
+  "model.chat.completed",
+  "model.chat.failed",
+  "model.chat.cancelled",
+] as const;
 
 export type HostEvent = (typeof HOST_EVENTS)[number];
 
@@ -41,6 +51,10 @@ export const PROTOCOL_ERROR_CODES = [
   "SHUTTING_DOWN",
   "PLUGIN_NOT_FOUND",
   "TOOL_UNAVAILABLE",
+  "MODEL_NOT_CONFIGURED",
+  "MODEL_REQUEST_FAILED",
+  "MODEL_STREAM_NOT_FOUND",
+  "CREDENTIAL_UNAVAILABLE",
 ] as const;
 
 export type ProtocolErrorCode = (typeof PROTOCOL_ERROR_CODES)[number];
@@ -77,6 +91,29 @@ export interface HostPluginCatalog {
   plugins: HostPluginSnapshot[];
 }
 
+export const MODEL_PROVIDER_MODES = ["mock", "openai-compatible"] as const;
+export type ModelProviderMode = (typeof MODEL_PROVIDER_MODES)[number];
+
+export interface ModelChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/** Safe settings snapshot: never includes the raw API key. */
+export interface ModelSettingsSnapshot {
+  baseUrl: string;
+  model: string;
+  providerMode: ModelProviderMode;
+  hasApiKey: boolean;
+}
+
+export interface ModelChatStreamRef {
+  streamId: string;
+  conversationId: string;
+  assistantMessageId: string;
+  generation: number;
+}
+
 export interface HostRequestPayloadMap {
   "host.handshake": {
     clientName: string;
@@ -92,6 +129,21 @@ export interface HostRequestPayloadMap {
   "plugins.list": Record<string, never>;
   "plugins.setEnabled": { pluginId: string; enabled: boolean };
   "tools.invoke": { pluginId: string; toolId: string };
+  "model.getSettings": Record<string, never>;
+  "model.setSettings": {
+    baseUrl?: string;
+    model?: string;
+    providerMode?: ModelProviderMode;
+    apiKey?: string;
+    clearApiKey?: boolean;
+  };
+  "model.chat.start": {
+    streamId: string;
+    conversationId: string;
+    assistantMessageId: string;
+    messages: ModelChatMessage[];
+  };
+  "model.chat.cancel": { streamId: string };
 }
 
 export interface HostResponsePayloadMap {
@@ -111,10 +163,18 @@ export interface HostResponsePayloadMap {
   "plugins.list": HostPluginCatalog;
   "plugins.setEnabled": HostPluginCatalog;
   "tools.invoke": { generation: number; text: string };
+  "model.getSettings": ModelSettingsSnapshot;
+  "model.setSettings": ModelSettingsSnapshot;
+  "model.chat.start": ModelChatStreamRef;
+  "model.chat.cancel": { streamId: string; cancelled: true };
 }
 
 export interface HostEventPayloadMap {
   "host.statusChanged": HostStatusSnapshot;
+  "model.chat.delta": ModelChatStreamRef & { textDelta: string };
+  "model.chat.completed": ModelChatStreamRef & { text: string };
+  "model.chat.failed": ModelChatStreamRef & { partialText: string; error: ProtocolErrorPayload };
+  "model.chat.cancelled": ModelChatStreamRef & { partialText: string };
 }
 
 export interface HostRequestEnvelope<M extends HostMethod = HostMethod> {
@@ -249,6 +309,14 @@ const parseNonEmptyString = (
     throw new ProtocolValidationError(code, `${path} must be a non-empty string`, path);
   }
   return value;
+};
+
+const parseBoundedId = (value: unknown, path: string): string => {
+  const parsed = parseNonEmptyString(value, path, "INVALID_PAYLOAD");
+  if (parsed.length > 256) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path} must not exceed 256 characters`, path);
+  }
+  return parsed;
 };
 
 const parseRequestId = (value: unknown): string => {
@@ -400,6 +468,204 @@ export const parseHostPluginCatalog = (value: unknown): HostPluginCatalog => {
   return { generation: parseGeneration(object.generation, '$.payload.generation'), plugins };
 };
 
+
+export const parseModelSettingsSnapshot = (value: unknown, path = "$.payload"): ModelSettingsSnapshot => {
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["baseUrl", "model", "providerMode", "hasApiKey"], [], path, "INVALID_PAYLOAD");
+  if (!isOneOf(MODEL_PROVIDER_MODES, object.providerMode)) {
+    throw new ProtocolValidationError(
+      "INVALID_PAYLOAD",
+      `${path}.providerMode is not a known model provider mode`,
+      `${path}.providerMode`,
+    );
+  }
+  if (typeof object.hasApiKey !== "boolean") {
+    throw new ProtocolValidationError(
+      "INVALID_PAYLOAD",
+      `${path}.hasApiKey must be a boolean`,
+      `${path}.hasApiKey`,
+    );
+  }
+  return {
+    baseUrl: parseNonEmptyString(object.baseUrl, `${path}.baseUrl`, "INVALID_PAYLOAD"),
+    model: parseNonEmptyString(object.model, `${path}.model`, "INVALID_PAYLOAD"),
+    providerMode: object.providerMode,
+    hasApiKey: object.hasApiKey,
+  };
+};
+
+const parseModelChatMessages = (value: unknown, path: string): ModelChatMessage[] => {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path} must be a non-empty array`, path);
+  }
+  if (value.length > 200) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path} must not exceed 200 messages`, path);
+  }
+  const roles = ["system", "user", "assistant"] as const;
+  return value.map((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    const object = asObject(item, itemPath, "INVALID_PAYLOAD");
+    assertKeys(object, ["role", "content"], [], itemPath, "INVALID_PAYLOAD");
+    if (!isOneOf(roles, object.role)) {
+      throw new ProtocolValidationError("INVALID_PAYLOAD", `${itemPath}.role is invalid`, `${itemPath}.role`);
+    }
+    if (typeof object.content !== "string" || object.content.length > 100_000) {
+      throw new ProtocolValidationError(
+        "INVALID_PAYLOAD",
+        `${itemPath}.content must be a string up to 100000 characters`,
+        `${itemPath}.content`,
+      );
+    }
+    return { role: object.role, content: object.content };
+  });
+};
+
+const parseModelSetSettingsRequest = (value: unknown): HostRequestPayloadMap["model.setSettings"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, [], ["baseUrl", "model", "providerMode", "apiKey", "clearApiKey"], path, "INVALID_PAYLOAD");
+  const result: HostRequestPayloadMap["model.setSettings"] = {};
+  if (hasOwn(object, "baseUrl")) {
+    result.baseUrl = parseNonEmptyString(object.baseUrl, `${path}.baseUrl`, "INVALID_PAYLOAD");
+    if (result.baseUrl.length > 2048) {
+      throw new ProtocolValidationError("INVALID_PAYLOAD", "baseUrl is too long", `${path}.baseUrl`);
+    }
+  }
+  if (hasOwn(object, "model")) {
+    result.model = parseNonEmptyString(object.model, `${path}.model`, "INVALID_PAYLOAD");
+    if (result.model.length > 256) {
+      throw new ProtocolValidationError("INVALID_PAYLOAD", "model is too long", `${path}.model`);
+    }
+  }
+  if (hasOwn(object, "providerMode")) {
+    if (!isOneOf(MODEL_PROVIDER_MODES, object.providerMode)) {
+      throw new ProtocolValidationError("INVALID_PAYLOAD", "providerMode is invalid", `${path}.providerMode`);
+    }
+    result.providerMode = object.providerMode;
+  }
+  if (hasOwn(object, "apiKey")) {
+    if (typeof object.apiKey !== "string" || object.apiKey.trim().length === 0 || object.apiKey.length > 4096) {
+      throw new ProtocolValidationError(
+        "INVALID_PAYLOAD",
+        `${path}.apiKey must be a non-empty string up to 4096 characters`,
+        `${path}.apiKey`,
+      );
+    }
+    result.apiKey = object.apiKey;
+  }
+  if (hasOwn(object, "clearApiKey")) {
+    if (typeof object.clearApiKey !== "boolean") {
+      throw new ProtocolValidationError("INVALID_PAYLOAD", "clearApiKey must be a boolean", `${path}.clearApiKey`);
+    }
+    result.clearApiKey = object.clearApiKey;
+  }
+  return result;
+};
+
+const parseModelChatStartRequest = (value: unknown): HostRequestPayloadMap["model.chat.start"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(
+    object,
+    ["streamId", "conversationId", "assistantMessageId", "messages"],
+    [],
+    path,
+    "INVALID_PAYLOAD",
+  );
+  return {
+    streamId: parseBoundedId(object.streamId, `${path}.streamId`),
+    conversationId: parseBoundedId(object.conversationId, `${path}.conversationId`),
+    assistantMessageId: parseBoundedId(object.assistantMessageId, `${path}.assistantMessageId`),
+    messages: parseModelChatMessages(object.messages, `${path}.messages`),
+  };
+};
+
+const parseModelChatCancelRequest = (value: unknown): HostRequestPayloadMap["model.chat.cancel"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["streamId"], [], path, "INVALID_PAYLOAD");
+  return { streamId: parseBoundedId(object.streamId, `${path}.streamId`) };
+};
+
+const parseModelChatStreamRef = (value: unknown, path: string): ModelChatStreamRef => {
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  return {
+    streamId: parseBoundedId(object.streamId, `${path}.streamId`),
+    conversationId: parseBoundedId(object.conversationId, `${path}.conversationId`),
+    assistantMessageId: parseBoundedId(object.assistantMessageId, `${path}.assistantMessageId`),
+    generation: parseGeneration(object.generation, `${path}.generation`),
+  };
+};
+
+export const parseModelChatDeltaEvent = (value: unknown): HostEventPayloadMap["model.chat.delta"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(
+    object,
+    ["streamId", "conversationId", "assistantMessageId", "generation", "textDelta"],
+    [],
+    path,
+    "INVALID_PAYLOAD",
+  );
+  if (typeof object.textDelta !== "string" || object.textDelta.length > 100_000) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", "textDelta must be a string", `${path}.textDelta`);
+  }
+  return { ...parseModelChatStreamRef(object, path), textDelta: object.textDelta };
+};
+
+export const parseModelChatCompletedEvent = (value: unknown): HostEventPayloadMap["model.chat.completed"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(
+    object,
+    ["streamId", "conversationId", "assistantMessageId", "generation", "text"],
+    [],
+    path,
+    "INVALID_PAYLOAD",
+  );
+  if (typeof object.text !== "string" || object.text.length > 500_000) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", "text must be a string", `${path}.text`);
+  }
+  return { ...parseModelChatStreamRef(object, path), text: object.text };
+};
+
+export const parseModelChatFailedEvent = (value: unknown): HostEventPayloadMap["model.chat.failed"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(
+    object,
+    ["streamId", "conversationId", "assistantMessageId", "generation", "partialText", "error"],
+    [],
+    path,
+    "INVALID_PAYLOAD",
+  );
+  if (typeof object.partialText !== "string" || object.partialText.length > 500_000) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", "partialText must be a string", `${path}.partialText`);
+  }
+  return {
+    ...parseModelChatStreamRef(object, path),
+    partialText: object.partialText,
+    error: parseProtocolError(object.error, `${path}.error`),
+  };
+};
+
+export const parseModelChatCancelledEvent = (value: unknown): HostEventPayloadMap["model.chat.cancelled"] => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(
+    object,
+    ["streamId", "conversationId", "assistantMessageId", "generation", "partialText"],
+    [],
+    path,
+    "INVALID_PAYLOAD",
+  );
+  if (typeof object.partialText !== "string" || object.partialText.length > 500_000) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", "partialText must be a string", `${path}.partialText`);
+  }
+  return { ...parseModelChatStreamRef(object, path), partialText: object.partialText };
+};
+
+
 const parsePluginRequest = (method: 'plugins.list' | 'plugins.setEnabled' | 'tools.invoke', value: unknown) => {
   const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
   const keys = method === 'plugins.list' ? [] : method === 'plugins.setEnabled' ? ['pluginId', 'enabled'] : ['pluginId', 'toolId'];
@@ -496,6 +762,17 @@ const parseRequestPayload = <M extends HostMethod>(
     case "plugins.setEnabled":
     case "tools.invoke":
       return parsePluginRequest(method, value) as HostRequestPayloadMap[M];
+    case "model.getSettings": {
+      const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
+      assertKeys(object, [], [], "$.payload", "INVALID_PAYLOAD");
+      return {} as HostRequestPayloadMap[M];
+    }
+    case "model.setSettings":
+      return parseModelSetSettingsRequest(value) as HostRequestPayloadMap[M];
+    case "model.chat.start":
+      return parseModelChatStartRequest(value) as HostRequestPayloadMap[M];
+    case "model.chat.cancel":
+      return parseModelChatCancelRequest(value) as HostRequestPayloadMap[M];
   }
 };
 
@@ -578,6 +855,31 @@ const parseResponsePayload = <M extends HostMethod>(
       return {
         generation: parseGeneration(object.generation, '$.payload.generation'),
         text: parseNonEmptyString(object.text, '$.payload.text', 'INVALID_PAYLOAD'),
+      } as HostResponsePayloadMap[M];
+    }
+    case "model.getSettings":
+    case "model.setSettings":
+      return parseModelSettingsSnapshot(value) as HostResponsePayloadMap[M];
+    case "model.chat.start": {
+      const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
+      assertKeys(
+        object,
+        ["streamId", "conversationId", "assistantMessageId", "generation"],
+        [],
+        "$.payload",
+        "INVALID_PAYLOAD",
+      );
+      return parseModelChatStreamRef(object, "$.payload") as HostResponsePayloadMap[M];
+    }
+    case "model.chat.cancel": {
+      const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
+      assertKeys(object, ["streamId", "cancelled"], [], "$.payload", "INVALID_PAYLOAD");
+      if (object.cancelled !== true) {
+        throw new ProtocolValidationError("INVALID_PAYLOAD", "cancelled must be true", "$.payload.cancelled");
+      }
+      return {
+        streamId: parseBoundedId(object.streamId, "$.payload.streamId"),
+        cancelled: true as const,
       } as HostResponsePayloadMap[M];
     }
   }
@@ -678,12 +980,43 @@ const parseEvent = (object: Record<string, unknown>): HostEventMessage => {
       "$.event",
     );
   }
-  return {
-    protocolVersion: HOST_PROTOCOL_VERSION,
-    kind: "event",
-    event: object.event,
-    payload: parseHostStatusSnapshot(object.payload),
-  };
+  switch (object.event) {
+    case "host.statusChanged":
+      return {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        kind: "event",
+        event: "host.statusChanged",
+        payload: parseHostStatusSnapshot(object.payload),
+      };
+    case "model.chat.delta":
+      return {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        kind: "event",
+        event: "model.chat.delta",
+        payload: parseModelChatDeltaEvent(object.payload),
+      };
+    case "model.chat.completed":
+      return {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        kind: "event",
+        event: "model.chat.completed",
+        payload: parseModelChatCompletedEvent(object.payload),
+      };
+    case "model.chat.failed":
+      return {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        kind: "event",
+        event: "model.chat.failed",
+        payload: parseModelChatFailedEvent(object.payload),
+      };
+    case "model.chat.cancelled":
+      return {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        kind: "event",
+        event: "model.chat.cancelled",
+        payload: parseModelChatCancelledEvent(object.payload),
+      };
+  }
 };
 
 export const parseHostMessage = (value: unknown): HostMessage => {
