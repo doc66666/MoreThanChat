@@ -26,7 +26,7 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 - `model.getSettings` / `model.setSettings`：读取或更新 Base URL、模型名和提供方。响应只有 `hasApiKey`，不回传原始密钥。
 - `model.chat.start` / `model.chat.cancel`：在 Host 内开始或取消一次流式回复。
 - `pluginDrafts.inspect` / `create` / `validate` / `diagnose`：管理未安装草稿。响应不回传源码或 API Key。
-- `pluginDrafts.install`：在 `confirmed: true` 时安装声明式文本工具。响应带回插件清单，不回传工具正文或源码。`confirmed: false`、非声明式源码、危险 API 和非空权限都不会安装。内置插件和其他非声明式 id 不会被替换。成功的安装写入 `host-private/installed-static-tools`，只保存 manifest 和静态文本，重启后恢复；停用状态一并保存。再次确认同一声明式工具会在 `versions/<id>/version-N.json` 追加不可变版本并更新当前记录。更新失败时当前记录回到上一版本。
+- `pluginDrafts.install`：在 `confirmed: true` 时安装声明式文本工具或输入框动作。响应带回插件清单，不回传正文或源码。`confirmed: false`、非声明式源码、危险 API 和非空权限都不会安装。内置插件和其他非声明式 id 不会被替换。文本工具写入 `host-private/installed-static-tools`，只保存 manifest 和静态文本，重启后恢复；停用状态一并保存。再次确认同一文本工具会在 `versions/<id>/version-N.json` 追加不可变版本并更新当前记录。更新失败时当前记录回到上一版本。输入框动作进入清单的 `composerActions`，可立即调用和停用，进程退出后不再保留。
 
 当前事件：
 
@@ -67,8 +67,8 @@ pnpm verify:host
 
 ## 当前边界
 
-- PC Host 运行随应用内置的可信插件，以及用户确认后的声明式文本工具。`plugin-drafts/` 里的草稿按修订号追加保存，校验和诊断只做静态检查，不会执行源码。内置插件和其他非声明式 id 不会被草稿替换；
+- PC Host 运行随应用内置的可信插件，以及用户确认后的声明式文本工具和输入框动作。`plugin-drafts/` 里的草稿按修订号追加保存，校验和诊断只做静态检查，不会执行源码。内置插件和其他非声明式 id 不会被草稿替换；
 - API Key 只写在 Host 数据目录的 `model-credentials.json`（权限 0600）。设置快照、聊天记录、插件服务和 Renderer 都不接收原始密钥。模拟模式不会把密钥交给提供方，也不会访问网络；
 - utility process 是崩溃隔离与权限收敛边界，但不是完整恶意代码沙箱；
 - 当前开发构建从 `apps/pc-host/dist/main.js` 启动，正式安装包还需将 Host bundle 放入 `extraResources` 并验证 ASAR 路径；
-- Cordis 适配层和契约测试已接入，CI 配置已建立；下一步是安装包资源路径验证，随后进入 SQLite 与模型 Provider。声明式文本工具已能追加不可变版本，并在更新失败时恢复上一版本。任意插件的签名、阶段检查和版本切换事务仍未实现。
+- Cordis 适配层和契约测试已接入，CI 配置已建立；下一步是安装包资源路径验证，随后进入 SQLite 与模型 Provider。声明式文本工具已能追加不可变版本，并在更新失败时恢复上一版本。声明式输入框动作可立即使用和停用，尚未跨重启保留。任意插件的签名、阶段检查和版本切换事务仍未实现。

@@ -9,7 +9,7 @@ import type {
   PluginDraftReport,
   PluginDraftSummary,
 } from '@more-than-chat/protocol'
-import { isStaticTextToolManifest, parseDeclarativeTextTool, type DeclarativeTextTool } from './static-text-tool'
+import { isStaticTextToolManifest, parseDeclarativeInstall, type DeclarativeComposerAction, type DeclarativeTextTool } from './static-text-tool'
 
 export class PluginDraftError extends Error {
   constructor(readonly code: 'DRAFT_NOT_FOUND', message: string) {
@@ -115,19 +115,22 @@ export class PluginDraftService {
           installable: false,
           draft,
           summary: '需要确认后才会安装。源码不会被执行。',
-          issues: [finding('error', 'CONFIRMATION_REQUIRED', '安装声明式文本工具需要明确确认。')],
+          issues: [finding('error', 'CONFIRMATION_REQUIRED', '安装声明式文本工具或输入框动作需要明确确认。')],
         }
       }
-      const tool = parseDeclarativeTextTool(stored.source)
-      if (!tool || !isStaticTextToolManifest(assessed.manifest)) {
+      const declarative = parseDeclarativeInstall(stored.source)
+      if (!declarative || !isStaticTextToolManifest(assessed.manifest)) {
         return {
           installable: false,
           draft,
-          summary: '没有安装：这不是声明式文本工具，源码也没有执行。',
-          issues: [finding('error', 'NOT_DECLARATIVE', '草稿不是声明式文本工具，源码没有执行。')],
+          summary: '没有安装：这不是声明式文本工具或输入框动作，源码也没有执行。',
+          issues: [finding('error', 'NOT_DECLARATIVE', '草稿不是声明式文本工具或输入框动作，源码没有执行。')],
         }
       }
-      return { installable: true, manifest: assessed.manifest, tool, draft }
+      if (declarative.kind === 'text-tool') {
+        return { installable: true, kind: 'text-tool', manifest: assessed.manifest, tool: declarative.tool, draft }
+      }
+      return { installable: true, kind: 'composer-action', manifest: assessed.manifest, action: declarative.action, draft }
     })
   }
 
@@ -245,8 +248,15 @@ export type DraftInstallPlan = {
   issues: PluginDraftIssue[]
 } | {
   installable: true
+  kind: 'text-tool'
   manifest: PluginManifestV1
   tool: DeclarativeTextTool
+  draft: PluginDraftSummary
+} | {
+  installable: true
+  kind: 'composer-action'
+  manifest: PluginManifestV1
+  action: DeclarativeComposerAction
   draft: PluginDraftSummary
 }
 
@@ -320,21 +330,21 @@ function installBlockers(assessed: Assessment, source: string, ignoreInstalledId
       issues.push(issue.code === 'INSTALLED_ID' ? { ...issue, severity: 'error' } : issue)
     }
   }
-  if (!parseDeclarativeTextTool(source)) {
-    issues.push(finding('error', 'NOT_DECLARATIVE', '草稿不是声明式文本工具，源码没有执行。'))
+  if (!parseDeclarativeInstall(source)) {
+    issues.push(finding('error', 'NOT_DECLARATIVE', '草稿不是声明式文本工具或输入框动作，源码没有执行。'))
   }
   if (assessed.manifest && !isStaticTextToolManifest(assessed.manifest)) {
-    issues.push(finding('error', 'NOT_INSTALLABLE', '只接受无权限、且仅依赖 host.tools 的 pc-host 文本工具。'))
+    issues.push(finding('error', 'NOT_INSTALLABLE', '只接受无权限、且仅依赖 host.tools 的 pc-host 声明式插件。'))
   }
   return issues
 }
 
 function refusalSummary(issues: readonly PluginDraftIssue[]): string {
   if (issues.some(issue => issue.code === 'SECRET_MATERIAL')) return '没有安装：草稿包含疑似凭据。源码没有执行。'
-  if (issues.some(issue => issue.code === 'NOT_DECLARATIVE')) return '没有安装：这不是声明式文本工具，源码也没有执行。'
+  if (issues.some(issue => issue.code === 'NOT_DECLARATIVE')) return '没有安装：这不是声明式文本工具或输入框动作，源码也没有执行。'
   if (issues.some(issue => issue.code === 'INSTALLED_ID')) return '没有安装：这个 id 已经安装，草稿不会替换它。'
   if (issues.some(issue => issue.code === 'DANGEROUS_API')) return '没有安装：草稿包含未允许的 API。源码没有执行。'
-  if (issues.some(issue => issue.code === 'NOT_INSTALLABLE')) return '没有安装：manifest 不满足声明式文本工具的限制。源码没有执行。'
+  if (issues.some(issue => issue.code === 'NOT_INSTALLABLE')) return '没有安装：manifest 不满足声明式插件的限制。源码没有执行。'
   return '没有安装。源码没有执行。'
 }
 

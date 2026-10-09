@@ -89,17 +89,36 @@ function parsePluginCatalog(value: unknown): HostPluginCatalog {
   if (!value || typeof value !== 'object') throw new Error('Invalid host plugin catalog.')
   const catalog = value as HostPluginCatalog
   if (!Number.isSafeInteger(catalog.generation) || catalog.generation < 0 || !Array.isArray(catalog.plugins)) throw new Error('Invalid host plugin catalog.')
-  for (const plugin of catalog.plugins) {
-    if (!plugin || typeof plugin !== 'object' || !pluginStates.has(plugin.status)
-      || (plugin.error !== null && typeof plugin.error !== 'string') || !Array.isArray(plugin.tools)) throw new Error('Invalid host plugin.')
-    for (const key of ['id', 'displayName', 'description', 'version'] as const) {
-      if (typeof plugin[key] !== 'string' || !plugin[key].trim()) throw new Error('Invalid host plugin.')
-    }
-    for (const tool of plugin.tools) {
-      if (!tool || typeof tool.id !== 'string' || !tool.id.trim() || typeof tool.label !== 'string' || !tool.label.trim()) throw new Error('Invalid host tool.')
-    }
+  return {
+    generation: catalog.generation,
+    plugins: catalog.plugins.map(plugin => {
+      if (!plugin || typeof plugin !== 'object' || !pluginStates.has(plugin.status)
+        || (plugin.error !== null && typeof plugin.error !== 'string')
+        || !Array.isArray(plugin.tools) || !Array.isArray(plugin.composerActions)) throw new Error('Invalid host plugin.')
+      for (const key of ['id', 'displayName', 'description', 'version'] as const) {
+        if (typeof plugin[key] !== 'string' || !plugin[key].trim()) throw new Error('Invalid host plugin.')
+      }
+      return {
+        id: plugin.id,
+        displayName: plugin.displayName,
+        description: plugin.description,
+        version: plugin.version,
+        status: plugin.status,
+        error: plugin.error,
+        tools: plugin.tools.map(tool => parseContribution(tool, 'Invalid host tool.')),
+        composerActions: plugin.composerActions.map(action => parseContribution(action, 'Invalid composer action.')),
+      }
+    }),
   }
-  return catalog
+}
+
+function parseContribution(value: unknown, message: string): { id: string; label: string } {
+  if (!value || typeof value !== 'object') throw new Error(message)
+  const contribution = value as { id?: unknown; label?: unknown }
+  if (typeof contribution.id !== 'string' || !contribution.id.trim() || typeof contribution.label !== 'string' || !contribution.label.trim()) {
+    throw new Error(message)
+  }
+  return { id: contribution.id, label: contribution.label }
 }
 
 function parseHostStatus(value: unknown): HostStatusSnapshot {

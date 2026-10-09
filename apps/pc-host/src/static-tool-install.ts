@@ -13,15 +13,17 @@ type InstallOptions = {
   confirmed: boolean
 }
 
-type InstallablePlan = Extract<DraftInstallPlan, { installable: true }>
+type TextPlan = Extract<DraftInstallPlan, { kind: 'text-tool' }>
+type ComposerPlan = Extract<DraftInstallPlan, { kind: 'composer-action' }>
 
-/** Installs a confirmed declarative text tool. Draft source is never loaded or executed. */
+/** Installs a confirmed declarative text tool or composer action. Draft source is never executed. */
 export async function installConfirmedTextTool(options: InstallOptions): Promise<PluginDraftInstallResult> {
   const previous = await readUpdatable(options)
   const plan = previous
     ? await options.drafts.planInstall(options.draftId, options.confirmed, { ignoreInstalledId: true })
     : await options.drafts.planInstall(options.draftId, options.confirmed)
   if (!plan.installable) return refused(plan.draft, plan.summary, plan.issues, options.plugins.catalog())
+  if (plan.kind === 'composer-action') return installComposer(options, plan, previous)
   if (!previous || !options.store) return installFirst(options, plan)
   return installUpdate(options, plan, previous, options.store)
 }
@@ -32,7 +34,33 @@ async function readUpdatable(options: InstallOptions): Promise<StoredStaticTool 
   return record && record.manifest.id === options.draftId ? record : null
 }
 
-async function installFirst(options: InstallOptions, plan: InstallablePlan): Promise<PluginDraftInstallResult> {
+async function installComposer(
+  options: InstallOptions,
+  plan: ComposerPlan,
+  previous: StoredStaticTool | null,
+): Promise<PluginDraftInstallResult> {
+  if (previous) {
+    return refused(plan.draft, '没有安装：这个 id 已经安装，草稿不会替换它。', [
+      installIssue('INSTALLED_ID', '插件已经安装。这份草稿不会替换它。'),
+    ], options.plugins.catalog())
+  }
+  try {
+    const catalog = await options.plugins.installStaticComposerAction(plan.manifest, plan.action)
+    return {
+      installed: true,
+      draft: plan.draft,
+      ok: true,
+      summary: '已安装声明式输入框动作。现在可以在输入框使用，也可以停用。源码没有被执行。',
+      issues: [],
+      catalog,
+    }
+  }
+  catch (error) {
+    return installFailure(plan.draft, error, options.plugins.catalog(), '输入框动作')
+  }
+}
+
+async function installFirst(options: InstallOptions, plan: TextPlan): Promise<PluginDraftInstallResult> {
   try {
     const store = options.store
     const catalog = store
@@ -50,30 +78,13 @@ async function installFirst(options: InstallOptions, plan: InstallablePlan): Pro
     }
   }
   catch (error) {
-    const catalog = options.plugins.catalog()
-    if (error instanceof StaticToolInstallError && error.reason === 'already-installed') {
-      return refused(plan.draft, '没有安装：这个 id 已经安装，草稿不会替换它。', [
-        installIssue('INSTALLED_ID', '插件已经安装。这份草稿不会替换它。'),
-      ], catalog)
-    }
-    if (error instanceof StaticToolInstallError) {
-      const persisted = error.reason === 'persist-failed'
-      return refused(
-        plan.draft,
-        persisted
-          ? '没有安装：声明式文本工具未能保存，已撤回。源码没有被执行。'
-          : '没有安装：声明式文本工具未能启用。源码没有被执行。',
-        [installIssue('NOT_INSTALLABLE', persisted ? '声明式文本工具没有保存。' : '声明式文本工具没有启用。')],
-        catalog,
-      )
-    }
-    throw error
+    return installFailure(plan.draft, error, options.plugins.catalog(), '文本工具')
   }
 }
 
 async function installUpdate(
   options: InstallOptions,
-  plan: InstallablePlan,
+  plan: TextPlan,
   previous: StoredStaticTool,
   store: InstalledStaticToolStore,
 ): Promise<PluginDraftInstallResult> {
@@ -113,7 +124,7 @@ async function installUpdate(
 
 async function recoverPrevious(
   options: InstallOptions,
-  plan: InstallablePlan,
+  plan: TextPlan,
   previous: StoredStaticTool,
   store: InstalledStaticToolStore,
 ): Promise<PluginDraftInstallResult> {
@@ -132,6 +143,31 @@ async function recoverPrevious(
       installIssue('NOT_INSTALLABLE', '上一版本未能恢复。'),
     ], options.plugins.catalog())
   }
+}
+
+function installFailure(
+  draft: PluginDraftSummary,
+  error: unknown,
+  catalog: HostPluginCatalog,
+  label: '文本工具' | '输入框动作',
+): PluginDraftInstallResult {
+  if (error instanceof StaticToolInstallError && error.reason === 'already-installed') {
+    return refused(draft, '没有安装：这个 id 已经安装，草稿不会替换它。', [
+      installIssue('INSTALLED_ID', '插件已经安装。这份草稿不会替换它。'),
+    ], catalog)
+  }
+  if (error instanceof StaticToolInstallError) {
+    const persisted = error.reason === 'persist-failed'
+    return refused(
+      draft,
+      persisted
+        ? `没有安装：声明式${label}未能保存，已撤回。源码没有被执行。`
+        : `没有安装：声明式${label}未能启用。源码没有被执行。`,
+      [installIssue('NOT_INSTALLABLE', persisted ? `声明式${label}没有保存。` : `声明式${label}没有启用。`)],
+      catalog,
+    )
+  }
+  throw error
 }
 
 function nextRecord(

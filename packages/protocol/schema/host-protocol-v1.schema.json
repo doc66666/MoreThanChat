@@ -732,7 +732,8 @@
                   "version",
                   "status",
                   "error",
-                  "tools"
+                  "tools",
+                  "composerActions"
                 ],
                 "properties": {
                   "id": {
@@ -771,6 +772,29 @@
                     ]
                   },
                   "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "id",
+                        "label"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        }
+                      }
+                    }
+                  },
+                  "composerActions": {
                     "type": "array",
                     "items": {
                       "type": "object",
@@ -855,7 +879,8 @@
                   "version",
                   "status",
                   "error",
-                  "tools"
+                  "tools",
+                  "composerActions"
                 ],
                 "properties": {
                   "id": {
@@ -894,6 +919,29 @@
                     ]
                   },
                   "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "id",
+                        "label"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": ".*\\S.*"
+                        }
+                      }
+                    }
+                  },
+                  "composerActions": {
                     "type": "array",
                     "items": {
                       "type": "object",
@@ -2562,7 +2610,8 @@
                       "version",
                       "status",
                       "error",
-                      "tools"
+                      "tools",
+                      "composerActions"
                     ],
                     "properties": {
                       "id": {
@@ -2601,6 +2650,29 @@
                         ]
                       },
                       "tools": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "id",
+                            "label"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": ".*\\S.*"
+                            },
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": ".*\\S.*"
+                            }
+                          }
+                        }
+                      },
+                      "composerActions": {
                         "type": "array",
                         "items": {
                           "type": "object",

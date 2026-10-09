@@ -51,6 +51,27 @@ describe('HostPluginService', () => {
     await service.stop()
   })
 
+  it('installs a declarative composer action and keeps its text out of the catalog', async () => {
+    const service = new HostPluginService(4)
+    await service.start()
+    const marker = 'composer-static-text'
+    const catalog = await service.installStaticComposerAction(staticManifest('example.sign'), { id: 'sign', label: '署名', text: marker })
+    const installed = catalog.plugins.find(plugin => plugin.id === 'example.sign')
+    expect(installed).toMatchObject({ status: 'active', tools: [], composerActions: [{ id: 'sign', label: '署名' }] })
+    expect(JSON.stringify(catalog)).not.toContain(marker)
+    expect(catalog.plugins.find(plugin => plugin.id === 'builtin.time-tool')?.composerActions).toEqual([])
+    await expect(service.invoke('example.sign', 'sign')).resolves.toEqual({ generation: 4, text: marker })
+    const disabled = await service.setEnabled('example.sign', false)
+    expect(disabled.plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({ status: 'inactive', tools: [], composerActions: [] })
+    await expect(service.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await service.setEnabled('example.sign', true)
+    await expect(service.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: marker })
+    await expect(service.installStaticComposerAction(staticManifest('example.sign'), { id: 'sign', label: '署名', text: 'replaced' })).rejects.toMatchObject({ reason: 'already-installed' })
+    expect(service.isStaticInstall('example.sign')).toBe(true)
+    expect(service.isStaticInstall('builtin.time-tool')).toBe(false)
+    await service.stop()
+  })
+
   it('rejects unknown plugins and tools', async () => {
     const service = new HostPluginService(1)
     await service.start()

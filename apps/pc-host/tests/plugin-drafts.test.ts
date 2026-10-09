@@ -158,6 +158,38 @@ describe('PluginDraftService', () => {
     expect(leaked.persisted).toBe(false)
     await expect(installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.leak', confirmed: true })).rejects.toBeInstanceOf(PluginDraftError)
     expect(Reflect.get(globalThis, executed)).toBeUndefined()
+
+    const actionMarker = 'composer-action-marker'
+    const actionSource = JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: actionMarker })
+    await service.create({ manifestJson: manifest('example.sign'), source: actionSource })
+    const unconfirmedAction = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.sign', confirmed: false })
+    expect(unconfirmedAction.installed).toBe(false)
+    expect(unconfirmedAction.issues.map(issue => issue.code)).toContain('CONFIRMATION_REQUIRED')
+    expect(JSON.stringify(unconfirmedAction)).not.toContain(actionMarker)
+    const action = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.sign', confirmed: true })
+    expect(action.installed).toBe(true)
+    expect(action.summary).toContain('输入框动作')
+    expect(action.catalog.plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      status: 'active', tools: [], composerActions: [{ id: 'sign', label: '署名' }],
+    })
+    expect(JSON.stringify(action)).not.toContain(actionMarker)
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+    await plugins.setEnabled('example.sign', false)
+    expect(plugins.catalog().plugins.find(plugin => plugin.id === 'example.sign')?.composerActions).toEqual([])
+    await expect(plugins.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await plugins.setEnabled('example.sign', true)
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+    const actionAgain = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.sign', confirmed: true })
+    expect(actionAgain.installed).toBe(false)
+    expect(actionAgain.issues.map(issue => issue.code)).toContain('INSTALLED_ID')
+    await service.create({
+      manifestJson: manifest('example.sign-extra'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: actionMarker, source: 'nope' }),
+    })
+    const extra = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.sign-extra', confirmed: true })
+    expect(extra.installed).toBe(false)
+    expect(extra.issues.map(issue => issue.code)).toContain('NOT_DECLARATIVE')
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
     await plugins.stop()
   })
 })

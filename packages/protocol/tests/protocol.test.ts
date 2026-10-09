@@ -202,7 +202,7 @@ describe("Host protocol v1", () => {
     const list = createHostRequest('plugins.list', 'list', {});
     const response = createHostSuccessResponse(list, { generation: 2, plugins: [{
       id: 'builtin.time-tool', displayName: 'Time', description: 'Current time', version: '0.1.0',
-      status: 'active', error: null, tools: [{ id: 'current-time', label: 'Time' }],
+      status: 'active', error: null, tools: [{ id: 'current-time', label: 'Time' }], composerActions: [],
     }] });
     expect(parseHostMessage(response)).toEqual(response);
     expectProtocolError({ ...response, payload: { ...response.payload, plugins: [{ ...response.payload.plugins[0], status: 'invalid' }] } }, 'INVALID_PAYLOAD');
@@ -316,7 +316,7 @@ describe("Host protocol v1", () => {
         generation: 1,
         plugins: [{
           id: 'example.note', displayName: '草稿示例', description: '静态文本', version: '0.1.0',
-          status: 'active', error: null, tools: [{ id: 'note', label: '便签' }],
+          status: 'active', error: null, tools: [{ id: 'note', label: '便签' }], composerActions: [],
         }],
       },
     });
@@ -324,6 +324,22 @@ describe("Host protocol v1", () => {
     expect(parseHostMessage(installed)).toEqual(installed);
     expect(JSON.stringify(installed)).not.toContain(marker);
     expect(JSON.stringify(installed)).not.toContain(secret);
+    const composerCatalog = {
+      generation: 1,
+      plugins: [{
+        ...installed.payload.catalog.plugins[0]!,
+        tools: [],
+        composerActions: [{ id: 'sign', label: '署名' }],
+      }],
+    };
+    expect(parseHostMessage(createHostSuccessResponse(install, { ...installed.payload, catalog: composerCatalog }))).toMatchObject({
+      payload: { catalog: composerCatalog },
+    });
+    const leakedAction = JSON.parse(JSON.stringify(createHostSuccessResponse(install, { ...installed.payload, catalog: composerCatalog }))) as {
+      payload: { catalog: { plugins: Array<{ composerActions: Array<Record<string, string>> }> } }
+    }
+    leakedAction.payload.catalog.plugins[0]!.composerActions[0]!.text = marker
+    expectProtocolError(leakedAction, 'INVALID_PAYLOAD')
     expectProtocolError({ ...installed, payload: { ...installed.payload, source: marker } }, 'INVALID_PAYLOAD');
     const missingConfirm = createHostRequest('pluginDrafts.install', 'missing-confirm', { draftId: 'example.note', confirmed: true });
     expectProtocolError({ ...missingConfirm, payload: { draftId: 'example.note' } }, 'INVALID_PAYLOAD');

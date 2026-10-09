@@ -284,6 +284,58 @@ describe('installed declarative text tools', () => {
     await plugins.stop()
     await legacyPlugins.stop()
   })
+
+  it('installs a composer action for this session without replacing a stored text tool', async () => {
+    const directory = await makeDirectory()
+    const store = new InstalledStaticToolStore(directory)
+    const plugins = new HostPluginService(10, [])
+    await plugins.start()
+    const drafts = draftService(directory, plugins)
+    const marker = 'stored-note'
+    const actionMarker = 'session-sign-off'
+    await drafts.create({
+      manifestJson: manifest('example.note'),
+      source: JSON.stringify({ kind: 'host-text-tool', toolId: 'note', label: '便签', text: marker }),
+    })
+    expect((await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.note', confirmed: true,
+    })).installed).toBe(true)
+    await drafts.create({
+      manifestJson: manifest('example.note'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'note', label: '署名', text: actionMarker }),
+    })
+    const replaced = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.note', confirmed: true,
+    })
+    expect(replaced.installed).toBe(false)
+    expect(replaced.issues.map(issue => issue.code)).toContain('INSTALLED_ID')
+    await expect(plugins.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+
+    await drafts.create({
+      manifestJson: manifest('example.sign'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: actionMarker }),
+    })
+    const installed = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.sign', confirmed: true,
+    })
+    expect(installed.installed).toBe(true)
+    expect(installed.catalog.plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      tools: [], composerActions: [{ id: 'sign', label: '署名' }],
+    })
+    expect(JSON.stringify(installed)).not.toContain(actionMarker)
+    await expect(readFile(currentPath(directory, 'example.sign'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+    await plugins.setEnabled('example.sign', false)
+    await expect(plugins.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await plugins.stop()
+
+    const restarted = new HostPluginService(11, [])
+    await restarted.start()
+    await restoreInstalledStaticTools(store, restarted)
+    await expect(restarted.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+    expect(restarted.catalog().plugins.map(plugin => plugin.id)).toEqual(['example.note'])
+    await restarted.stop()
+  })
 })
 
 class BrokenStore extends InstalledStaticToolStore {

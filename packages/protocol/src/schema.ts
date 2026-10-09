@@ -40,12 +40,16 @@ const pluginCatalog = {
     plugins: {
       type: 'array', items: {
         type: 'object', additionalProperties: false,
-        required: ['id', 'displayName', 'description', 'version', 'status', 'error', 'tools'],
+        required: ['id', 'displayName', 'description', 'version', 'status', 'error', 'tools', 'composerActions'],
         properties: {
           id: nonEmptyString, displayName: nonEmptyString, description: nonEmptyString, version: nonEmptyString,
           status: { enum: ['inactive', 'activating', 'active', 'deactivating', 'failed'] },
           error: { type: ['string', 'null'] },
           tools: { type: 'array', items: {
+            type: 'object', additionalProperties: false, required: ['id', 'label'],
+            properties: { id: nonEmptyString, label: nonEmptyString },
+          } },
+          composerActions: { type: 'array', items: {
             type: 'object', additionalProperties: false, required: ['id', 'label'],
             properties: { id: nonEmptyString, label: nonEmptyString },
           } },

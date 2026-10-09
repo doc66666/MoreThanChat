@@ -490,8 +490,12 @@ export function App() {
         setHostPlugins(result.catalog.plugins)
       }
       await refreshPluginDrafts()
+      const installedPlugin = result.catalog.plugins.find(plugin => plugin.id === draftId)
+      const composerInstalled = (installedPlugin?.composerActions.length ?? 0) > 0
       setToast(result.installed
-        ? (alreadyInstalled ? '文本工具已更新' : '文本工具已安装，可以在输入框使用')
+        ? (alreadyInstalled
+          ? (composerInstalled ? '输入框动作已更新' : '文本工具已更新')
+          : (composerInstalled ? '输入框动作已安装，可以在输入框使用' : '文本工具已安装，可以在输入框使用'))
         : (alreadyInstalled ? result.summary : '草稿没有安装'))
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'install'); setToast(errorText(error)) }
@@ -653,6 +657,13 @@ export function App() {
                     <Sparkles size={16} /><span>{contribution.label}</span>
                   </button>
                 ))}
+                {hostPlugins.filter(plugin => plugin.status === 'active').flatMap(plugin => plugin.composerActions.map(action => (
+                  <button key={`${plugin.id}:${action.id}`} className="plugin-composer-action declarative-composer-action"
+                    data-plugin-id={plugin.id} data-action-id={action.id} disabled={hostPluginBusy}
+                    title={plugin.description} onClick={() => void runHostTool(plugin.id, action.id, action.label)}>
+                    <Sparkles size={16} /><span>{action.label}</span>
+                  </button>
+                )))}
                 {hostPlugins.filter(plugin => plugin.status === 'active').flatMap(plugin => plugin.tools.map(tool => (
                   <button key={`${plugin.id}:${tool.id}`} className="plugin-composer-action host-tool-action"
                     data-plugin-id={plugin.id} data-tool-id={tool.id} disabled={hostPluginBusy}
@@ -788,7 +799,7 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
         </div>
         <section className="draft-section">
           <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
-          <p className="settings-note">确认后只能安装固定 JSON 形状的文本工具。源码不会执行。安装后可立即使用和停用，并在 Host 重启后保留。再次确认会写入新版本；更新失败时仍使用上一版本。</p>
+          <p className="settings-note">确认后可以安装固定 JSON 形状的文本工具或输入框动作。源码不会执行。安装后可立即使用和停用。文本工具会在 Host 重启后保留；输入框动作只在本次 Host 运行期间保留。再次确认文本工具会写入新版本，更新失败时仍使用上一版本。</p>
           {(drafts?.drafts ?? []).map(item => {
             const installed = hostPlugins.some(plugin => plugin.id === item.id)
             return (
@@ -800,8 +811,8 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
                 {confirmId === item.id ? (
                   <div className="draft-confirm" data-draft-confirm={item.id}>
                     <p>{installed
-                      ? '确认用这份草稿更新已安装的文本工具？失败会保留当前版本。源码不会被执行。'
-                      : '确认安装这个声明式文本工具？源码不会被执行。'}</p>
+                      ? '确认用这份草稿更新？失败会保留当前版本。源码不会被执行。'
+                      : '确认安装这个声明式文本工具或输入框动作？源码不会被执行。'}</p>
                     <div className="draft-actions">
                       <button type="button" className="secondary-button" data-draft-confirm-cancel disabled={hostBusy} onClick={() => setConfirmId(null)}>取消</button>
                       <button type="button" className="secondary-button" data-draft-confirm-ok disabled={hostBusy} onClick={() => { setConfirmId(null); onInstallDraft(item.id) }}>{installed ? '确认更新' : '确认安装'}</button>

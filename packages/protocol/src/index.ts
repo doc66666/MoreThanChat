@@ -90,6 +90,7 @@ export interface HostPluginSnapshot {
   status: typeof HOST_PLUGIN_STATES[number];
   error: string | null;
   tools: { id: string; label: string }[];
+  composerActions: { id: string; label: string }[];
 }
 
 export interface HostPluginCatalog {
@@ -525,9 +526,9 @@ export const parseHostPluginCatalog = (value: unknown): HostPluginCatalog => {
   const plugins = object.plugins.map((value, index): HostPluginSnapshot => {
     const path = `$.payload.plugins[${index}]`;
     const plugin = asObject(value, path, 'INVALID_PAYLOAD');
-    assertKeys(plugin, ['id', 'displayName', 'description', 'version', 'status', 'error', 'tools'], [], path, 'INVALID_PAYLOAD');
-    if (!isOneOf(HOST_PLUGIN_STATES, plugin.status) || (plugin.error !== null && typeof plugin.error !== 'string') || !Array.isArray(plugin.tools)) {
-      throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid plugin state, error, or tools', path);
+    assertKeys(plugin, ['id', 'displayName', 'description', 'version', 'status', 'error', 'tools', 'composerActions'], [], path, 'INVALID_PAYLOAD');
+    if (!isOneOf(HOST_PLUGIN_STATES, plugin.status) || (plugin.error !== null && typeof plugin.error !== 'string') || !Array.isArray(plugin.tools) || !Array.isArray(plugin.composerActions)) {
+      throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid plugin state, error, tools, or composer actions', path);
     }
     return {
       id: parseNonEmptyString(plugin.id, `${path}.id`, 'INVALID_PAYLOAD'),
@@ -536,19 +537,21 @@ export const parseHostPluginCatalog = (value: unknown): HostPluginCatalog => {
       version: parseNonEmptyString(plugin.version, `${path}.version`, 'INVALID_PAYLOAD'),
       status: plugin.status,
       error: plugin.error as string | null,
-      tools: plugin.tools.map((value, toolIndex) => {
-        const toolPath = `${path}.tools[${toolIndex}]`;
-        const tool = asObject(value, toolPath, 'INVALID_PAYLOAD');
-        assertKeys(tool, ['id', 'label'], [], toolPath, 'INVALID_PAYLOAD');
-        return {
-          id: parseNonEmptyString(tool.id, `${toolPath}.id`, 'INVALID_PAYLOAD'),
-          label: parseNonEmptyString(tool.label, `${toolPath}.label`, 'INVALID_PAYLOAD'),
-        };
-      }),
+      tools: plugin.tools.map((value, toolIndex) => parseContribution(value, `${path}.tools[${toolIndex}]`)),
+      composerActions: plugin.composerActions.map((value, actionIndex) => parseContribution(value, `${path}.composerActions[${actionIndex}]`)),
     };
   });
   return { generation: parseGeneration(object.generation, '$.payload.generation'), plugins };
 };
+
+function parseContribution(value: unknown, path: string): { id: string; label: string } {
+  const contribution = asObject(value, path, 'INVALID_PAYLOAD');
+  assertKeys(contribution, ['id', 'label'], [], path, 'INVALID_PAYLOAD');
+  return {
+    id: parseNonEmptyString(contribution.id, `${path}.id`, 'INVALID_PAYLOAD'),
+    label: parseNonEmptyString(contribution.label, `${path}.label`, 'INVALID_PAYLOAD'),
+  };
+}
 
 
 export const parseModelSettingsSnapshot = (value: unknown, path = "$.payload"): ModelSettingsSnapshot => {

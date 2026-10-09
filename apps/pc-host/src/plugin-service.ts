@@ -2,7 +2,7 @@ import { ContributionRegistry, definePlugin, hostToolsServiceId, type HostTool, 
 import { CordisPluginRuntime } from '@more-than-chat/runtime-cordis'
 import { timeToolPlugin } from '@more-than-chat/plugin-time-tool'
 import type { HostPluginCatalog } from '@more-than-chat/protocol'
-import { isAcceptedStaticTextTool, type DeclarativeTextTool } from './static-text-tool'
+import { isAcceptedStaticTextTool, type DeclarativeComposerAction, type DeclarativeTextTool } from './static-text-tool'
 
 export class HostPluginError extends Error {
   constructor(readonly code: 'PLUGIN_NOT_FOUND' | 'TOOL_UNAVAILABLE', message: string) {
@@ -22,6 +22,7 @@ export class HostPluginService {
   readonly #tools = new ContributionRegistry<HostTool>()
   readonly #runtime = new CordisPluginRuntime({ target: 'pc-host', services: { [hostToolsServiceId]: this.#tools } })
   readonly #staticIds = new Set<string>()
+  readonly #composerActionIds = new Map<string, Set<string>>()
   #operation: Promise<unknown> = Promise.resolve()
   #closing = false
 
@@ -44,20 +45,42 @@ export class HostPluginService {
   catalog(): HostPluginCatalog {
     return {
       generation: this.generation,
-      plugins: this.#runtime.list().map(plugin => ({
-        id: plugin.manifest.id, displayName: plugin.manifest.displayName,
-        description: plugin.manifest.description, version: plugin.manifest.version,
-        status: plugin.status, error: plugin.error,
-        tools: this.#tools.list().filter(tool => tool.ownerId === plugin.manifest.id)
-          .map(({ contribution }) => ({ id: contribution.id, label: contribution.label })),
-      })),
+      plugins: this.#runtime.list().map(plugin => {
+        const owned = this.#tools.list().filter(tool => tool.ownerId === plugin.manifest.id)
+        const composerIds = this.#composerActionIds.get(plugin.manifest.id) ?? new Set<string>()
+        const entry = ({ contribution }: { contribution: HostTool }) => ({ id: contribution.id, label: contribution.label })
+        return {
+          id: plugin.manifest.id, displayName: plugin.manifest.displayName,
+          description: plugin.manifest.description, version: plugin.manifest.version,
+          status: plugin.status, error: plugin.error,
+          tools: owned.filter(tool => !composerIds.has(tool.contribution.id)).map(entry),
+          composerActions: owned.filter(tool => composerIds.has(tool.contribution.id)).map(entry),
+        }
+      }),
     }
   }
 
   installStaticTool(manifest: PluginManifestV1, tool: DeclarativeTextTool, persist?: () => Promise<void>): Promise<HostPluginCatalog> {
-    const toolId = tool.id
-    const label = tool.label
-    const text = tool.text
+    return persist
+      ? this.#installClosedText(manifest, tool, 'tool', persist)
+      : this.#installClosedText(manifest, tool, 'tool')
+  }
+
+  installStaticComposerAction(manifest: PluginManifestV1, action: DeclarativeComposerAction, persist?: () => Promise<void>): Promise<HostPluginCatalog> {
+    return persist
+      ? this.#installClosedText(manifest, action, 'composer', persist)
+      : this.#installClosedText(manifest, action, 'composer')
+  }
+
+  #installClosedText(
+    manifest: PluginManifestV1,
+    contribution: DeclarativeTextTool,
+    slot: 'tool' | 'composer',
+    persist?: () => Promise<void>,
+  ): Promise<HostPluginCatalog> {
+    const toolId = contribution.id
+    const label = contribution.label
+    const text = contribution.text
     return this.#enqueue(async () => {
       if (!isAcceptedStaticTextTool(manifest, { id: toolId, label, text })) throw new StaticToolInstallError('not-installable')
       if (this.#runtime.list().some(plugin => plugin.manifest.id === manifest.id)) {
@@ -80,6 +103,7 @@ export class HostPluginService {
       catch {
         await this.#runtime.uninstall(manifest.id).catch(() => undefined)
         this.#staticIds.delete(manifest.id)
+        this.#composerActionIds.delete(manifest.id)
         throw new StaticToolInstallError('activation-failed')
       }
       try {
@@ -88,7 +112,13 @@ export class HostPluginService {
       catch {
         await this.#runtime.uninstall(manifest.id).catch(() => undefined)
         this.#staticIds.delete(manifest.id)
+        this.#composerActionIds.delete(manifest.id)
         throw new StaticToolInstallError('persist-failed')
+      }
+      if (slot === 'composer') {
+        const ids = this.#composerActionIds.get(manifest.id) ?? new Set<string>()
+        ids.add(toolId)
+        this.#composerActionIds.set(manifest.id, ids)
       }
       this.#staticIds.add(manifest.id)
       return this.catalog()
@@ -101,6 +131,7 @@ export class HostPluginService {
         await this.#runtime.uninstall(pluginId)
       }
       this.#staticIds.delete(pluginId)
+      this.#composerActionIds.delete(pluginId)
     })
   }
 
