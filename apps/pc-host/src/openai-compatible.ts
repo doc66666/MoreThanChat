@@ -1,16 +1,32 @@
 import type { ModelChatMessage } from '@more-than-chat/protocol'
+import { AUTHOR_TOOL_DEFINITIONS, type AuthorToolCall } from './author-tools'
 import { ModelServiceError } from './model-error'
+
+export type ProviderMessage = ModelChatMessage | {
+  role: 'assistant'
+  content: string
+  toolCalls: readonly AuthorToolCall[]
+} | {
+  role: 'tool'
+  toolCallId: string
+  name: string
+  content: string
+}
+
+export interface ProviderTurn {
+  readonly toolCalls: readonly AuthorToolCall[]
+}
 
 export interface ProviderChatRequest {
   baseUrl: string
   model: string
   apiKey: string
-  messages: readonly ModelChatMessage[]
+  messages: readonly ProviderMessage[]
   signal: AbortSignal
 }
 
 export interface ChatModelProvider {
-  stream(request: ProviderChatRequest, onDelta: (text: string) => void): Promise<void>
+  stream(request: ProviderChatRequest, onDelta: (text: string) => void): Promise<ProviderTurn | void>
 }
 
 const MAX_ERROR_BODY = 180
@@ -52,7 +68,9 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
           },
           body: JSON.stringify({
             model: request.model,
-            messages: request.messages.map(message => ({ role: message.role, content: message.content })),
+            messages: request.messages.map(toApiMessage),
+            tools: AUTHOR_TOOL_DEFINITIONS,
+            tool_choice: 'auto',
             stream: true,
           }),
         })
@@ -68,19 +86,39 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
       }
       const contentType = response.headers.get('content-type') ?? ''
       if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
-        const text = extractMessageText(await response.json() as unknown)
+        const payload: unknown = await response.json()
+        const text = extractMessageText(payload)
         if (text) onDelta(text)
-        return
+        return { toolCalls: collectToolCalls(payload) }
       }
       if (!response.body) throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型服务没有返回响应体。', true)
-      await readServerSentEvents(response.body, onDelta)
+      return { toolCalls: await readServerSentEvents(response.body, onDelta) }
     },
   }
 }
 
-export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onDelta: (text: string) => void): Promise<void> {
+function toApiMessage(message: ProviderMessage): Record<string, unknown> {
+  if (message.role === 'tool') {
+    return { role: 'tool', tool_call_id: message.toolCallId, name: message.name, content: message.content }
+  }
+  if (message.role === 'assistant' && 'toolCalls' in message && message.toolCalls.length > 0) {
+    return {
+      role: 'assistant',
+      content: message.content.length > 0 ? message.content : null,
+      tool_calls: message.toolCalls.map(call => ({
+        id: call.id,
+        type: 'function',
+        function: { name: call.name, arguments: call.arguments },
+      })),
+    }
+  }
+  return { role: message.role, content: message.content }
+}
+
+export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onDelta: (text: string) => void): Promise<AuthorToolCall[]> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
+  const partials = new Map<number, MutableToolCall>()
   let buffer = ''
   while (true) {
     const { done, value } = await reader.read()
@@ -88,13 +126,14 @@ export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onD
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split(/\r?\n/)
     buffer = lines.pop() ?? ''
-    for (const line of lines) consumeSseLine(line, onDelta)
+    for (const line of lines) consumeSseLine(line, onDelta, partials)
   }
   buffer += decoder.decode()
-  if (buffer.trim()) consumeSseLine(buffer, onDelta)
+  if (buffer.trim()) consumeSseLine(buffer, onDelta, partials)
+  return finishToolCalls(partials)
 }
 
-function consumeSseLine(line: string, onDelta: (text: string) => void): void {
+function consumeSseLine(line: string, onDelta: (text: string) => void, partials: Map<number, MutableToolCall>): void {
   const trimmed = line.trim()
   if (!trimmed.startsWith('data:')) return
   const data = trimmed.slice(5).trim()
@@ -111,6 +150,60 @@ function consumeSseLine(line: string, onDelta: (text: string) => void): void {
   }
   const text = extractDeltaText(parsed)
   if (text) onDelta(text)
+  absorbToolCalls(parsed, partials)
+}
+
+interface MutableToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+
+function collectToolCalls(value: unknown): AuthorToolCall[] {
+  const partials = new Map<number, MutableToolCall>()
+  absorbToolCalls(value, partials)
+  return finishToolCalls(partials)
+}
+
+function absorbToolCalls(value: unknown, into: Map<number, MutableToolCall>): void {
+  if (!value || typeof value !== 'object') return
+  const choices = (value as { choices?: unknown }).choices
+  if (!Array.isArray(choices) || choices.length === 0) return
+  const first = choices[0]
+  if (!first || typeof first !== 'object') return
+  const record = first as { delta?: unknown; message?: unknown }
+  absorbPart(record.delta, into)
+  absorbPart(record.message, into)
+}
+
+function absorbPart(part: unknown, into: Map<number, MutableToolCall>): void {
+  if (!part || typeof part !== 'object') return
+  const calls = (part as { tool_calls?: unknown }).tool_calls
+  if (!Array.isArray(calls)) return
+  for (const call of calls) {
+    if (!call || typeof call !== 'object') continue
+    const record = call as { index?: unknown; id?: unknown; function?: unknown }
+    const index = typeof record.index === 'number' && record.index >= 0 && record.index < 8 ? record.index : into.size
+    if (index >= 8) continue
+    const current = into.get(index) ?? { id: '', name: '', arguments: '' }
+    if (typeof record.id === 'string' && record.id.length > 0 && record.id.length <= 80) current.id = record.id
+    const fn = record.function
+    if (fn && typeof fn === 'object') {
+      const name = (fn as { name?: unknown }).name
+      const args = (fn as { arguments?: unknown }).arguments
+      if (typeof name === 'string' && current.name.length < 80) current.name = `${current.name}${name}`.slice(0, 80)
+      if (typeof args === 'string' && current.arguments.length < 20_000) current.arguments = `${current.arguments}${args}`.slice(0, 20_000)
+    }
+    into.set(index, current)
+  }
+}
+
+function finishToolCalls(into: Map<number, MutableToolCall>): AuthorToolCall[] {
+  return [...into.entries()].sort((left, right) => left[0] - right[0]).flatMap(([index, call]) => {
+    const name = call.name.trim()
+    if (!name) return []
+    return [{ id: call.id.trim() || `call-${index}`, name, arguments: call.arguments }]
+  })
 }
 
 function extractDeltaText(value: unknown): string {

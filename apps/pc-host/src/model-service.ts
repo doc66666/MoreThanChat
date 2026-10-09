@@ -9,25 +9,30 @@ import {
   type ModelProviderMode,
   type ModelSettingsSnapshot,
 } from '@more-than-chat/protocol'
+import { type AuthorToolCall, type AuthorToolExecutor } from './author-tools'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
   createMockProvider,
   createOpenAiCompatibleProvider,
   type ChatModelProvider,
   type ProviderChatRequest,
+  type ProviderMessage,
 } from './openai-compatible'
 
 export const DEFAULT_MODEL_BASE_URL = 'https://api.deepseek.com'
 export const DEFAULT_MODEL_NAME = 'deepseek-chat'
 const MAX_REPLY_CHARS = 500_000
 const MAX_DELTA_CHARS = 100_000
-const SYSTEM_PROMPT = '你是 MoreThanChat 的桌面助手。根据对话回答。不要索取、复述或猜测 API key。'
+const SYSTEM_PROMPT = '你是 MoreThanChat 的桌面助手。根据对话回答。不要索取、复述或猜测 API key。处理插件草稿时只能使用 inspect_drafts、create_draft、validate_draft、diagnose_draft。不要安装插件，安装必须由用户确认。不要复述草稿源码。'
+const MAX_TOOL_ROUNDS = 4
+const MAX_TOOL_CALLS = 4
 
 export interface ModelServiceOptions {
   dataDir: string
   generation: number
   fetchImpl?: typeof fetch
   providers?: Partial<Record<ModelProviderMode, ChatModelProvider>>
+  authorTools?: AuthorToolExecutor
 }
 
 interface StoredSettings {
@@ -56,6 +61,7 @@ export class ModelService {
   readonly #settingsPath: string
   readonly #credentialPath: string
   readonly #providers: Record<ModelProviderMode, ChatModelProvider>
+  readonly #authorTools: AuthorToolExecutor | undefined
   readonly #streams = new Map<string, ActiveStream>()
   #settings: StoredSettings = {
     baseUrl: DEFAULT_MODEL_BASE_URL,
@@ -77,6 +83,7 @@ export class ModelService {
         fetchImpl ? createOpenAiCompatibleProvider(fetchImpl) : createOpenAiCompatibleProvider()
       ),
     }
+    this.#authorTools = options.authorTools
   }
 
   async load(): Promise<void> {
@@ -165,19 +172,39 @@ export class ModelService {
         this.#finishCancelled(stream)
         return
       }
-      const request: ProviderChatRequest = {
-        baseUrl: this.#settings.baseUrl,
-        model: this.#settings.model,
-        apiKey: secret,
-        messages: providerMessages(stream.messages),
-        signal: stream.controller.signal,
-      }
       const provider = this.#providers[this.#settings.providerMode]
       if (!provider) throw new ModelServiceError('MODEL_NOT_CONFIGURED', '模型提供方不可用。', false)
-      await provider.stream(request, delta => this.#appendDelta(stream, delta))
-      if (stream.state !== 'running') return
+      const transcript: ProviderMessage[] = providerMessages(stream.messages)
+      let unresolvedTools = false
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+        if (stream.cancelRequested || stream.controller.signal.aborted) {
+          this.#finishCancelled(stream)
+          return
+        }
+        const request: ProviderChatRequest = {
+          baseUrl: this.#settings.baseUrl,
+          model: this.#settings.model,
+          apiKey: secret,
+          messages: transcript,
+          signal: stream.controller.signal,
+        }
+        const turn = await provider.stream(request, delta => this.#appendDelta(stream, delta))
+        if (stream.state !== 'running') return
+        const calls = (turn?.toolCalls ?? []).slice(0, MAX_TOOL_CALLS)
+        if (calls.length === 0) {
+          unresolvedTools = false
+          break
+        }
+        unresolvedTools = true
+        await this.#recordToolRound(stream, transcript, calls, secret)
+        if (stream.state !== 'running') return
+      }
       if (stream.cancelRequested) {
         this.#finishCancelled(stream)
+        return
+      }
+      if (unresolvedTools) {
+        this.#finishFailed(stream, new ModelServiceError('MODEL_REQUEST_FAILED', '插件作者工具调用次数已达上限。', false), secret)
         return
       }
       if (!stream.text.trim()) {
@@ -195,6 +222,30 @@ export class ModelService {
         return
       }
       this.#finishFailed(stream, error, secret)
+    }
+  }
+
+  async #recordToolRound(stream: ActiveStream, transcript: ProviderMessage[], calls: readonly AuthorToolCall[], secret: string): Promise<void> {
+    transcript.push({
+      role: 'assistant',
+      content: '',
+      toolCalls: calls.map(call => ({ id: call.id, name: call.name, arguments: '{}' })),
+    })
+    for (const call of calls) {
+      if (stream.cancelRequested || stream.controller.signal.aborted) {
+        this.#finishCancelled(stream)
+        return
+      }
+      const result = this.#authorTools
+        ? await this.#authorTools.execute(call)
+        : '作者工具不可用。源码没有执行。'
+      if (stream.state !== 'running') return
+      transcript.push({
+        role: 'tool',
+        toolCallId: call.id,
+        name: call.name,
+        content: redactSecret(result, secret),
+      })
     }
   }
 
@@ -279,7 +330,13 @@ function normalizeModelName(value: string): string {
   return model
 }
 
-function providerMessages(messages: readonly ModelChatMessage[]): ModelChatMessage[] {
+function redactSecret(text: string, secret: string): string {
+  const token = secret.trim()
+  if (token.length < 4) return text
+  return text.split(token).join('[redacted]')
+}
+
+function providerMessages(messages: readonly ModelChatMessage[]): ProviderMessage[] {
   if (messages.some(message => message.role === 'system')) return [...messages]
   return [{ role: 'system', content: SYSTEM_PROMPT }, ...messages]
 }

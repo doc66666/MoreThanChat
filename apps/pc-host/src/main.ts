@@ -5,6 +5,7 @@ import { HostPluginError, HostPluginService } from './plugin-service'
 import { PluginDraftError, PluginDraftService } from './plugin-drafts'
 import { InstalledStaticToolStore, restoreInstalledStaticTools } from './installed-static-tools'
 import { installConfirmedTextTool } from './static-tool-install'
+import { createAuthorToolExecutor } from './author-tools'
 import { ModelService } from './model-service'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
@@ -26,7 +27,6 @@ const generation = parseGeneration(process.env.MTC_HOST_GENERATION)
 const hostDataDir = process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private')
 const plugins = new HostPluginService(generation)
 const staticTools = new InstalledStaticToolStore(hostDataDir)
-const model = new ModelService({ dataDir: hostDataDir, generation })
 const drafts = new PluginDraftService({
   dataDir: hostDataDir,
   installedPlugins: () => plugins.catalog().plugins.map(plugin => ({
@@ -35,6 +35,11 @@ const drafts = new PluginDraftService({
     displayName: plugin.displayName,
     status: plugin.status,
   })),
+})
+const model = new ModelService({
+  dataDir: hostDataDir,
+  generation,
+  authorTools: createAuthorToolExecutor(drafts),
 })
 const pluginsReady = plugins.start().then(() => restoreInstalledStaticTools(staticTools, plugins))
 const modelReady = model.load()
