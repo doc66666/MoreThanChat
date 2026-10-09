@@ -4,6 +4,11 @@
   "version": "0.1.0",
   "private": true,
   "main": "dist-main/main.js",
+  "build": {
+    "extraResources": [
+      { "from": "../pc-host/dist", "to": "pc-host" }
+    ]
+  },
   "scripts": {
     "dev": "pnpm run build:main && concurrently -k -s first \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && electron . --dev\"",
     "build:main": "tsc -p tsconfig.main.json",

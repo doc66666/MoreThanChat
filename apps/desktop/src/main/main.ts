@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'ele
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createElectronHostProcessFactory } from './electron-host-process'
+import { resolveHostEntry } from './host-entry'
 import { HostSupervisor } from './host-supervisor'
 import { toClientModelEvent } from './model-client-event'
 import { redactSecretFields } from './secret-redaction'
@@ -148,6 +149,11 @@ function registerIpc(): void {
   })
 }
 
+function electronResourcesPath(): string {
+  const value = (process as { resourcesPath?: unknown }).resourcesPath
+  return typeof value === 'string' ? value : ''
+}
+
 function assertTrustedIpc(event: IpcMainInvokeEvent): void {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
     throw new Error('Rejected IPC from an untrusted frame.')
@@ -155,12 +161,16 @@ function assertTrustedIpc(event: IpcMainInvokeEvent): void {
 }
 
 function startHostSupervisor(): void {
-  const hostEntryPath = path.resolve(__dirname, '../../pc-host/dist/main.js')
+  const hostEntry = resolveHostEntry({
+    packaged: app.isPackaged,
+    resourcesPath: electronResourcesPath(),
+    moduleDir: __dirname,
+  })
   hostSupervisor = new HostSupervisor({
     clientVersion: app.getVersion(),
     createProcess: createElectronHostProcessFactory({
-      entryPath: hostEntryPath,
-      cwd: path.dirname(hostEntryPath),
+      entryPath: hostEntry.entryPath,
+      cwd: hostEntry.cwd,
       environment: {
         MTC_HOST_DATA_DIR: path.join(app.getPath('userData'), 'host-private'),
         MTC_HOST_QA_CRASH_ONCE: process.env.MTC_QA_HOST_CRASH_ONCE === '1' ? '1' : undefined,
