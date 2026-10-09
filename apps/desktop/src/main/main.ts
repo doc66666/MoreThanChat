@@ -113,6 +113,32 @@ function registerIpc(): void {
     if (request.kind !== 'request' || request.method !== 'model.chat.cancel') throw new Error('Invalid model cancel request.')
     return hostSupervisor.cancelModelChat(request.payload.streamId)
   })
+  ipcMain.handle('host:plugin-drafts:inspect', event => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    return hostSupervisor.inspectPluginDrafts()
+  })
+  ipcMain.handle('host:plugin-drafts:create', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('pluginDrafts.create', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'pluginDrafts.create') throw new Error('Invalid plugin draft.')
+    return hostSupervisor.createPluginDraft(request.payload)
+  })
+  ipcMain.handle('host:plugin-drafts:validate', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('pluginDrafts.validate', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'pluginDrafts.validate') throw new Error('Invalid plugin draft.')
+    return hostSupervisor.validatePluginDraft(request.payload.draftId)
+  })
+  ipcMain.handle('host:plugin-drafts:diagnose', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('pluginDrafts.diagnose', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'pluginDrafts.diagnose') throw new Error('Invalid plugin draft.')
+    return hostSupervisor.diagnosePluginDraft(request.payload.draftId)
+  })
 }
 
 function assertTrustedIpc(event: IpcMainInvokeEvent): void {

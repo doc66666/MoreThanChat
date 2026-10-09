@@ -25,6 +25,7 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 - `tools.invoke`：按插件 id 与工具 id 执行无参数工具，返回带 generation 的文本结果。
 - `model.getSettings` / `model.setSettings`：读取或更新 Base URL、模型名和提供方。响应只有 `hasApiKey`，不回传原始密钥。
 - `model.chat.start` / `model.chat.cancel`：在 Host 内开始或取消一次流式回复。
+- `pluginDrafts.inspect` / `create` / `validate` / `diagnose`：管理未安装草稿。响应不回传源码或 API Key。
 
 当前事件：
 
@@ -65,7 +66,7 @@ pnpm verify:host
 
 ## 当前边界
 
-- PC Host 仅运行随应用内置的可信插件，尚未运行第三方磁盘插件；
+- PC Host 仅运行随应用内置的可信插件。`plugin-drafts/` 里的草稿按修订号追加保存，校验和诊断只做静态检查，不会执行源码，也不会替换已安装插件；
 - API Key 只写在 Host 数据目录的 `model-credentials.json`（权限 0600）。设置快照、聊天记录、插件服务和 Renderer 都不接收原始密钥。模拟模式不会把密钥交给提供方，也不会访问网络；
 - utility process 是崩溃隔离与权限收敛边界，但不是完整恶意代码沙箱；
 - 当前开发构建从 `apps/pc-host/dist/main.js` 启动，正式安装包还需将 Host bundle 放入 `extraResources` 并验证 ASAR 路径；

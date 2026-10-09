@@ -39,7 +39,7 @@ import type {
   PluginSnapshot,
   RegisteredContribution,
 } from '@more-than-chat/plugin-runtime'
-import type { HostPluginSnapshot, HostStatusSnapshot, ModelProviderMode, ModelSettingsSnapshot } from '@more-than-chat/protocol'
+import type { HostPluginSnapshot, HostStatusSnapshot, ModelProviderMode, ModelSettingsSnapshot, PluginDraftInspection } from '@more-than-chat/protocol'
 import type { ModelClientEvent, ModelSettingsInput } from './global'
 import {
   composerActionRegistry,
@@ -69,6 +69,8 @@ export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatusSnapshot>({ state: 'starting', generation: 0 })
   const [hostPlugins, setHostPlugins] = useState<HostPluginSnapshot[]>([])
   const [hostPluginBusy, setHostPluginBusy] = useState(false)
+  const [pluginDrafts, setPluginDrafts] = useState<PluginDraftInspection | null>(null)
+  const [pluginDraftReport, setPluginDraftReport] = useState<string | null>(null)
   const [modelSettings, setModelSettings] = useState<ModelSettingsSnapshot | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const streamIdsRef = useRef(new Map<string, string>())
@@ -127,6 +129,17 @@ export function App() {
     })
     return () => { active = false }
   }, [hostStatus.state, hostStatus.generation])
+
+  useEffect(() => {
+    if (!showPlugins || hostStatus.state !== 'ready') return
+    let active = true
+    void window.moreThanChat.inspectPluginDrafts().then(inspection => {
+      if (active) setPluginDrafts(inspection)
+    }).catch(error => {
+      if (active) { console.error(error instanceof Error ? error.message : 'plugin drafts'); setToast('无法读取插件草稿') }
+    })
+    return () => { active = false }
+  }, [showPlugins, hostStatus.state, hostStatus.generation])
 
   useEffect(() => {
     if (hostStatus.state === 'ready') return
@@ -436,6 +449,36 @@ export function App() {
     finally { setHostPluginBusy(false) }
   }
 
+  async function refreshPluginDrafts() {
+    const inspection = await window.moreThanChat.inspectPluginDrafts()
+    setPluginDrafts(inspection)
+  }
+
+  async function createPluginDraft(manifestJson: string, source: string) {
+    if (hostPluginBusy || hostStatusRef.current.state !== 'ready') return
+    setHostPluginBusy(true)
+    try {
+      const result = await window.moreThanChat.createPluginDraft({ manifestJson, source })
+      setPluginDraftReport(result.summary)
+      await refreshPluginDrafts()
+      setToast(result.persisted ? '草稿已保存，尚未安装' : '草稿未保存')
+    }
+    catch (error) { console.error(error instanceof Error ? error.message : 'draft'); setToast(errorText(error)) }
+    finally { setHostPluginBusy(false) }
+  }
+
+  async function diagnosePluginDraft(draftId: string) {
+    if (hostPluginBusy || hostStatusRef.current.state !== 'ready') return
+    setHostPluginBusy(true)
+    try {
+      const report = await window.moreThanChat.diagnosePluginDraft(draftId)
+      setPluginDraftReport(report.summary)
+      await refreshPluginDrafts()
+    }
+    catch (error) { console.error(error instanceof Error ? error.message : 'diagnose'); setToast(errorText(error)) }
+    finally { setHostPluginBusy(false) }
+  }
+
   async function runHostTool(pluginId: string, toolId: string) {
     if (hostPluginBusy || hostStatus.state !== 'ready') return
     setHostPluginBusy(true)
@@ -612,6 +655,9 @@ export function App() {
 
       {showDetails && <DetailsPanel conversation={active} transportName={active.kind === 'assistant' ? 'PC Host 模型' : (transportRegistry.get(active.transportId)?.displayName ?? '插件不可用')} {...(active.kind === 'assistant' ? { modelLabel: modelSubtitle(modelSettings) } : {})} onClose={() => setShowDetails(false)} />}
       {showPlugins && <PluginPanel plugins={plugins} hostPlugins={hostPlugins} hostBusy={hostPluginBusy}
+        drafts={pluginDrafts} draftReport={pluginDraftReport}
+        onCreateDraft={(manifestJson, source) => void createPluginDraft(manifestJson, source)}
+        onDiagnoseDraft={draftId => void diagnosePluginDraft(draftId)}
         onHostToggle={plugin => void toggleHostPlugin(plugin)} onToggle={plugin => void togglePlugin(plugin)} onClose={() => setShowPlugins(false)} />}
       {showNewChat && <NewChatDialog onClose={() => setShowNewChat(false)} onCreate={createConversation} />}
       {showSettings && <ModelSettingsPanel snapshot={modelSettings} onClose={() => setShowSettings(false)} onSave={saveModelSettings} onClearKey={clearModelKey} />}
@@ -672,10 +718,14 @@ function DetailsPanel({ conversation, transportName, modelLabel, onClose }: { co
   )
 }
 
-function PluginPanel({ plugins, hostPlugins, hostBusy, onHostToggle, onToggle, onClose }: {
+function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCreateDraft, onDiagnoseDraft, onHostToggle, onToggle, onClose }: {
   plugins: readonly PluginSnapshot[]; hostPlugins: readonly HostPluginSnapshot[]; hostBusy: boolean;
+  drafts: PluginDraftInspection | null; draftReport: string | null;
+  onCreateDraft: (manifestJson: string, source: string) => void; onDiagnoseDraft: (draftId: string) => void;
   onHostToggle: (plugin: HostPluginSnapshot) => void; onToggle: (plugin: PluginSnapshot) => void; onClose: () => void;
 }) {
+  const [manifestJson, setManifestJson] = useState('')
+  const [source, setSource] = useState('')
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside className="plugin-drawer" onMouseDown={event => event.stopPropagation()}>
@@ -714,6 +764,26 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, onHostToggle, onToggle, o
             </div>
           ))}
         </div>
+        <section className="draft-section">
+          <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
+          <p className="settings-note">草稿只保存在 Host 的草稿目录。创建、校验和诊断都不会加载代码，也不会替换已安装插件。</p>
+          {(drafts?.drafts ?? []).map(item => (
+            <div className="draft-card" key={item.id} data-draft-id={item.id} data-draft-installed="false" data-draft-ok={item.ok ? 'true' : 'false'}>
+              <strong>{item.displayName}</strong>
+              <small>{item.id} · r{item.revision} · 未安装 · {item.ok ? '校验通过' : '校验未通过'}</small>
+              <button type="button" className="secondary-button" disabled={hostBusy} onClick={() => onDiagnoseDraft(item.id)}>诊断</button>
+            </div>
+          ))}
+          {drafts && drafts.drafts.length === 0 && <p className="settings-note">还没有草稿。</p>}
+          <label className="settings-field"><span>Manifest JSON</span>
+            <textarea data-draft-field="manifest" value={manifestJson} onChange={event => setManifestJson(event.target.value)} spellCheck={false} />
+          </label>
+          <label className="settings-field"><span>源码</span>
+            <textarea data-draft-field="source" value={source} onChange={event => setSource(event.target.value)} spellCheck={false} />
+          </label>
+          <button type="button" className="primary-button" disabled={hostBusy || !manifestJson.trim()} onClick={() => onCreateDraft(manifestJson, source)}>创建草稿</button>
+          {draftReport && <p className="draft-report">{draftReport}</p>}
+        </section>
         <div className="plugin-empty"><PlugZap /><h3>可信插件模式</h3><p>示例插件经过版本化 manifest 和生命周期运行时接入。任意磁盘代码将在独立进程与权限代理完成后开放。</p></div>
       </aside>
     </div>

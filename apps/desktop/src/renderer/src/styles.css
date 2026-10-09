@@ -183,7 +183,13 @@ button { color: inherit; }
 .plugin-toggle { padding: 5px 9px; border: 0; border-radius: 8px; background: #eeeff4; color: #6f7280; font-size: 9px; font-weight: 700; cursor: pointer; }
 .plugin-toggle.active { background: #dcf5e9; color: #21855e; }
 .plugin-toggle:disabled { opacity: .55; cursor: wait; }
-.plugin-empty { margin-top: 42px; padding: 18px; text-align: center; color: #9699a4; border-radius: 15px; background: #f7f7fa; }
+.draft-section { margin-top: 22px; display: grid; gap: 10px; }
+.draft-section h3 { margin: 0; font-size: 16px; }
+.draft-card { display: grid; gap: 6px; padding: 12px; border: 1px dashed #d9dbe3; border-radius: 12px; background: #fff; }
+.draft-card small { color: #80838e; font-size: 10px; }
+.draft-section textarea { width: 100%; min-height: 72px; padding: 8px 10px; resize: vertical; border: 1px solid #dedfe5; border-radius: 11px; font: 12px/1.45 ui-monospace, monospace; }
+.draft-report { margin: 0; color: #4d5160; font-size: 12px; line-height: 1.5; }
+.plugin-empty { margin-top: 22px; padding: 18px; text-align: center; color: #9699a4; border-radius: 15px; background: #f7f7fa; }
 .plugin-empty svg { color: #b7b3ed; }
 .plugin-empty h3 { margin: 14px 0 7px; color: #50535f; font-size: 15px; }
 .plugin-empty p { margin: 0 auto; max-width: 270px; line-height: 1.6; font-size: 11px; }

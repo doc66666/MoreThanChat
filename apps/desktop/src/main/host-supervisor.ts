@@ -199,6 +199,22 @@ export class HostSupervisor {
     return this.#request('model.chat.cancel', { streamId })
   }
 
+  inspectPluginDrafts(): Promise<HostResponsePayloadMap['pluginDrafts.inspect']> {
+    return this.#request('pluginDrafts.inspect', {})
+  }
+
+  createPluginDraft(payload: HostRequestPayloadMap['pluginDrafts.create']): Promise<HostResponsePayloadMap['pluginDrafts.create']> {
+    return this.#request('pluginDrafts.create', payload)
+  }
+
+  validatePluginDraft(draftId: string): Promise<HostResponsePayloadMap['pluginDrafts.validate']> {
+    return this.#request('pluginDrafts.validate', { draftId })
+  }
+
+  diagnosePluginDraft(draftId: string): Promise<HostResponsePayloadMap['pluginDrafts.diagnose']> {
+    return this.#request('pluginDrafts.diagnose', { draftId })
+  }
+
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     const stopped = createReadyWaiter()

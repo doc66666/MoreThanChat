@@ -40,6 +40,13 @@ const api = {
     const value = await ipcRenderer.invoke('host:model:chat-cancel', { streamId })
     return parseModelCancel(value)
   },
+  inspectPluginDrafts: async () => parsePluginDraftInspection(await ipcRenderer.invoke('host:plugin-drafts:inspect')),
+  createPluginDraft: async (input: { manifestJson: string; source: string }) =>
+    parsePluginDraftCreateResult(await ipcRenderer.invoke('host:plugin-drafts:create', input)),
+  validatePluginDraft: async (draftId: string) =>
+    parsePluginDraftReport(await ipcRenderer.invoke('host:plugin-drafts:validate', { draftId })),
+  diagnosePluginDraft: async (draftId: string) =>
+    parsePluginDraftReport(await ipcRenderer.invoke('host:plugin-drafts:diagnose', { draftId })),
   onHostStatusChanged: (listener: (status: HostStatusSnapshot) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => listener(parseHostStatus(value))
     ipcRenderer.on('host:status:changed', handler)
@@ -213,6 +220,88 @@ function requiredGeneration(value: unknown, message: string): number {
 
 function isBoundedText(value: unknown, maxLength: number): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength
+}
+
+const draftIssueCodes = new Set(['MANIFEST_INVALID', 'SECRET_MATERIAL', 'DANGEROUS_API', 'EMPTY_SOURCE', 'INSTALLED_ID'])
+
+function parsePluginDraftInspection(value: unknown) {
+  const record = asRecord(value, 'Invalid plugin draft inspection.')
+  assertExactKeys(record, ['installed', 'drafts'], 'Invalid plugin draft inspection.')
+  if (!Array.isArray(record.installed) || record.installed.length > 100 || !Array.isArray(record.drafts) || record.drafts.length > 100) {
+    throw new Error('Invalid plugin draft inspection.')
+  }
+  return {
+    installed: record.installed.map(item => {
+      const entry = asRecord(item, 'Invalid installed plugin.')
+      assertExactKeys(entry, ['id', 'version', 'displayName', 'status'], 'Invalid installed plugin.')
+      if (typeof entry.status !== 'string' || !pluginStates.has(entry.status)) throw new Error('Invalid installed plugin.')
+      return {
+        id: requiredBounded(entry.id, 128, 'Invalid installed plugin.'),
+        version: requiredBounded(entry.version, 32, 'Invalid installed plugin.'),
+        displayName: requiredBounded(entry.displayName, 80, 'Invalid installed plugin.'),
+        status: entry.status as 'inactive' | 'activating' | 'active' | 'deactivating' | 'failed',
+      }
+    }),
+    drafts: record.drafts.map(item => parseDraftSummary(item)),
+  }
+}
+
+function parsePluginDraftCreateResult(value: unknown) {
+  const record = asRecord(value, 'Invalid plugin draft result.')
+  assertExactKeys(record, ['persisted', 'draft', 'ok', 'summary', 'issues'], 'Invalid plugin draft result.')
+  if (typeof record.persisted !== 'boolean') throw new Error('Invalid plugin draft result.')
+  return {
+    persisted: record.persisted,
+    draft: record.draft === null ? null : parseDraftSummary(record.draft),
+    ...parseDraftDiagnosis(record),
+  }
+}
+
+function parsePluginDraftReport(value: unknown) {
+  const record = asRecord(value, 'Invalid plugin draft report.')
+  assertExactKeys(record, ['draft', 'ok', 'summary', 'issues'], 'Invalid plugin draft report.')
+  return { draft: parseDraftSummary(record.draft), ...parseDraftDiagnosis(record) }
+}
+
+function parseDraftDiagnosis(record: Record<string, unknown>) {
+  if (typeof record.ok !== 'boolean' || !Array.isArray(record.issues) || record.issues.length > 20) throw new Error('Invalid plugin draft report.')
+  return {
+    ok: record.ok,
+    summary: requiredBounded(record.summary, 500, 'Invalid plugin draft report.'),
+    issues: record.issues.map(item => {
+      const issue = asRecord(item, 'Invalid plugin draft issue.')
+      assertExactKeys(issue, ['severity', 'code', 'message'], 'Invalid plugin draft issue.')
+      if ((issue.severity !== 'error' && issue.severity !== 'warning') || typeof issue.code !== 'string' || !draftIssueCodes.has(issue.code)) {
+        throw new Error('Invalid plugin draft issue.')
+      }
+      return {
+        severity: issue.severity,
+        code: issue.code as 'MANIFEST_INVALID' | 'SECRET_MATERIAL' | 'DANGEROUS_API' | 'EMPTY_SOURCE' | 'INSTALLED_ID',
+        message: requiredBounded(issue.message, 240, 'Invalid plugin draft issue.'),
+      }
+    }),
+  }
+}
+
+function parseDraftSummary(value: unknown) {
+  const record = asRecord(value, 'Invalid plugin draft.')
+  assertExactKeys(record, ['id', 'revision', 'displayName', 'version', 'updatedAt', 'ok'], 'Invalid plugin draft.')
+  if (typeof record.revision !== 'number' || !Number.isSafeInteger(record.revision) || record.revision < 1) throw new Error('Invalid plugin draft.')
+  if (typeof record.updatedAt !== 'number' || !Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) throw new Error('Invalid plugin draft.')
+  if (typeof record.ok !== 'boolean') throw new Error('Invalid plugin draft.')
+  return {
+    id: requiredBounded(record.id, 128, 'Invalid plugin draft.'),
+    revision: record.revision,
+    displayName: requiredBounded(record.displayName, 80, 'Invalid plugin draft.'),
+    version: requiredBounded(record.version, 32, 'Invalid plugin draft.'),
+    updatedAt: record.updatedAt,
+    ok: record.ok,
+  }
+}
+
+function requiredBounded(value: unknown, maxLength: number, message: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > maxLength) throw new Error(message)
+  return value
 }
 
 function parseHostPing(value: unknown): HostPingResult {

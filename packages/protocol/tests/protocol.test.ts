@@ -188,7 +188,7 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(26);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(34);
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.handshakeRequest).toBeDefined();
   });
@@ -260,6 +260,48 @@ describe("Host protocol v1", () => {
     );
     expectProtocolError(
       { ...failed, payload: { ...failed.payload, partialText: undefined } },
+      'INVALID_PAYLOAD',
+    );
+  });
+
+  it('round-trips plugin draft reports without echoing source or credentials', () => {
+    const secret = 'sk-test-should-not-appear-in-snapshots';
+    const create = createHostRequest('pluginDrafts.create', 'create-draft', {
+      manifestJson: '{"id":"example.note"}',
+      source: `token ${secret}`,
+    });
+    const saved = createHostSuccessResponse(create, {
+      persisted: false,
+      draft: null,
+      ok: false,
+      summary: '草稿没有保存：内容里疑似有凭据。',
+      issues: [{ severity: 'error', code: 'SECRET_MATERIAL', message: '草稿包含疑似凭据，已拒绝保存。' }],
+    });
+    const inspect = createHostRequest('pluginDrafts.inspect', 'inspect-drafts', {});
+    const inspection = createHostSuccessResponse(inspect, {
+      installed: [{ id: 'builtin.time-tool', version: '0.1.0', displayName: '时间工具', status: 'active' }],
+      drafts: [{ id: 'example.note', revision: 2, displayName: '草稿示例', version: '0.1.0', updatedAt: 10, ok: true }],
+    });
+    const diagnose = createHostRequest('pluginDrafts.diagnose', 'diagnose-draft', { draftId: 'example.note' });
+    const report = createHostSuccessResponse(diagnose, {
+      draft: inspection.payload.drafts[0]!,
+      ok: true,
+      summary: '校验通过。这份草稿仍未安装。',
+      issues: [],
+    });
+
+    expect(JSON.stringify(create)).toContain(secret);
+    for (const message of [saved, inspect, inspection, diagnose, report]) {
+      expect(parseHostMessage(message)).toEqual(message);
+      expect(JSON.stringify(message)).not.toContain(secret);
+    }
+    expectProtocolError({ ...saved, payload: { ...saved.payload, source: secret } }, 'INVALID_PAYLOAD');
+    const leakedDraft = { ...report.payload.draft, apiKey: secret };
+    expectProtocolError(
+      createHostSuccessResponse(createHostRequest('pluginDrafts.validate', 'validate-draft', { draftId: 'example.note' }), {
+        ...report.payload,
+        draft: leakedDraft,
+      }),
       'INVALID_PAYLOAD',
     );
   });

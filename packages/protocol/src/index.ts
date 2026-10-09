@@ -11,6 +11,10 @@ export const HOST_METHODS = [
   "model.setSettings",
   "model.chat.start",
   "model.chat.cancel",
+  "pluginDrafts.inspect",
+  "pluginDrafts.create",
+  "pluginDrafts.validate",
+  "pluginDrafts.diagnose",
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];
@@ -55,6 +59,7 @@ export const PROTOCOL_ERROR_CODES = [
   "MODEL_REQUEST_FAILED",
   "MODEL_STREAM_NOT_FOUND",
   "CREDENTIAL_UNAVAILABLE",
+  "DRAFT_NOT_FOUND",
 ] as const;
 
 export type ProtocolErrorCode = (typeof PROTOCOL_ERROR_CODES)[number];
@@ -114,6 +119,59 @@ export interface ModelChatStreamRef {
   generation: number;
 }
 
+export const PLUGIN_DRAFT_ISSUE_CODES = [
+  "MANIFEST_INVALID",
+  "SECRET_MATERIAL",
+  "DANGEROUS_API",
+  "EMPTY_SOURCE",
+  "INSTALLED_ID",
+] as const;
+
+export type PluginDraftIssueCode = (typeof PLUGIN_DRAFT_ISSUE_CODES)[number];
+
+/** A draft finding. Messages are bounded and must not repeat source text or credentials. */
+export interface PluginDraftIssue {
+  severity: "error" | "warning";
+  code: PluginDraftIssueCode;
+  message: string;
+}
+
+export interface PluginDraftSummary {
+  id: string;
+  revision: number;
+  displayName: string;
+  version: string;
+  updatedAt: number;
+  ok: boolean;
+}
+
+export interface PluginDraftReport {
+  draft: PluginDraftSummary;
+  ok: boolean;
+  summary: string;
+  issues: PluginDraftIssue[];
+}
+
+export interface PluginDraftCreateResult {
+  persisted: boolean;
+  draft: PluginDraftSummary | null;
+  ok: boolean;
+  summary: string;
+  issues: PluginDraftIssue[];
+}
+
+export interface PluginDraftInstalledRef {
+  id: string;
+  version: string;
+  displayName: string;
+  status: (typeof HOST_PLUGIN_STATES)[number];
+}
+
+export interface PluginDraftInspection {
+  installed: PluginDraftInstalledRef[];
+  drafts: PluginDraftSummary[];
+}
+
 export interface HostRequestPayloadMap {
   "host.handshake": {
     clientName: string;
@@ -144,6 +202,10 @@ export interface HostRequestPayloadMap {
     messages: ModelChatMessage[];
   };
   "model.chat.cancel": { streamId: string };
+  "pluginDrafts.inspect": Record<string, never>;
+  "pluginDrafts.create": { manifestJson: string; source: string };
+  "pluginDrafts.validate": { draftId: string };
+  "pluginDrafts.diagnose": { draftId: string };
 }
 
 export interface HostResponsePayloadMap {
@@ -167,6 +229,10 @@ export interface HostResponsePayloadMap {
   "model.setSettings": ModelSettingsSnapshot;
   "model.chat.start": ModelChatStreamRef;
   "model.chat.cancel": { streamId: string; cancelled: true };
+  "pluginDrafts.inspect": PluginDraftInspection;
+  "pluginDrafts.create": PluginDraftCreateResult;
+  "pluginDrafts.validate": PluginDraftReport;
+  "pluginDrafts.diagnose": PluginDraftReport;
 }
 
 export interface HostEventPayloadMap {
@@ -747,6 +813,116 @@ const parseShutdownRequest = (value: unknown): HostRequestPayloadMap["host.shutd
   };
 };
 
+const parseBoundedText = (value: unknown, path: string, maxLength: number, allowEmpty = false): string => {
+  if (typeof value !== "string" || (!allowEmpty && value.trim().length === 0) || value.length > maxLength) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path} must be a string within ${maxLength} characters`, path);
+  }
+  return value;
+};
+
+const parseDraftIssue = (value: unknown, path: string): PluginDraftIssue => {
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["severity", "code", "message"], [], path, "INVALID_PAYLOAD");
+  if (object.severity !== "error" && object.severity !== "warning") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.severity is invalid`, `${path}.severity`);
+  }
+  if (!isOneOf(PLUGIN_DRAFT_ISSUE_CODES, object.code)) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.code is invalid`, `${path}.code`);
+  }
+  return {
+    severity: object.severity,
+    code: object.code,
+    message: parseBoundedText(object.message, `${path}.message`, 240),
+  };
+};
+
+const parseDraftIssues = (value: unknown, path: string): PluginDraftIssue[] => {
+  if (!Array.isArray(value) || value.length > 20) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path} must be an array of at most 20 issues`, path);
+  }
+  return value.map((issue, index) => parseDraftIssue(issue, `${path}[${index}]`));
+};
+
+const parseDraftSummary = (value: unknown, path: string): PluginDraftSummary => {
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["id", "revision", "displayName", "version", "updatedAt", "ok"], [], path, "INVALID_PAYLOAD");
+  if (typeof object.revision !== "number" || !Number.isSafeInteger(object.revision) || object.revision < 1) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.revision must be a positive integer`, `${path}.revision`);
+  }
+  if (typeof object.updatedAt !== "number" || !Number.isSafeInteger(object.updatedAt) || object.updatedAt < 0) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.updatedAt must be a non-negative integer`, `${path}.updatedAt`);
+  }
+  if (typeof object.ok !== "boolean") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.ok must be a boolean`, `${path}.ok`);
+  }
+  return {
+    id: parseBoundedText(object.id, `${path}.id`, 128),
+    revision: object.revision,
+    displayName: parseBoundedText(object.displayName, `${path}.displayName`, 80),
+    version: parseBoundedText(object.version, `${path}.version`, 32),
+    updatedAt: object.updatedAt,
+    ok: object.ok,
+  };
+};
+
+const parseDraftDiagnosis = (object: Record<string, unknown>, path: string): Pick<PluginDraftReport, "ok" | "summary" | "issues"> => {
+  if (typeof object.ok !== "boolean") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.ok must be a boolean`, `${path}.ok`);
+  }
+  return {
+    ok: object.ok,
+    summary: parseBoundedText(object.summary, `${path}.summary`, 500),
+    issues: parseDraftIssues(object.issues, `${path}.issues`),
+  };
+};
+
+const parsePluginDraftInspection = (value: unknown): PluginDraftInspection => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["installed", "drafts"], [], path, "INVALID_PAYLOAD");
+  if (!Array.isArray(object.installed) || object.installed.length > 100 || !Array.isArray(object.drafts) || object.drafts.length > 100) {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path} lists are too large`, path);
+  }
+  return {
+    installed: object.installed.map((item, index) => {
+      const entryPath = `${path}.installed[${index}]`;
+      const entry = asObject(item, entryPath, "INVALID_PAYLOAD");
+      assertKeys(entry, ["id", "version", "displayName", "status"], [], entryPath, "INVALID_PAYLOAD");
+      if (!isOneOf(HOST_PLUGIN_STATES, entry.status)) {
+        throw new ProtocolValidationError("INVALID_PAYLOAD", `${entryPath}.status is invalid`, `${entryPath}.status`);
+      }
+      return {
+        id: parseBoundedText(entry.id, `${entryPath}.id`, 128),
+        version: parseBoundedText(entry.version, `${entryPath}.version`, 32),
+        displayName: parseBoundedText(entry.displayName, `${entryPath}.displayName`, 80),
+        status: entry.status,
+      };
+    }),
+    drafts: object.drafts.map((item, index) => parseDraftSummary(item, `${path}.drafts[${index}]`)),
+  };
+};
+
+const parsePluginDraftCreateResult = (value: unknown): PluginDraftCreateResult => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["persisted", "draft", "ok", "summary", "issues"], [], path, "INVALID_PAYLOAD");
+  if (typeof object.persisted !== "boolean") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.persisted must be a boolean`, `${path}.persisted`);
+  }
+  return {
+    persisted: object.persisted,
+    draft: object.draft === null ? null : parseDraftSummary(object.draft, `${path}.draft`),
+    ...parseDraftDiagnosis(object, path),
+  };
+};
+
+const parsePluginDraftReport = (value: unknown): PluginDraftReport => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["draft", "ok", "summary", "issues"], [], path, "INVALID_PAYLOAD");
+  return { draft: parseDraftSummary(object.draft, `${path}.draft`), ...parseDraftDiagnosis(object, path) };
+};
+
 const parseRequestPayload = <M extends HostMethod>(
   method: M,
   value: unknown,
@@ -773,6 +949,25 @@ const parseRequestPayload = <M extends HostMethod>(
       return parseModelChatStartRequest(value) as HostRequestPayloadMap[M];
     case "model.chat.cancel":
       return parseModelChatCancelRequest(value) as HostRequestPayloadMap[M];
+    case "pluginDrafts.inspect": {
+      const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
+      assertKeys(object, [], [], "$.payload", "INVALID_PAYLOAD");
+      return {} as HostRequestPayloadMap[M];
+    }
+    case "pluginDrafts.create": {
+      const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
+      assertKeys(object, ["manifestJson", "source"], [], "$.payload", "INVALID_PAYLOAD");
+      return {
+        manifestJson: parseBoundedText(object.manifestJson, "$.payload.manifestJson", 20_000),
+        source: parseBoundedText(object.source, "$.payload.source", 100_000, true),
+      } as HostRequestPayloadMap[M];
+    }
+    case "pluginDrafts.validate":
+    case "pluginDrafts.diagnose": {
+      const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
+      assertKeys(object, ["draftId"], [], "$.payload", "INVALID_PAYLOAD");
+      return { draftId: parseBoundedText(object.draftId, "$.payload.draftId", 128) } as HostRequestPayloadMap[M];
+    }
   }
 };
 
@@ -882,6 +1077,13 @@ const parseResponsePayload = <M extends HostMethod>(
         cancelled: true as const,
       } as HostResponsePayloadMap[M];
     }
+    case "pluginDrafts.inspect":
+      return parsePluginDraftInspection(value) as HostResponsePayloadMap[M];
+    case "pluginDrafts.create":
+      return parsePluginDraftCreateResult(value) as HostResponsePayloadMap[M];
+    case "pluginDrafts.validate":
+    case "pluginDrafts.diagnose":
+      return parsePluginDraftReport(value) as HostResponsePayloadMap[M];
   }
 };
 

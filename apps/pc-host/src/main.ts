@@ -2,6 +2,7 @@ import type { ParentPort } from 'electron'
 import os from 'node:os'
 import path from 'node:path'
 import { HostPluginError, HostPluginService } from './plugin-service'
+import { PluginDraftError, PluginDraftService } from './plugin-drafts'
 import { ModelService } from './model-service'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
@@ -20,10 +21,17 @@ import {
 const HOST_NAME = 'MoreThanChat PC Host'
 const HOST_VERSION = '0.1.0'
 const generation = parseGeneration(process.env.MTC_HOST_GENERATION)
+const hostDataDir = process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private')
 const plugins = new HostPluginService(generation)
-const model = new ModelService({
-  dataDir: process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private'),
-  generation,
+const model = new ModelService({ dataDir: hostDataDir, generation })
+const drafts = new PluginDraftService({
+  dataDir: hostDataDir,
+  installedPlugins: () => plugins.catalog().plugins.map(plugin => ({
+    id: plugin.id,
+    version: plugin.version,
+    displayName: plugin.displayName,
+    status: plugin.status,
+  })),
 })
 const pluginsReady = plugins.start()
 const modelReady = model.load()
@@ -126,6 +134,18 @@ async function handleRequest(request: HostRequest): Promise<void> {
     case 'model.chat.cancel':
       parentPort.postMessage(createHostSuccessResponse(request, model.cancel(request.payload.streamId)))
       return
+    case 'pluginDrafts.inspect':
+      parentPort.postMessage(createHostSuccessResponse(request, await drafts.inspect()))
+      return
+    case 'pluginDrafts.create':
+      parentPort.postMessage(createHostSuccessResponse(request, await drafts.create(request.payload)))
+      return
+    case 'pluginDrafts.validate':
+      parentPort.postMessage(createHostSuccessResponse(request, await drafts.validate(request.payload.draftId)))
+      return
+    case 'pluginDrafts.diagnose':
+      parentPort.postMessage(createHostSuccessResponse(request, await drafts.diagnose(request.payload.draftId)))
+      return
     default:
       parentPort.postMessage(createHostErrorResponse(request, {
         code: 'UNKNOWN_METHOD',
@@ -171,6 +191,7 @@ function protocolError(error: unknown): ProtocolErrorPayload {
     return { code: error.code, message: sanitizeProviderText(error.message, ''), retryable: error.retryable }
   }
   if (error instanceof HostPluginError) return { code: error.code, message: error.message, retryable: false }
+  if (error instanceof PluginDraftError) return { code: error.code, message: error.message, retryable: false }
   const message = error instanceof Error ? error.message : 'PC Host failed to handle the request.'
   return { code: 'INTERNAL_ERROR', message: sanitizeProviderText(message, ''), retryable: false }
 }

@@ -3,6 +3,7 @@ const nonEmptyString = { type: "string", minLength: 1, pattern: ".*\\S.*" } as c
 const requestId = { ...nonEmptyString, maxLength: 256 } as const;
 const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke'] as const;
 const modelMethods = ['model.getSettings', 'model.setSettings', 'model.chat.start', 'model.chat.cancel'] as const;
+const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose'] as const;
 const boundedId = { ...nonEmptyString, maxLength: 256 } as const;
 const modelSettings = {
   type: 'object', additionalProperties: false, required: ['baseUrl', 'model', 'providerMode', 'hasApiKey'],
@@ -53,6 +54,57 @@ const pluginCatalog = {
     },
   },
 } as const;
+const draftIssue = {
+  type: 'object', additionalProperties: false, required: ['severity', 'code', 'message'],
+  properties: {
+    severity: { enum: ['error', 'warning'] },
+    code: { enum: ['MANIFEST_INVALID', 'SECRET_MATERIAL', 'DANGEROUS_API', 'EMPTY_SOURCE', 'INSTALLED_ID'] },
+    message: { ...nonEmptyString, maxLength: 240 },
+  },
+} as const;
+const draftSummary = {
+  type: 'object', additionalProperties: false, required: ['id', 'revision', 'displayName', 'version', 'updatedAt', 'ok'],
+  properties: {
+    id: { ...nonEmptyString, maxLength: 128 },
+    revision: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    displayName: { ...nonEmptyString, maxLength: 80 },
+    version: { ...nonEmptyString, maxLength: 32 },
+    updatedAt: generation,
+    ok: { type: 'boolean' },
+  },
+} as const;
+const draftDiagnosisProperties = {
+  ok: { type: 'boolean' },
+  summary: { ...nonEmptyString, maxLength: 500 },
+  issues: { type: 'array', maxItems: 20, items: draftIssue },
+} as const;
+const draftReport = {
+  type: 'object', additionalProperties: false, required: ['draft', 'ok', 'summary', 'issues'],
+  properties: { draft: draftSummary, ...draftDiagnosisProperties },
+} as const;
+const draftCreateResult = {
+  type: 'object', additionalProperties: false, required: ['persisted', 'draft', 'ok', 'summary', 'issues'],
+  properties: {
+    persisted: { type: 'boolean' },
+    draft: { anyOf: [draftSummary, { type: 'null' }] },
+    ...draftDiagnosisProperties,
+  },
+} as const;
+const draftInspection = {
+  type: 'object', additionalProperties: false, required: ['installed', 'drafts'],
+  properties: {
+    installed: { type: 'array', maxItems: 100, items: {
+      type: 'object', additionalProperties: false, required: ['id', 'version', 'displayName', 'status'],
+      properties: {
+        id: { ...nonEmptyString, maxLength: 128 },
+        version: { ...nonEmptyString, maxLength: 32 },
+        displayName: { ...nonEmptyString, maxLength: 80 },
+        status: { enum: ['inactive', 'activating', 'active', 'deactivating', 'failed'] },
+      },
+    } },
+    drafts: { type: 'array', maxItems: 100, items: draftSummary },
+  },
+} as const;
 function request(method: string, payload: unknown) {
   return { type: 'object', additionalProperties: false, required: ['protocolVersion', 'kind', 'requestId', 'method', 'payload'],
     properties: { protocolVersion, kind: { const: 'request' }, requestId, method: { const: method }, payload } };
@@ -94,6 +146,14 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/modelChatCompletedEvent' },
     { $ref: '#/$defs/modelChatFailedEvent' },
     { $ref: '#/$defs/modelChatCancelledEvent' },
+    { $ref: '#/$defs/pluginDraftInspectRequest' },
+    { $ref: '#/$defs/pluginDraftCreateRequest' },
+    { $ref: '#/$defs/pluginDraftValidateRequest' },
+    { $ref: '#/$defs/pluginDraftDiagnoseRequest' },
+    { $ref: '#/$defs/pluginDraftInspectResponse' },
+    { $ref: '#/$defs/pluginDraftCreateResponse' },
+    { $ref: '#/$defs/pluginDraftValidateResponse' },
+    { $ref: '#/$defs/pluginDraftDiagnoseResponse' },
   ],
   $defs: {
     protocolError: {
@@ -122,6 +182,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
             'MODEL_REQUEST_FAILED',
             'MODEL_STREAM_NOT_FOUND',
             'CREDENTIAL_UNAVAILABLE',
+            'DRAFT_NOT_FOUND',
           ],
         },
         message: nonEmptyString,
@@ -269,7 +330,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
         protocolVersion,
         kind: { const: "response" },
         requestId,
-        method: { enum: ["host.handshake", "diagnostics.ping", "host.shutdown", ...pluginMethods, ...modelMethods] },
+        method: { enum: ["host.handshake", "diagnostics.ping", "host.shutdown", ...pluginMethods, ...modelMethods, ...draftMethods] },
         ok: { const: false },
         error: { $ref: "#/$defs/protocolError" },
       },
@@ -367,6 +428,26 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
         },
       },
     },
+    pluginDraftInspectRequest: request('pluginDrafts.inspect', { type: 'object', additionalProperties: false }),
+    pluginDraftCreateRequest: request('pluginDrafts.create', {
+      type: 'object', additionalProperties: false, required: ['manifestJson', 'source'],
+      properties: {
+        manifestJson: { ...nonEmptyString, maxLength: 20000 },
+        source: { type: 'string', maxLength: 100000 },
+      },
+    }),
+    pluginDraftValidateRequest: request('pluginDrafts.validate', {
+      type: 'object', additionalProperties: false, required: ['draftId'],
+      properties: { draftId: { ...nonEmptyString, maxLength: 128 } },
+    }),
+    pluginDraftDiagnoseRequest: request('pluginDrafts.diagnose', {
+      type: 'object', additionalProperties: false, required: ['draftId'],
+      properties: { draftId: { ...nonEmptyString, maxLength: 128 } },
+    }),
+    pluginDraftInspectResponse: response('pluginDrafts.inspect', draftInspection),
+    pluginDraftCreateResponse: response('pluginDrafts.create', draftCreateResult),
+    pluginDraftValidateResponse: response('pluginDrafts.validate', draftReport),
+    pluginDraftDiagnoseResponse: response('pluginDrafts.diagnose', draftReport),
     modelChatCancelledEvent: {
       type: 'object', additionalProperties: false,
       required: ['protocolVersion', 'kind', 'event', 'payload'],

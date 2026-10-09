@@ -6,6 +6,9 @@ import type {
   ModelChatMessage,
   ModelProviderMode,
   ModelSettingsSnapshot,
+  PluginDraftCreateResult,
+  PluginDraftInspection,
+  PluginDraftReport,
 } from '@more-than-chat/protocol'
 
 export interface ModelClientEvent {
@@ -60,6 +63,10 @@ declare global {
         messages: ModelChatMessage[]
       }): Promise<ModelStreamRef>
       cancelModelChat(streamId: string): Promise<{ streamId: string; cancelled: true }>
+      inspectPluginDrafts(): Promise<PluginDraftInspection>
+      createPluginDraft(input: { manifestJson: string; source: string }): Promise<PluginDraftCreateResult>
+      validatePluginDraft(draftId: string): Promise<PluginDraftReport>
+      diagnosePluginDraft(draftId: string): Promise<PluginDraftReport>
       onHostStatusChanged(listener: (status: HostStatusSnapshot) => void): () => void
       onModelChatEvent(listener: (event: ModelClientEvent) => void): () => void
     }
