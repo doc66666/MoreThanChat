@@ -414,7 +414,8 @@ export const hostToolsServiceId = 'host.tools'
 export interface HostTool {
   readonly id: string
   readonly label: string
-  run(): string | Promise<string>
+  readonly replacesDraft?: boolean
+  run(input?: string): string | Promise<string>
 }
 
 export interface ComposerActionContext {

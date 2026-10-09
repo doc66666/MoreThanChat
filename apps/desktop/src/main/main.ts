@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, safeStorage, type IpcMainInvokeEvent } from 'electron'
+import { EncryptedCredentialStore } from './credential-store'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createElectronHostProcessFactory } from './electron-host-process'
@@ -16,7 +17,7 @@ let hostEventCleanup: (() => void) | null = null
 let quitAfterHostStops = false
 
 if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
-  app.setPath('userData', path.join(app.getPath('temp'), 'MoreThanChat-QA'))
+  app.setPath('userData', process.env.MTC_QA_USER_DATA_DIR || path.join(app.getPath('temp'), 'MoreThanChat-QA'))
 }
 
 function statePath(): string {
@@ -86,7 +87,7 @@ function registerIpc(): void {
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(createHostRequest('tools.invoke', 'ipc', payload as never))
     if (request.kind !== 'request' || request.method !== 'tools.invoke') throw new Error('Invalid tool request.')
-    return hostSupervisor.invokeTool(request.payload.pluginId, request.payload.toolId)
+    return hostSupervisor.invokeTool(request.payload.pluginId, request.payload.toolId, request.payload.input)
   })
   ipcMain.handle('host:model:get-settings', event => {
     assertTrustedIpc(event)
@@ -168,6 +169,11 @@ function startHostSupervisor(): void {
   })
   hostSupervisor = new HostSupervisor({
     clientVersion: app.getVersion(),
+    credentials: new EncryptedCredentialStore(path.join(app.getPath('userData'), 'host-private'), {
+      available: () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+      encrypt: value => safeStorage.encryptString(value),
+      decrypt: value => safeStorage.decryptString(value),
+    }),
     createProcess: createElectronHostProcessFactory({
       entryPath: hostEntry.entryPath,
       cwd: hostEntry.cwd,

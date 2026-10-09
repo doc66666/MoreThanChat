@@ -9,10 +9,19 @@ import {
   normalizeState,
   toModelTranscript,
   type ChatMessage,
+  type ChatState,
   type ChatTransportPlugin,
 } from '../src/index.js'
 
 describe('model chat updates', () => {
+  it('cancels only the selected conversation while another keeps streaming', () => {
+    const state = withAssistant('streaming', 'partial')
+    state.messages.other = [{ ...state.messages['conversation-assistant']!.at(-1)!, id: 'other-assistant', conversationId: 'other', status: 'streaming' }]
+    const cancelled = interruptStreamingMessages(state, 'conversation-assistant')
+    expect(cancelled.messages['conversation-assistant']!.at(-1)!.status).toBe('cancelled')
+    expect(cancelled.messages.other![0]!.status).toBe('streaming')
+    expect(state.messages['conversation-assistant']!.at(-1)!.status).toBe('streaming')
+  })
   it('appends deltas and only marks a reply complete after the completed event', () => {
     const state = withAssistant('streaming', '')
     const delta = applyModelChatUpdate(state, {
@@ -205,7 +214,7 @@ function assistantMessage(conversationId: string, status: ChatMessage['status'],
   }
 }
 
-function withAssistant(status: ChatMessage['status'], text: string) {
+function withAssistant(status: ChatMessage['status'], text: string): ChatState {
   const state = createSeedState(1_700_000_000_000)
   const conversationId = 'conversation-assistant'
   return {

@@ -2,7 +2,7 @@ import { ContributionRegistry, definePlugin, hostToolsServiceId, type HostTool, 
 import { CordisPluginRuntime } from '@more-than-chat/runtime-cordis'
 import { timeToolPlugin } from '@more-than-chat/plugin-time-tool'
 import type { HostPluginCatalog } from '@more-than-chat/protocol'
-import { isAcceptedStaticTextTool, type DeclarativeComposerAction, type DeclarativeTextTool } from './static-text-tool'
+import { isAcceptedStaticTextTool, runDeclaredTool, type DeclarativeComposerAction, type DeclarativeTextTool } from './static-text-tool'
 
 export class HostPluginError extends Error {
   constructor(readonly code: 'PLUGIN_NOT_FOUND' | 'TOOL_UNAVAILABLE', message: string) {
@@ -82,7 +82,7 @@ export class HostPluginService {
     const label = contribution.label
     const text = contribution.text
     return this.#enqueue(async () => {
-      if (!isAcceptedStaticTextTool(manifest, { id: toolId, label, text })) throw new StaticToolInstallError('not-installable')
+      if (!isAcceptedStaticTextTool(manifest, contribution)) throw new StaticToolInstallError('not-installable')
       if (this.#runtime.list().some(plugin => plugin.manifest.id === manifest.id)) {
         throw new StaticToolInstallError('already-installed')
       }
@@ -93,7 +93,8 @@ export class HostPluginService {
           manifest,
           activate(context) {
             const tools = context.getService<ContributionRegistry<HostTool>>(hostToolsServiceId)
-            context.contribute(tools, { id: toolId, label, run: () => text })
+            context.contribute(tools, { id: toolId, label, replacesDraft: contribution.transform !== undefined,
+              run: input => runDeclaredTool(contribution, input) })
           },
         }),
       })
@@ -144,14 +145,15 @@ export class HostPluginService {
     })
   }
 
-  invoke(pluginId: string, toolId: string): Promise<{ generation: number; text: string }> {
+  invoke(pluginId: string, toolId: string, input?: string): Promise<{ generation: number; text: string; replaceDraft?: boolean }> {
     return this.#enqueue(async () => {
       const plugin = this.#requirePlugin(pluginId)
       const tool = this.#tools.list().find(tool => tool.ownerId === pluginId && tool.contribution.id === toolId)
       if (plugin.status !== 'active' || !tool) throw new HostPluginError('TOOL_UNAVAILABLE', 'The requested tool is not active.')
-      const text = await tool.contribution.run()
-      if (typeof text !== 'string' || !text.trim() || text.length > 16_384) throw new Error('Invalid or oversized tool result.')
-      return { generation: this.generation, text }
+      if (input !== undefined && (typeof input !== 'string' || input.length > 16_384)) throw new Error('Invalid tool input.')
+      const text = await tool.contribution.run(input)
+      if (typeof text !== 'string' || (!tool.contribution.replacesDraft && !text.trim()) || text.length > 16_384) throw new Error('Invalid or oversized tool result.')
+      return { generation: this.generation, text, ...(tool.contribution.replacesDraft ? { replaceDraft: true } : {}) }
     })
   }
 

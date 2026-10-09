@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HostEventMessage } from '@more-than-chat/protocol'
 import { ModelService } from '../src/model-service'
+import { MemoryModelCredentials } from '../src/credential-client'
 import { createOpenAiCompatibleProvider, type ChatModelProvider } from '../src/openai-compatible'
 
 const secret = 'sk-test-more-than-chat-secret'
@@ -15,6 +16,17 @@ afterEach(async () => {
 })
 
 describe('ModelService', () => {
+  it('does not clear an unreadable stored credential when encryption rejects a replacement', async () => {
+    const root = await tempDir()
+    const write = vi.fn(async (_key: string | null) => { throw new Error('Encryption unavailable') })
+    const service = new ModelService({ dataDir: root, generation: 1, credentials: {
+      read: async () => { throw new Error('Encryption unavailable') }, write,
+    } })
+    await service.load()
+    await expect(service.setSettings({ apiKey: 'replacement-test-value' })).rejects.toMatchObject({ code: 'CREDENTIAL_UNAVAILABLE' })
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write).not.toHaveBeenCalledWith(null)
+  })
   it('streams a mock reply and keeps the API key out of settings, events, and the mock provider', async () => {
     const seen: string[] = []
     const provider: ChatModelProvider = {
@@ -42,21 +54,20 @@ describe('ModelService', () => {
     expect(JSON.stringify(service.getSettings())).not.toContain(secret)
     expect(JSON.stringify(events)).not.toContain(secret)
     const settings = await readFile(path.join(directory, 'model-settings.json'), 'utf8')
-    const credentials = await readFile(path.join(directory, 'model-credentials.json'), 'utf8')
     expect(settings).not.toContain(secret)
-    expect(credentials).toContain(secret)
+    await expect(readFile(path.join(directory, 'model-credentials.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     if (process.platform !== 'win32') {
-      expect((await stat(path.join(directory, 'model-credentials.json'))).mode & 0o777).toBe(0o600)
       expect((await stat(directory)).mode & 0o777).toBe(0o700)
     }
   })
 
   it('reloads the credential without returning it, and clear removes the file', async () => {
     const directory = await tempDir()
-    const first = new ModelService({ dataDir: directory, generation: 1 })
+    const credentials = new MemoryModelCredentials()
+    const first = new ModelService({ dataDir: directory, generation: 1, credentials })
     await first.load()
     await first.setSettings({ apiKey: secret, providerMode: 'openai-compatible', model: 'deepseek-chat' })
-    const second = new ModelService({ dataDir: directory, generation: 2 })
+    const second = new ModelService({ dataDir: directory, generation: 2, credentials })
     await second.load()
     expect(second.getSettings()).toMatchObject({ hasApiKey: true, providerMode: 'openai-compatible', model: 'deepseek-chat' })
     expect(JSON.stringify(second.getSettings())).not.toContain(secret)

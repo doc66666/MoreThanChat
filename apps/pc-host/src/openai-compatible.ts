@@ -71,6 +71,10 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
             messages: request.messages.map(toApiMessage),
             tools: AUTHOR_TOOL_DEFINITIONS,
             tool_choice: 'auto',
+            max_tokens: 2048,
+            // Official DeepSeek enables thinking by default. Our compact author
+            // loop uses non-thinking mode; no provider-specific field elsewhere.
+            ...(new URL(request.baseUrl).hostname === 'api.deepseek.com' ? { thinking: { type: 'disabled' } } : {}),
             stream: true,
           }),
         })
@@ -87,6 +91,8 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
       const contentType = response.headers.get('content-type') ?? ''
       if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
         const payload: unknown = await response.json()
+        const reason = (payload as { choices?: { finish_reason?: unknown }[] })?.choices?.[0]?.finish_reason
+        if (typeof reason === 'string' && reason !== 'stop' && reason !== 'tool_calls') throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型返回了未完成的回复。', true)
         const text = extractMessageText(payload)
         if (text) onDelta(text)
         return { toolCalls: collectToolCalls(payload) }
@@ -120,24 +126,33 @@ export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onD
   const decoder = new TextDecoder()
   const partials = new Map<number, MutableToolCall>()
   let buffer = ''
-  while (true) {
+  const termination = { done: false, finishReason: null as string | null }
+  try { while (!termination.done) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split(/\r?\n/)
     buffer = lines.pop() ?? ''
-    for (const line of lines) consumeSseLine(line, onDelta, partials)
+    for (const line of lines) {
+      consumeSseLine(line, onDelta, partials, termination)
+      if (termination.done) break
+    }
   }
   buffer += decoder.decode()
-  if (buffer.trim()) consumeSseLine(buffer, onDelta, partials)
+  if (!termination.done && buffer.trim()) consumeSseLine(buffer, onDelta, partials, termination)
+  if (!termination.done && !['stop', 'tool_calls'].includes(termination.finishReason ?? '')) {
+    throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型连接提前结束，回复未完成。', true)
+  }
   return finishToolCalls(partials)
+  } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
 }
 
-function consumeSseLine(line: string, onDelta: (text: string) => void, partials: Map<number, MutableToolCall>): void {
+function consumeSseLine(line: string, onDelta: (text: string) => void, partials: Map<number, MutableToolCall>, termination: { done: boolean; finishReason: string | null }): void {
   const trimmed = line.trim()
   if (!trimmed.startsWith('data:')) return
   const data = trimmed.slice(5).trim()
-  if (!data || data === '[DONE]') return
+  if (!data) return
+  if (data === '[DONE]') { termination.done = true; return }
   let parsed: unknown
   try {
     parsed = JSON.parse(data) as unknown
@@ -150,6 +165,11 @@ function consumeSseLine(line: string, onDelta: (text: string) => void, partials:
   }
   const text = extractDeltaText(parsed)
   if (text) onDelta(text)
+  const reason = (parsed as { choices?: { finish_reason?: unknown }[] })?.choices?.[0]?.finish_reason
+  if (typeof reason === 'string') {
+    termination.finishReason = reason
+    if (reason !== 'stop' && reason !== 'tool_calls') throw new ModelServiceError('MODEL_REQUEST_FAILED', `模型回复未完成（${reason.slice(0, 40)}）。`, true)
+  }
   absorbToolCalls(parsed, partials)
 }
 

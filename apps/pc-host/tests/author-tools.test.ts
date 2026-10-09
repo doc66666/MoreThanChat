@@ -9,7 +9,7 @@ import { createMockProvider, createOpenAiCompatibleProvider, type ChatModelProvi
 import { PluginDraftService } from '../src/plugin-drafts'
 
 const secret = 'sk-test-more-than-chat-secret'
-const source = 'globalThis.__mtcAuthorToolRan = true'
+const source = JSON.stringify({ kind: 'composer-transform-action', actionId: 'trim', label: '清理空白', operation: 'trim' })
 const directories: string[] = []
 
 afterEach(async () => {

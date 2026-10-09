@@ -238,11 +238,12 @@ export function normalizeState(candidate: unknown): ChatState {
 }
 
 /** An interrupted reply is restored as cancelled, never as a normal completion. */
-export function interruptStreamingMessages(state: ChatState): ChatState {
+export function interruptStreamingMessages(state: ChatState, onlyConversationId?: string): ChatState {
   let changed = false
   const messages: ChatState['messages'] = {}
   for (const [conversationId, list] of Object.entries(state.messages)) {
     if (!Array.isArray(list)) return state
+    if (onlyConversationId !== undefined && conversationId !== onlyConversationId) { messages[conversationId] = list; continue }
     messages[conversationId] = list.map(message => {
       if (!message || message.status !== 'streaming') return message
       changed = true

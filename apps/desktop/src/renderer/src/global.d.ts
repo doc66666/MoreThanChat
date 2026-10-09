@@ -65,7 +65,7 @@ declare global {
       getHostStatus(): Promise<HostStatusSnapshot>
       getHostPlugins(): Promise<HostPluginCatalog>
       setHostPluginEnabled(pluginId: string, enabled: boolean): Promise<HostPluginCatalog>
-      invokeHostTool(pluginId: string, toolId: string): Promise<{ generation: number; text: string }>
+      invokeHostTool(pluginId: string, toolId: string, input?: string): Promise<{ generation: number; text: string; replaceDraft?: boolean }>
       pingHost(): Promise<{
         generation: number
         roundTripMs: number

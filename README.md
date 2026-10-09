@@ -1,7 +1,11 @@
 # MoreThanChat
 一切皆插件的聊天应用，或许你的企鹅已经过时了！
 
-当前阶段：PC 端聊天原型、可信插件生命周期、受监督 PC Host，以及 Host 内的 OpenAI 兼容流式模型。没有真实 API Key 时使用模拟流，不代表已经调用过线上模型。插件草稿可以检查、创建、校验和诊断。用户确认后，固定 JSON 形状的声明式文本工具或输入框动作会安装到当前 Host，安装后可以立即使用和停用。文本工具和输入框动作都在 Host 重启后恢复，并保留启停状态。再次确认文本工具或输入框动作会追加不可变版本，更新失败时恢复上一版本。任意草稿源码不会执行。聊天模型可以检查、创建、校验和诊断草稿，不能代替用户安装。聊天界面会显示这些工具的进度、失败原因和待安装草稿，不显示草稿源码或密钥。内置插件和其他已安装 id 不会被替换。
+当前阶段：Windows AI 聊天与受限 AI 插件创作内测版。已用真实 DeepSeek `deepseek-flash` 验证生成大写转换插件、确认安装、修订为小写转换、更新和重启恢复；真实桌面聊天中的创建、确认与执行也已实测。
+
+用户在设置中配置 API、模型和 Key，在 More AI 会话中描述需要的插件，再到插件面板确认安装。当前支持固定文本、输入框文本追加，以及大写/小写/首尾空白转换。模型读取实际契约和样例，通过工具创建、校验与修订；用户掌握安装和更新决定。插件启停与版本会保存，失败更新可恢复旧版并继续提交修订。
+
+Key 由 Electron Main 的系统加密服务保存，Host 通过私有 RPC 获取运行时凭据；不使用明文文件回退。任意 JS/TS 代码、文件/网络权限插件、SQLite、Android 与正式签名安装器仍属后续阶段。
 
 ## 当前可运行原型
 
@@ -21,16 +25,29 @@ pnpm build
 pnpm verify:plugin-ui
 pnpm verify:host
 pnpm verify:protocol
+pnpm verify:ai-ui
 pnpm package:dir
 ```
 
 `pnpm package:dir` 在当前系统生成 unpacked 目录，并检查 Host 依赖位于 `resources/pc-host`、不在 `app.asar` 里。Linux 上的结果不是 Windows 安装包验收。
+
+Windows CI 验证目录版中的聊天/插件/加密凭据恢复，成功后上传 `MoreThanChat-windows-x64` 产物；下载解压后运行 `MoreThanChat.exe`，需要保留整个目录。尚未签名，属于内测分发版本。
+
+真实 API 测试需要交互输入 Key，不使用命令参数或提交到 Git：
+
+```powershell
+pnpm test:live-ai
+# Windows 桌面真实模型验收：
+pnpm build
+node scripts/verify-ai-ui.mjs --live
+```
 
 - [架构与安全边界](docs/architecture.md)
 - [插件运行时与示例](docs/plugin-runtime.md)
 - [PC Host 协议与进程监督](docs/host-supervision.md)
 - [Cordis 适配与 CI 基线](docs/runtime-cordis.md)
 - [开发路线图](docs/roadmap.md)
+- [AI 插件创作与加密凭据](docs/ai-plugin-mvp.md)
 - [DeepSeek Harness / Cordis 调研记录](docs/upstream-study.md)
 
 更新本地参考源码：

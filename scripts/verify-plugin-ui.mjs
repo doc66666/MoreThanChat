@@ -284,4 +284,5 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-await run()
+export { CdpClient, evaluate, waitForExpression, waitForTarget, reservePort, waitForExit, delay }
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) await run()

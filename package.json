@@ -12,6 +12,8 @@
     "test": "pnpm build:host && pnpm -r --if-present test",
     "verify:plugin-ui": "pnpm build && node scripts/verify-plugin-ui.mjs",
     "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",
+    "verify:ai-ui": "pnpm build && node scripts/verify-ai-ui.mjs",
+    "test:live-ai": "pnpm build:host && node scripts/test-live-ai.mjs",
     "verify:protocol": "pnpm --filter @more-than-chat/protocol build && node scripts/verify-protocol-schema.mjs",
     "typecheck": "pnpm -r typecheck"
   },

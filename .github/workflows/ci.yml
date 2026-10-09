@@ -51,6 +51,25 @@ jobs:
       - name: Verify Host crash recovery and plugin preferences
         if: runner.os == 'Windows'
         run: node scripts/verify-plugin-ui.mjs --host
+      - name: Verify chat-authored plugin and encrypted credential restore
+        if: runner.os == 'Windows'
+        run: node scripts/verify-ai-ui.mjs
+      - name: Verify packaged chat and plugin workflow
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:MTC_TEST_PACKAGED_EXE = Join-Path $PWD '.artifacts/desktop-release/win-unpacked/MoreThanChat.exe'
+          node scripts/verify-ai-ui.mjs
+      - name: Save Windows application directory
+        if: success() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: MoreThanChat-windows-x64
+          path: .artifacts/desktop-release/win-unpacked/**
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 14
       - name: Save desktop verification screenshots
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

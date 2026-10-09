@@ -163,6 +163,11 @@ export function App() {
   useEffect(() => {
     return window.moreThanChat.onModelChatEvent(event => {
       if (event.generation !== hostStatusRef.current.generation) return
+      if (event.type === 'author-tool' && event.phase === 'finished' && event.draft) {
+        void window.moreThanChat.inspectPluginDrafts().then(inspection => {
+          if (event.generation === hostStatusRef.current.generation) setPluginDrafts(inspection)
+        }).catch(() => undefined)
+      }
       setState(current => current ? applyIncomingModelEvent(current, event, pendingModelEventsRef.current) : current)
       if (event.type === 'failed') setToast(event.errorMessage)
       if (event.type !== 'delta' && event.type !== 'author-tool') streamIdsRef.current.delete(event.assistantMessageId)
@@ -372,7 +377,7 @@ export function App() {
     if (!streaming) return
     const streamId = streamIdsRef.current.get(streaming.id)
     streamIdsRef.current.delete(streaming.id)
-    setState(current => current ? interruptStreamingMessages(current) : current)
+    setState(current => current ? interruptStreamingMessages(current, active.id) : current)
     if (!streamId || hostStatusRef.current.state !== 'ready') return
     try {
       await window.moreThanChat.cancelModelChat(streamId)
@@ -508,9 +513,9 @@ export function App() {
     if (hostPluginBusy || hostStatus.state !== 'ready') return
     setHostPluginBusy(true)
     try {
-      const result = await window.moreThanChat.invokeHostTool(pluginId, toolId)
+      const result = await window.moreThanChat.invokeHostTool(pluginId, toolId, draft)
       if (hostStatusRef.current.state !== 'ready' || hostStatusRef.current.generation !== result.generation) return
-      setDraft(draft => draft.trim() ? `${draft}\n${result.text}` : result.text)
+      setDraft(draft => result.replaceDraft ? result.text : draft.trim() ? `${draft}\n${result.text}` : result.text)
       setToast(`${label}已写入输入框`)
     }
     catch (error) { console.error(error); setToast('工具暂时不可用，请稍后重试') }
@@ -811,7 +816,7 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
         </div>
         <section className="draft-section">
           <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
-          <p className="settings-note">确认后可以安装固定 JSON 形状的文本工具或输入框动作。源码不会执行。安装后可立即使用和停用。文本工具和输入框动作都会在 Host 重启后保留启停状态。再次确认会写入新版本，更新失败时仍使用上一版本。</p>
+          <p className="settings-note">让 More AI 为你创建快捷文本或文本处理动作。确认后即可使用和停用，重启后仍保留；更新失败会恢复原版。这些插件只操作输入框，不访问网络或文件。</p>
           {(drafts?.drafts ?? []).map(item => {
             const installed = hostPlugins.some(plugin => plugin.id === item.id)
             return (
@@ -838,13 +843,15 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
             )
           })}
           {drafts && drafts.drafts.length === 0 && <p className="settings-note">还没有草稿。</p>}
+          <details className="plugin-advanced-editor"><summary>开发者：手动创建插件</summary>
           <label className="settings-field"><span>Manifest JSON</span>
             <textarea data-draft-field="manifest" value={manifestJson} onChange={event => setManifestJson(event.target.value)} spellCheck={false} />
           </label>
-          <label className="settings-field"><span>源码</span>
+          <label className="settings-field"><span>插件定义（JSON）</span>
             <textarea data-draft-field="source" value={source} onChange={event => setSource(event.target.value)} spellCheck={false} />
           </label>
           <button type="button" className="primary-button" disabled={hostBusy || !manifestJson.trim()} onClick={() => onCreateDraft(manifestJson, source)}>创建草稿</button>
+          </details>
           {draftReport && <p className="draft-report">{draftReport}</p>}
         </section>
         <div className="plugin-empty"><PlugZap /><h3>可信插件模式</h3><p>示例插件经过版本化 manifest 和生命周期运行时接入。任意磁盘代码将在独立进程与权限代理完成后开放。</p></div>
@@ -883,7 +890,7 @@ function ModelSettingsPanel({ snapshot, onClose, onSave, onClearKey }: {
   onClearKey: () => Promise<void>
 }) {
   const [baseUrl, setBaseUrl] = useState(snapshot?.baseUrl ?? 'https://api.deepseek.com')
-  const [model, setModel] = useState(snapshot?.model ?? 'deepseek-chat')
+  const [model, setModel] = useState(snapshot?.model ?? 'deepseek-flash')
   const [providerMode, setProviderMode] = useState<ModelProviderMode>(snapshot?.providerMode ?? 'mock')
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
@@ -937,21 +944,21 @@ function ModelSettingsPanel({ snapshot, onClose, onSave, onClearKey }: {
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <form className="plugin-drawer settings-drawer" onSubmit={event => void submit(event)} onMouseDown={event => event.stopPropagation()} data-provider-mode={providerMode} data-has-api-key={snapshot?.hasApiKey ? 'true' : 'false'}>
         <div className="drawer-header"><h2>模型设置</h2><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div>
-        <p className="settings-note">API Key 只写入 PC Host 的本机凭据文件。界面只知道是否已保存，聊天记录、日志和插件都拿不到原始密钥。</p>
+        <p className="settings-note">API Key 由主进程使用系统加密保存，仅供模型服务调用。界面只显示是否已保存，不回传密钥。</p>
         <label className="settings-field"><span>提供方</span>
-          <select value={providerMode} onChange={event => setProviderMode(event.target.value as ModelProviderMode)}>
+          <select data-model-field="provider" value={providerMode} onChange={event => setProviderMode(event.target.value as ModelProviderMode)}>
             <option value="mock">模拟（不访问网络）</option>
             <option value="openai-compatible">OpenAI 兼容 / DeepSeek</option>
           </select>
         </label>
         <label className="settings-field"><span>Base URL</span>
-          <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com" autoComplete="off" spellCheck={false} />
+          <input data-model-field="base-url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com" autoComplete="off" spellCheck={false} />
         </label>
         <label className="settings-field"><span>模型</span>
-          <input value={model} onChange={event => setModel(event.target.value)} placeholder="deepseek-chat" autoComplete="off" spellCheck={false} />
+          <input data-model-field="model" value={model} onChange={event => setModel(event.target.value)} placeholder="deepseek-flash" autoComplete="off" spellCheck={false} />
         </label>
         <label className="settings-field"><span>API Key</span>
-          <input type="password" value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder={snapshot?.hasApiKey ? '已保存，留空则不修改' : '未设置'} autoComplete="off" spellCheck={false} />
+          <input data-model-field="key" type="password" value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder={snapshot?.hasApiKey ? '已保存，留空则不修改' : '未设置'} autoComplete="off" spellCheck={false} />
         </label>
         {error && <p className="settings-error">{error}</p>}
         <div className="dialog-actions">

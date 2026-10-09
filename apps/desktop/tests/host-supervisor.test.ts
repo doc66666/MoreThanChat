@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createHostEvent,
+  createHostRequest,
   createHostSuccessResponse,
   type HostMethod,
   type HostRequest,
@@ -76,6 +77,31 @@ afterEach(() => {
 })
 
 describe('HostSupervisor', () => {
+  it('brokers private credential replies without broadcasting them to UI events', async () => {
+    const processes: FakeHostProcess[] = []
+    const write = vi.fn(async (_key: string | null) => undefined)
+    const supervisor = createSupervisor(processes, { credentials: { read: async () => 'private-test-value', write } })
+    const events: unknown[] = []
+    supervisor.subscribeEvents(event => events.push(event))
+    const started = supervisor.start(); const host = processes[0]!
+    host.emitSpawn(); respondToHandshake(host); await started
+    host.emitMessage(createHostRequest('credentials.read', 'private-read', {}))
+    await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({ requestId: 'private-read', payload: { apiKey: 'private-test-value' } })))
+    host.emitMessage(createHostRequest('credentials.write', 'private-write', { apiKey: null }))
+    await vi.waitFor(() => expect(write).toHaveBeenCalledWith(null))
+    expect(events).toEqual([])
+    const stopped = supervisor.stop(); host.emitExit(0); await stopped
+  })
+
+  it('terminates a Host that sends a parent request outside the credential whitelist', async () => {
+    const processes: FakeHostProcess[] = []
+    const supervisor = createSupervisor(processes)
+    const started = supervisor.start(); const host = processes[0]!
+    host.emitSpawn(); respondToHandshake(host); await started
+    host.emitMessage(createHostRequest('diagnostics.ping', 'illegal-parent-call', { sentAtMs: 1 }))
+    expect(host.terminateCalls).toBe(1)
+    const stopped = supervisor.stop(); host.emitExit(1); await stopped
+  })
   it('rejects restart during shutdown, shares concurrent stops, and can start afterwards', async () => {
     vi.useFakeTimers()
     const processes: FakeHostProcess[] = []

@@ -8,13 +8,10 @@ export interface DeclarativeTextTool {
   readonly id: string
   readonly label: string
   readonly text: string
+  readonly transform?: 'uppercase' | 'lowercase' | 'trim'
 }
 
-export interface DeclarativeComposerAction {
-  readonly id: string
-  readonly label: string
-  readonly text: string
-}
+export type DeclarativeComposerAction = DeclarativeTextTool
 
 export type DeclarativeInstall =
   | { readonly kind: 'text-tool'; readonly tool: DeclarativeTextTool }
@@ -44,6 +41,13 @@ export function parseDeclarativeComposerAction(source: string): DeclarativeCompo
 
 /** Accepts only the two fixed declarative shapes. Source is never evaluated. */
 export function parseDeclarativeInstall(source: string): DeclarativeInstall | null {
+  const transform = parseFixedObject(source, ['kind', 'actionId', 'label', 'operation'])
+  if (transform?.kind === 'composer-transform-action' && typeof transform.actionId === 'string'
+    && transform.actionId.length <= 64 && toolIdPattern.test(transform.actionId) && cleanLabel(transform.label)
+    && ['uppercase', 'lowercase', 'trim'].includes(String(transform.operation))) {
+    return { kind: 'composer-action', action: { id: transform.actionId, label: cleanLabel(transform.label)!, text: '',
+      transform: transform.operation as NonNullable<DeclarativeTextTool['transform']> } }
+  }
   const tool = parseDeclarativeTextTool(source)
   if (tool) return { kind: 'text-tool', tool }
   const action = parseDeclarativeComposerAction(source)
@@ -67,8 +71,17 @@ export function isAcceptedStaticTextTool(manifest: PluginManifestV1, tool: Decla
     && toolIdPattern.test(tool.id)
     && tool.label.trim().length > 0
     && tool.label.length <= 80
-    && tool.text.trim().length > 0
+    && (tool.transform !== undefined ? ['uppercase', 'lowercase', 'trim'].includes(tool.transform) : tool.text.trim().length > 0)
     && tool.text.length <= 4000
+}
+
+export function runDeclaredTool(tool: DeclarativeTextTool, input = ''): string {
+  switch (tool.transform) {
+    case 'uppercase': return input.toUpperCase()
+    case 'lowercase': return input.toLowerCase()
+    case 'trim': return input.trim()
+    default: return tool.text
+  }
 }
 
 function parseFixedObject(source: string, keys: readonly string[]): Record<string, unknown> | null {

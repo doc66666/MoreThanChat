@@ -16,6 +16,8 @@ export const HOST_METHODS = [
   "pluginDrafts.validate",
   "pluginDrafts.diagnose",
   "pluginDrafts.install",
+  "credentials.read",
+  "credentials.write",
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];
@@ -202,7 +204,9 @@ export interface HostRequestPayloadMap {
   };
   "plugins.list": Record<string, never>;
   "plugins.setEnabled": { pluginId: string; enabled: boolean };
-  "tools.invoke": { pluginId: string; toolId: string };
+  "tools.invoke": { pluginId: string; toolId: string; input?: string };
+  "credentials.read": Record<string, never>;
+  "credentials.write": { apiKey: string | null };
   "model.getSettings": Record<string, never>;
   "model.setSettings": {
     baseUrl?: string;
@@ -241,7 +245,9 @@ export interface HostResponsePayloadMap {
   };
   "plugins.list": HostPluginCatalog;
   "plugins.setEnabled": HostPluginCatalog;
-  "tools.invoke": { generation: number; text: string };
+  "tools.invoke": { generation: number; text: string; replaceDraft?: boolean };
+  "credentials.read": { apiKey: string | null };
+  "credentials.write": { saved: true };
   "model.getSettings": ModelSettingsSnapshot;
   "model.setSettings": ModelSettingsSnapshot;
   "model.chat.start": ModelChatStreamRef;
@@ -840,10 +846,14 @@ const parseAuthorToolDraftRef = (value: unknown, path: string): AuthorToolDraftR
 const parsePluginRequest = (method: 'plugins.list' | 'plugins.setEnabled' | 'tools.invoke', value: unknown) => {
   const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
   const keys = method === 'plugins.list' ? [] : method === 'plugins.setEnabled' ? ['pluginId', 'enabled'] : ['pluginId', 'toolId'];
-  assertKeys(object, keys, [], '$.payload', 'INVALID_PAYLOAD');
+  assertKeys(object, keys, method === 'tools.invoke' ? ['input'] : [], '$.payload', 'INVALID_PAYLOAD');
   if (method === 'plugins.list') return {};
   const pluginId = parseNonEmptyString(object.pluginId, '$.payload.pluginId', 'INVALID_PAYLOAD');
-  if (method === 'tools.invoke') return { pluginId, toolId: parseNonEmptyString(object.toolId, '$.payload.toolId', 'INVALID_PAYLOAD') };
+  if (method === 'tools.invoke') {
+    if (hasOwn(object, 'input') && (typeof object.input !== 'string' || object.input.length > 16384)) throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid tool input');
+    return { pluginId, toolId: parseNonEmptyString(object.toolId, '$.payload.toolId', 'INVALID_PAYLOAD'),
+      ...(hasOwn(object, 'input') ? { input: object.input as string } : {}) };
+  }
   if (typeof object.enabled !== 'boolean') throw new ProtocolValidationError('INVALID_PAYLOAD', 'enabled must be a boolean');
   return { pluginId, enabled: object.enabled };
 };
@@ -1043,11 +1053,24 @@ const parsePluginDraftInstallResult = (value: unknown): PluginDraftInstallResult
   };
 };
 
+const parseCredential = (value: unknown): { apiKey: string | null } => {
+  const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
+  assertKeys(object, ['apiKey'], [], '$.payload', 'INVALID_PAYLOAD');
+  if (object.apiKey !== null && (typeof object.apiKey !== 'string' || !object.apiKey.trim() || object.apiKey.length > 4096)) throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid credential');
+  return { apiKey: object.apiKey as string | null };
+};
+
 const parseRequestPayload = <M extends HostMethod>(
   method: M,
   value: unknown,
 ): HostRequestPayloadMap[M] => {
   switch (method) {
+    case 'credentials.read': {
+      const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
+      assertKeys(object, [], [], '$.payload', 'INVALID_PAYLOAD');
+      return {} as HostRequestPayloadMap[M];
+    }
+    case 'credentials.write': return parseCredential(value) as HostRequestPayloadMap[M];
     case "host.handshake":
       return parseHandshakeRequest(value) as HostRequestPayloadMap[M];
     case "diagnostics.ping":
@@ -1166,6 +1189,13 @@ const parseResponsePayload = <M extends HostMethod>(
   value: unknown,
 ): HostResponsePayloadMap[M] => {
   switch (method) {
+    case 'credentials.read': return parseCredential(value) as HostResponsePayloadMap[M];
+    case 'credentials.write': {
+      const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
+      assertKeys(object, ['saved'], [], '$.payload', 'INVALID_PAYLOAD');
+      if (object.saved !== true) throw new ProtocolValidationError('INVALID_PAYLOAD', 'Credential was not saved');
+      return { saved: true } as HostResponsePayloadMap[M];
+    }
     case "host.handshake":
       return parseHandshakeResponse(value) as HostResponsePayloadMap[M];
     case "diagnostics.ping":
@@ -1177,10 +1207,13 @@ const parseResponsePayload = <M extends HostMethod>(
       return parseHostPluginCatalog(value) as HostResponsePayloadMap[M];
     case "tools.invoke": {
       const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
-      assertKeys(object, ['generation', 'text'], [], '$.payload', 'INVALID_PAYLOAD');
+      assertKeys(object, ['generation', 'text'], ['replaceDraft'], '$.payload', 'INVALID_PAYLOAD');
+      if (typeof object.text !== 'string' || object.text.length > 16384 || (hasOwn(object, 'replaceDraft') && typeof object.replaceDraft !== 'boolean')) throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid tool result');
+      if (object.replaceDraft !== true && !object.text.trim()) throw new ProtocolValidationError('INVALID_PAYLOAD', 'Empty tool result');
       return {
         generation: parseGeneration(object.generation, '$.payload.generation'),
-        text: parseNonEmptyString(object.text, '$.payload.text', 'INVALID_PAYLOAD'),
+        text: object.text,
+        ...(hasOwn(object, 'replaceDraft') ? { replaceDraft: object.replaceDraft as boolean } : {}),
       } as HostResponsePayloadMap[M];
     }
     case "model.getSettings":

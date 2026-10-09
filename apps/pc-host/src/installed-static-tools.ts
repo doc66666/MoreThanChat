@@ -87,6 +87,21 @@ export class InstalledStaticToolStore {
     await this.#write(stored.manifest.id, stored)
   }
 
+  /** Failed/staged revisions stay immutable; allocate beyond every reserved file. */
+  async nextRevision(id: string, current: number): Promise<number> {
+    let highest = current
+    try {
+      for (const name of await readdir(this.#versionDirectory(id))) {
+        const match = /^version-(\d+)\.json$/.exec(name)
+        const revision = match ? Number(match[1]) : 0
+        if (Number.isSafeInteger(revision)) highest = Math.max(highest, revision)
+      }
+    }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    if (!Number.isSafeInteger(highest + 1)) throw new Error('Plugin revision limit reached.')
+    return highest + 1
+  }
+
   /** Creates the version file when a record was stored before versions existed. */
   async preserveVersion(record: StoredStaticTool): Promise<void> {
     await this.#placeVersion(requireStored(record))
@@ -206,14 +221,14 @@ function parseStoredStaticTool(value: unknown): StoredStaticTool | null {
   const tool = record.tool
   const kind = storedKind(record.kind)
   if (!kind) return null
-  if (!isAcceptedStaticTextTool(record.manifest, { id: tool.id, label: tool.label, text: tool.text })) return null
+  if (!isAcceptedStaticTextTool(record.manifest, tool)) return null
   return {
     v: 1,
     revision,
     enabled: record.enabled,
     kind,
     manifest: record.manifest,
-    tool: { id: tool.id, label: tool.label, text: tool.text },
+    tool: { id: tool.id, label: tool.label, text: tool.text, ...(tool.transform ? { transform: tool.transform } : {}) },
   }
 }
 

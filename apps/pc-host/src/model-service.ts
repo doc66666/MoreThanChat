@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   createHostEvent,
@@ -10,6 +10,8 @@ import {
   type ModelSettingsSnapshot,
 } from '@more-than-chat/protocol'
 import { authorToolStarted, type AuthorToolCall, type AuthorToolExecutor, type AuthorToolNotice } from './author-tools'
+import { PLUGIN_AUTHOR_CONTRACT } from './author-contract'
+import { MemoryModelCredentials, type ModelCredentials } from './credential-client'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
   createMockProvider,
@@ -20,11 +22,11 @@ import {
 } from './openai-compatible'
 
 export const DEFAULT_MODEL_BASE_URL = 'https://api.deepseek.com'
-export const DEFAULT_MODEL_NAME = 'deepseek-chat'
+export const DEFAULT_MODEL_NAME = 'deepseek-flash'
 const MAX_REPLY_CHARS = 500_000
 const MAX_DELTA_CHARS = 100_000
-const SYSTEM_PROMPT = '你是 MoreThanChat 的桌面助手。根据对话回答。不要索取、复述或猜测 API key。处理插件草稿时只能使用 inspect_drafts、create_draft、validate_draft、diagnose_draft。不要安装插件，安装必须由用户确认。不要复述草稿源码。'
-const MAX_TOOL_ROUNDS = 4
+const SYSTEM_PROMPT = '你是 MoreThanChat 的桌面助手。用户要求插件时实际调用作者工具创建和校验，不要仅描述方案。不要索取或复述 API key。安装由用户确认。不要在聊天正文输出源码。插件契约：' + JSON.stringify(PLUGIN_AUTHOR_CONTRACT)
+const MAX_TOOL_ROUNDS = 6
 const MAX_TOOL_CALLS = 4
 
 export interface ModelServiceOptions {
@@ -33,6 +35,7 @@ export interface ModelServiceOptions {
   fetchImpl?: typeof fetch
   providers?: Partial<Record<ModelProviderMode, ChatModelProvider>>
   authorTools?: AuthorToolExecutor
+  credentials?: ModelCredentials
 }
 
 interface StoredSettings {
@@ -49,17 +52,18 @@ interface ActiveStream {
   state: 'running' | 'completed' | 'failed' | 'cancelled'
   cancelRequested: boolean
   emit: (event: HostEventMessage) => void
+  settings: StoredSettings
 }
 
 /**
- * Runs model calls inside the PC Host. The API key stays in a private credential
- * file and is never copied into settings, events, or plugin services.
+ * Runs model calls inside the PC Host. Main owns encrypted credential storage;
+ * Host keeps only a runtime copy, never settings/events/plugin services.
  */
 export class ModelService {
   readonly #dataDir: string
   readonly #generation: number
   readonly #settingsPath: string
-  readonly #credentialPath: string
+  readonly #credentials: ModelCredentials
   readonly #providers: Record<ModelProviderMode, ChatModelProvider>
   readonly #authorTools: AuthorToolExecutor | undefined
   readonly #streams = new Map<string, ActiveStream>()
@@ -70,12 +74,13 @@ export class ModelService {
   }
   #apiKey: string | null = null
   #closed = false
+  #settingsTail: Promise<unknown> = Promise.resolve()
 
   constructor(options: ModelServiceOptions) {
     this.#dataDir = options.dataDir
     this.#generation = options.generation
     this.#settingsPath = path.join(options.dataDir, 'model-settings.json')
-    this.#credentialPath = path.join(options.dataDir, 'model-credentials.json')
+    this.#credentials = options.credentials ?? new MemoryModelCredentials()
     const fetchImpl = options.fetchImpl
     this.#providers = {
       mock: options.providers?.mock ?? createMockProvider(),
@@ -91,7 +96,7 @@ export class ModelService {
     await chmod(this.#dataDir, 0o700)
     const settings = parseStoredSettings(await readPrivateJson(this.#settingsPath))
     if (settings) this.#settings = settings
-    this.#apiKey = parseStoredKey(await readPrivateJson(this.#credentialPath))
+    this.#apiKey = await this.#credentials.read().catch(() => null)
   }
 
   getSettings(): ModelSettingsSnapshot {
@@ -103,16 +108,30 @@ export class ModelService {
     }
   }
 
-  async setSettings(input: HostRequestPayloadMap['model.setSettings']): Promise<ModelSettingsSnapshot> {
+  setSettings(input: HostRequestPayloadMap['model.setSettings']): Promise<ModelSettingsSnapshot> {
+    const next = this.#settingsTail.catch(() => undefined).then(() => this.#setSettings(input))
+    this.#settingsTail = next
+    return next
+  }
+
+  async #setSettings(input: HostRequestPayloadMap['model.setSettings']): Promise<ModelSettingsSnapshot> {
     if (this.#closed) throw new ModelServiceError('MODEL_NOT_CONFIGURED', '模型服务正在关闭。', true)
     const next: StoredSettings = { ...this.#settings }
     if (input.baseUrl !== undefined) next.baseUrl = normalizeBaseUrl(input.baseUrl)
     if (input.model !== undefined) next.model = normalizeModelName(input.model)
     if (input.providerMode !== undefined) next.providerMode = input.providerMode
+    const key = input.clearApiKey ? null : input.apiKey ?? this.#apiKey
+    const changedKey = input.clearApiKey === true || input.apiKey !== undefined
+    let credentialCommitted = false
+    try {
+      if (changedKey) { await this.#credentials.write(key); credentialCommitted = true }
+      await this.#persist(next)
+    } catch {
+      if (credentialCommitted) await this.#credentials.write(this.#apiKey).catch(() => undefined)
+      throw new ModelServiceError('CREDENTIAL_UNAVAILABLE', '模型配置未保存，请检查本机加密存储。', true)
+    }
     this.#settings = next
-    if (input.clearApiKey === true) this.#apiKey = null
-    else if (input.apiKey !== undefined) this.#apiKey = input.apiKey
-    await this.#persist()
+    this.#apiKey = key
     return this.getSettings()
   }
 
@@ -138,6 +157,7 @@ export class ModelService {
       state: 'running',
       cancelRequested: false,
       emit,
+      settings: { ...this.#settings },
     }
     this.#streams.set(input.streamId, stream)
     const secret = this.#settings.providerMode === 'openai-compatible' ? (this.#apiKey ?? '') : ''
@@ -172,7 +192,7 @@ export class ModelService {
         this.#finishCancelled(stream)
         return
       }
-      const provider = this.#providers[this.#settings.providerMode]
+      const provider = this.#providers[stream.settings.providerMode]
       if (!provider) throw new ModelServiceError('MODEL_NOT_CONFIGURED', '模型提供方不可用。', false)
       const transcript: ProviderMessage[] = providerMessages(stream.messages)
       let unresolvedTools = false
@@ -182,8 +202,8 @@ export class ModelService {
           return
         }
         const request: ProviderChatRequest = {
-          baseUrl: this.#settings.baseUrl,
-          model: this.#settings.model,
+          baseUrl: stream.settings.baseUrl,
+          model: stream.settings.model,
           apiKey: secret,
           messages: transcript,
           signal: stream.controller.signal,
@@ -229,7 +249,7 @@ export class ModelService {
     transcript.push({
       role: 'assistant',
       content: '',
-      toolCalls: calls.map(call => ({ id: call.id, name: call.name, arguments: '{}' })),
+      toolCalls: calls.map(call => ({ id: call.id, name: call.name, arguments: redactSecret(call.arguments, secret) })),
     })
     for (const call of calls) {
       if (stream.cancelRequested || stream.controller.signal.aborted) {
@@ -304,21 +324,15 @@ export class ModelService {
     }))
   }
 
-  async #persist(): Promise<void> {
+  async #persist(settings: StoredSettings): Promise<void> {
     await mkdir(this.#dataDir, { recursive: true, mode: 0o700 })
     await chmod(this.#dataDir, 0o700)
     await writePrivateJson(this.#settingsPath, {
       v: 1,
-      baseUrl: this.#settings.baseUrl,
-      model: this.#settings.model,
-      providerMode: this.#settings.providerMode,
+      baseUrl: settings.baseUrl,
+      model: settings.model,
+      providerMode: settings.providerMode,
     })
-    if (this.#apiKey) {
-      await writePrivateJson(this.#credentialPath, { v: 1, apiKey: this.#apiKey })
-    }
-    else {
-      await rm(this.#credentialPath, { force: true })
-    }
   }
 }
 
@@ -390,13 +404,6 @@ function parseStoredSettings(value: unknown): StoredSettings | undefined {
   catch {
     return undefined
   }
-}
-
-function parseStoredKey(value: unknown): string | null {
-  if (!value || typeof value !== 'object') return null
-  const apiKey = (value as { apiKey?: unknown }).apiKey
-  if (typeof apiKey !== 'string' || apiKey.trim().length === 0 || apiKey.length > 4096) return null
-  return apiKey
 }
 
 async function readPrivateJson(file: string): Promise<unknown> {

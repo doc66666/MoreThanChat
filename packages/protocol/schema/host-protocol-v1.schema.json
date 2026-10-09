@@ -47,6 +47,18 @@
       "$ref": "#/$defs/toolInvokeResponse"
     },
     {
+      "$ref": "#/$defs/credentialReadRequest"
+    },
+    {
+      "$ref": "#/$defs/credentialWriteRequest"
+    },
+    {
+      "$ref": "#/$defs/credentialReadResponse"
+    },
+    {
+      "$ref": "#/$defs/credentialWriteResponse"
+    },
+    {
       "$ref": "#/$defs/modelGetSettingsRequest"
     },
     {
@@ -519,7 +531,9 @@
             "pluginDrafts.create",
             "pluginDrafts.validate",
             "pluginDrafts.diagnose",
-            "pluginDrafts.install"
+            "pluginDrafts.install",
+            "credentials.read",
+            "credentials.write"
           ]
         },
         "ok": {
@@ -675,6 +689,10 @@
               "type": "string",
               "minLength": 1,
               "pattern": ".*\\S.*"
+            },
+            "input": {
+              "type": "string",
+              "maxLength": 16384
             }
           }
         }
@@ -1019,8 +1037,190 @@
             },
             "text": {
               "type": "string",
-              "minLength": 1,
-              "pattern": ".*\\S.*"
+              "maxLength": 16384
+            },
+            "replaceDraft": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "credentialReadRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "credentials.read"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    },
+    "credentialWriteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "credentials.write"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "apiKey"
+          ],
+          "properties": {
+            "apiKey": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "credentialReadResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "credentials.read"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "apiKey"
+          ],
+          "properties": {
+            "apiKey": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "credentialWriteResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "credentials.write"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "saved"
+          ],
+          "properties": {
+            "saved": {
+              "const": true
             }
           }
         }

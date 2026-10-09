@@ -3,6 +3,9 @@ import {
   HOST_PROTOCOL_VERSION,
   assertResponseForRequest,
   createHostRequest,
+  createHostSuccessResponse,
+  createHostErrorResponse,
+  type HostRequest,
   safeParseHostMessage,
   type HostMethod,
   type HostPluginCatalog,
@@ -35,6 +38,7 @@ export interface HostSupervisorOptions {
   readonly shutdownTimeoutMs?: number
   readonly restartDelaysMs?: readonly number[]
   readonly stableResetMs?: number
+  readonly credentials?: { read(): Promise<string | null>; write(key: string | null): Promise<void> }
 }
 
 export interface HostPingResult {
@@ -89,6 +93,7 @@ export class HostSupervisor {
   readonly #shutdownTimeoutMs: number
   readonly #restartDelaysMs: readonly number[]
   readonly #stableResetMs: number
+  readonly #credentials: HostSupervisorOptions['credentials']
   readonly #listeners = new Set<(status: HostStatusSnapshot) => void>()
   readonly #eventListeners = new Set<(event: HostEventMessage) => void>()
   readonly #pending = new Map<string, PendingRequest>()
@@ -113,6 +118,7 @@ export class HostSupervisor {
     this.#shutdownTimeoutMs = options.shutdownTimeoutMs ?? 800
     this.#restartDelaysMs = options.restartDelaysMs ?? defaultRestartDelays
     this.#stableResetMs = options.stableResetMs ?? 10_000
+    this.#credentials = options.credentials
   }
 
   getStatus(): HostStatusSnapshot {
@@ -179,8 +185,8 @@ export class HostSupervisor {
     return result
   }
 
-  invokeTool(pluginId: string, toolId: string): Promise<HostResponsePayloadMap['tools.invoke']> {
-    return this.#request('tools.invoke', { pluginId, toolId })
+  invokeTool(pluginId: string, toolId: string, input?: string): Promise<HostResponsePayloadMap['tools.invoke']> {
+    return this.#request('tools.invoke', { pluginId, toolId, ...(input === undefined ? {} : { input }) })
   }
 
   getModelSettings(): Promise<HostResponsePayloadMap['model.getSettings']> {
@@ -351,6 +357,10 @@ export class HostSupervisor {
       this.#onEvent(binding, parsed.data)
       return
     }
+    if (parsed.data.kind === 'request') {
+      void this.#handleCredentialRequest(binding, parsed.data)
+      return
+    }
     if (parsed.data.kind !== 'response') return
     const pending = this.#pending.get(parsed.data.requestId)
     if (!pending || pending.generation !== binding.generation) return
@@ -392,6 +402,27 @@ export class HostSupervisor {
       catch {
         // A desktop listener must not take down the supervised host.
       }
+    }
+  }
+
+  async #handleCredentialRequest(binding: ProcessBinding, request: HostRequest): Promise<void> {
+    if (request.method !== 'credentials.read' && request.method !== 'credentials.write') {
+      this.#terminateFailedBinding(binding, { code: 'UNKNOWN_METHOD', message: 'Host sent an unauthorized parent request.', retryable: false })
+      return
+    }
+    let response: unknown
+    try {
+      if (!this.#credentials) throw new Error('Credential broker unavailable')
+      if (request.method === 'credentials.read') response = createHostSuccessResponse(request, { apiKey: await this.#credentials.read() })
+      else {
+        await this.#credentials.write(request.payload.apiKey)
+        response = createHostSuccessResponse(request, { saved: true })
+      }
+    } catch {
+      response = createHostErrorResponse(request, { code: 'CREDENTIAL_UNAVAILABLE', message: 'System credential encryption is unavailable.', retryable: true })
+    }
+    if (this.#isCurrent(binding) && !binding.terminating) {
+      try { binding.process.send(response) } catch { /* Host already exited. */ }
     }
   }
 

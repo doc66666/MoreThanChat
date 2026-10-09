@@ -4,6 +4,10 @@ const requestId = { ...nonEmptyString, maxLength: 256 } as const;
 const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke'] as const;
 const modelMethods = ['model.getSettings', 'model.setSettings', 'model.chat.start', 'model.chat.cancel'] as const;
 const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose', 'pluginDrafts.install'] as const;
+const credentialMethods = ['credentials.read', 'credentials.write'] as const;
+const credential = { type: 'object', additionalProperties: false, required: ['apiKey'], properties: {
+  apiKey: { anyOf: [{ ...nonEmptyString, maxLength: 4096 }, { type: 'null' }] },
+} } as const;
 const boundedId = { ...nonEmptyString, maxLength: 256 } as const;
 const modelSettings = {
   type: 'object', additionalProperties: false, required: ['baseUrl', 'model', 'providerMode', 'hasApiKey'],
@@ -147,6 +151,10 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/pluginListResponse' },
     { $ref: '#/$defs/pluginSetEnabledResponse' },
     { $ref: '#/$defs/toolInvokeResponse' },
+    { $ref: '#/$defs/credentialReadRequest' },
+    { $ref: '#/$defs/credentialWriteRequest' },
+    { $ref: '#/$defs/credentialReadResponse' },
+    { $ref: '#/$defs/credentialWriteResponse' },
     { $ref: '#/$defs/modelGetSettingsRequest' },
     { $ref: '#/$defs/modelSetSettingsRequest' },
     { $ref: '#/$defs/modelChatStartRequest' },
@@ -346,7 +354,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
         protocolVersion,
         kind: { const: "response" },
         requestId,
-        method: { enum: ["host.handshake", "diagnostics.ping", "host.shutdown", ...pluginMethods, ...modelMethods, ...draftMethods] },
+        method: { enum: ["host.handshake", "diagnostics.ping", "host.shutdown", ...pluginMethods, ...modelMethods, ...draftMethods, ...credentialMethods] },
         ok: { const: false },
         error: { $ref: "#/$defs/protocolError" },
       },
@@ -366,11 +374,15 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     pluginSetEnabledRequest: request('plugins.setEnabled', { type: 'object', additionalProperties: false,
       required: ['pluginId', 'enabled'], properties: { pluginId: nonEmptyString, enabled: { type: 'boolean' } } }),
     toolInvokeRequest: request('tools.invoke', { type: 'object', additionalProperties: false,
-      required: ['pluginId', 'toolId'], properties: { pluginId: nonEmptyString, toolId: nonEmptyString } }),
+      required: ['pluginId', 'toolId'], properties: { pluginId: nonEmptyString, toolId: nonEmptyString, input: { type: 'string', maxLength: 16384 } } }),
     pluginListResponse: response('plugins.list', pluginCatalog),
     pluginSetEnabledResponse: response('plugins.setEnabled', pluginCatalog),
     toolInvokeResponse: response('tools.invoke', { type: 'object', additionalProperties: false,
-      required: ['generation', 'text'], properties: { generation, text: nonEmptyString } }),
+      required: ['generation', 'text'], properties: { generation, text: { type: 'string', maxLength: 16384 }, replaceDraft: { type: 'boolean' } } }),
+    credentialReadRequest: request('credentials.read', { type: 'object', additionalProperties: false }),
+    credentialWriteRequest: request('credentials.write', credential),
+    credentialReadResponse: response('credentials.read', credential),
+    credentialWriteResponse: response('credentials.write', { type: 'object', additionalProperties: false, required: ['saved'], properties: { saved: { const: true } } }),
     modelGetSettingsRequest: request('model.getSettings', { type: 'object', additionalProperties: false }),
     modelSetSettingsRequest: request('model.setSettings', {
       type: 'object', additionalProperties: false,

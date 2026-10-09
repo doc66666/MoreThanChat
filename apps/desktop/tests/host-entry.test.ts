@@ -68,16 +68,18 @@ describe('Host bundle entry', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'mtc-host-copy-'))
     try {
       const source = path.join(root, 'source')
-      const outside = path.join(root, 'outside.txt')
-      await mkdir(path.join(source, 'node_modules', 'pkg'), { recursive: true })
-      await writeFile(outside, 'copied-text')
+      const outside = path.join(root, 'outside-package')
+      await mkdir(path.join(source, 'node_modules'), { recursive: true })
+      await mkdir(outside)
+      await writeFile(path.join(outside, 'link.txt'), 'copied-text')
       await writeFile(path.join(source, 'main.js'), 'entry')
-      await symlink(outside, path.join(source, 'node_modules', 'pkg', 'link.txt'))
+      await symlink(outside, path.join(source, 'node_modules', 'pkg'), process.platform === 'win32' ? 'junction' : 'dir')
       const destination = path.join(root, 'resources', 'pc-host')
       await copyHostTree(source, destination)
       expect(await readFile(path.join(destination, 'main.js'), 'utf8')).toBe('entry')
       expect(await readFile(path.join(destination, 'node_modules', 'pkg', 'link.txt'), 'utf8')).toBe('copied-text')
       expect((await lstat(path.join(destination, 'node_modules', 'pkg', 'link.txt'))).isSymbolicLink()).toBe(false)
+      expect((await lstat(path.join(destination, 'node_modules', 'pkg'))).isSymbolicLink()).toBe(false)
     }
     finally {
       await rm(root, { recursive: true, force: true })

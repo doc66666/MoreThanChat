@@ -8,6 +8,7 @@ import type {
   PluginDraftSummary,
 } from '@more-than-chat/protocol'
 import { PluginDraftError, type PluginDraftService } from './plugin-drafts'
+import { PLUGIN_AUTHOR_CONTRACT } from './author-contract'
 
 export const AUTHOR_TOOL_NAMES = ['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'] as const
 
@@ -54,7 +55,7 @@ export const AUTHOR_TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'inspect_drafts',
-      description: '列出已安装插件和草稿摘要。结果不包含源码或密钥。',
+      description: '读取插件 SDK 契约、可安装 JSON 示例、已安装插件和草稿摘要。',
       parameters: { type: 'object', additionalProperties: false, properties: {} },
     },
   },
@@ -62,7 +63,7 @@ export const AUTHOR_TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'create_draft',
-      description: '保存一份插件草稿。不会安装，也不会执行源码。',
+      description: '按 SDK 契约保存 JSON 声明式插件。manifestJson/source 是 JSON 字符串，不是 JS；创建后校验，用户确认安装。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -118,9 +119,25 @@ export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorTool
       const source = sourceArgument(call)
       try {
         const result = await dispatch(drafts, call.name, call.arguments)
+        let notice = noticeFrom(call.name, result, source)
+        let installationIssues: readonly PluginDraftIssue[] = []
+        if (notice.pendingInstall && notice.draft) {
+          const plan = await drafts.planInstall(notice.draft.id, false, { ignoreInstalledId: true })
+          const installable = !plan.installable && plan.issues.length === 1 && plan.issues[0]?.code === 'CONFIRMATION_REQUIRED'
+          if (!plan.installable) installationIssues = plan.issues.filter(issue => issue.code !== 'CONFIRMATION_REQUIRED')
+          notice = { ...notice, pendingInstall: installable,
+            ...(installable ? {} : { ok: false, summary: '草稿已保存，但格式不符合安装要求。请读取 SDK 契约后修订。' }) }
+        }
+        const content = call.name === 'inspect_drafts' && 'installed' in result && 'drafts' in result ? {
+          contract: PLUGIN_AUTHOR_CONTRACT,
+          installed: result.installed.slice(0, 4).map(({ id, version, status }) => ({ id, version, status })),
+          drafts: result.drafts.slice(0, 4).map(({ id, version, revision, ok }) => ({ id, version, revision, ok })),
+          counts: { installed: result.installed.length, drafts: result.drafts.length },
+        } : { ...result, ...('issues' in result ? { issues: result.issues.slice(0, 6) } : {}),
+          installable: notice.pendingInstall, installationIssues: installationIssues.slice(0, 6), installationHint: notice.summary }
         return {
-          content: cap(redactToolResult(JSON.stringify(result), source)),
-          notice: noticeFrom(call.name, result, source),
+          content: cap(redactToolResult(JSON.stringify(content), source)),
+          notice,
         }
       }
       catch (error) {
@@ -163,7 +180,7 @@ function noticeFrom(
 }
 
 function blocksPending(issues: readonly PluginDraftIssue[]): boolean {
-  return issues.some(issue => issue.code === 'INSTALLED_ID' || issue.severity === 'error')
+  return issues.some(issue => issue.severity === 'error')
 }
 
 function draftRef(draft: PluginDraftSummary | null): AuthorToolDraftRef | null {

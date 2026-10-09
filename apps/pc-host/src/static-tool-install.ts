@@ -79,7 +79,7 @@ async function installComposerUpdate(
   previous: StoredStaticTool,
   store: InstalledStaticToolStore,
 ): Promise<PluginDraftInstallResult> {
-  const nextRevision = previous.revision + 1
+  const nextRevision = await store.nextRevision(previous.manifest.id, previous.revision)
   if (!Number.isSafeInteger(nextRevision) || plan.manifest.id !== previous.manifest.id || previous.kind !== 'composer-action') {
     return refused(plan.draft, '没有更新：当前版本仍在使用。源码没有被执行。', [
       installIssue('NOT_INSTALLABLE', '声明式输入框动作没有更新。'),
@@ -164,7 +164,7 @@ async function installUpdate(
   previous: StoredStaticTool,
   store: InstalledStaticToolStore,
 ): Promise<PluginDraftInstallResult> {
-  const nextRevision = previous.revision + 1
+  const nextRevision = await store.nextRevision(previous.manifest.id, previous.revision)
   if (!Number.isSafeInteger(nextRevision) || plan.manifest.id !== previous.manifest.id) {
     return refused(plan.draft, '没有更新：当前版本仍在使用。源码没有被执行。', [
       installIssue('NOT_INSTALLABLE', '声明式文本工具没有更新。'),

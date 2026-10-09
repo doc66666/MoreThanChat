@@ -7,6 +7,7 @@ import { InstalledStaticToolStore, restoreInstalledStaticTools } from './install
 import { installConfirmedTextTool } from './static-tool-install'
 import { createAuthorToolExecutor } from './author-tools'
 import { ModelService } from './model-service'
+import { HostCredentialClient } from './credential-client'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
   HOST_METHODS,
@@ -24,6 +25,9 @@ import {
 const HOST_NAME = 'MoreThanChat PC Host'
 const HOST_VERSION = '0.1.0'
 const generation = parseGeneration(process.env.MTC_HOST_GENERATION)
+const parentPort = (process as NodeJS.Process & { parentPort?: ParentPort }).parentPort
+if (!parentPort) throw new Error('PC Host must run as an Electron utility process.')
+const credentials = new HostCredentialClient(message => parentPort.postMessage(message))
 const hostDataDir = process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private')
 const plugins = new HostPluginService(generation)
 const staticTools = new InstalledStaticToolStore(hostDataDir)
@@ -40,19 +44,18 @@ const model = new ModelService({
   dataDir: hostDataDir,
   generation,
   authorTools: createAuthorToolExecutor(drafts),
+  credentials,
 })
 const pluginsReady = plugins.start().then(() => restoreInstalledStaticTools(staticTools, plugins))
 const modelReady = model.load()
 void pluginsReady.catch(reportFatalError)
 void modelReady.catch(reportFatalError)
-const parentPort = (process as NodeJS.Process & { parentPort?: ParentPort }).parentPort
 let shuttingDown = false
 let qaCrashScheduled = false
 let fatalExitScheduled = false
 
-if (!parentPort) throw new Error('PC Host must run as an Electron utility process.')
-
 parentPort.on('message', event => {
+  if (credentials.accept(event.data)) return
   void handleIncoming(event.data)
 })
 
@@ -131,7 +134,7 @@ async function handleRequest(request: HostRequest): Promise<void> {
       return
     }
     case 'tools.invoke':
-      parentPort.postMessage(createHostSuccessResponse(request, await plugins.invoke(request.payload.pluginId, request.payload.toolId)))
+      parentPort.postMessage(createHostSuccessResponse(request, await plugins.invoke(request.payload.pluginId, request.payload.toolId, request.payload.input)))
       return
     case 'model.getSettings':
       parentPort.postMessage(createHostSuccessResponse(request, model.getSettings()))

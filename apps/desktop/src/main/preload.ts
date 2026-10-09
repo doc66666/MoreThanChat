@@ -17,10 +17,11 @@ const api = {
   getHostPlugins: async (): Promise<HostPluginCatalog> => parsePluginCatalog(await ipcRenderer.invoke('host:plugins:list')),
   setHostPluginEnabled: async (pluginId: string, enabled: boolean): Promise<HostPluginCatalog> =>
     parsePluginCatalog(await ipcRenderer.invoke('host:plugins:set-enabled', { pluginId, enabled })),
-  invokeHostTool: async (pluginId: string, toolId: string): Promise<{ generation: number; text: string }> => {
-    const value = await ipcRenderer.invoke('host:tools:invoke', { pluginId, toolId }) as { generation?: unknown; text?: unknown } | null
-    if (!value || !Number.isSafeInteger(value.generation) || typeof value.text !== 'string' || !value.text.trim()) throw new Error('Invalid host tool response.')
-    return { generation: value.generation as number, text: value.text }
+  invokeHostTool: async (pluginId: string, toolId: string, input?: string): Promise<{ generation: number; text: string; replaceDraft?: boolean }> => {
+    const value = await ipcRenderer.invoke('host:tools:invoke', { pluginId, toolId, ...(input === undefined ? {} : { input }) }) as { generation?: unknown; text?: unknown; replaceDraft?: unknown } | null
+    if (!value || !Number.isSafeInteger(value.generation) || typeof value.text !== 'string' || value.text.length > 16384
+      || (value.replaceDraft !== undefined && typeof value.replaceDraft !== 'boolean') || (value.replaceDraft !== true && !value.text.trim())) throw new Error('Invalid host tool response.')
+    return { generation: value.generation as number, text: value.text, ...(value.replaceDraft === true ? { replaceDraft: true } : {}) }
   },
   getModelSettings: async (): Promise<ModelSettingsSnapshot> => parseModelSettings(await ipcRenderer.invoke('host:model:get-settings')),
   setModelSettings: async (input: {
