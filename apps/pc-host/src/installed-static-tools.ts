@@ -1,14 +1,18 @@
 import { chmod, link, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { validatePluginManifest, type PluginManifestV1 } from '@more-than-chat/plugin-runtime'
-import { isAcceptedStaticTextTool, type DeclarativeTextTool } from './static-text-tool'
+import { isAcceptedStaticTextTool, type DeclarativeComposerAction, type DeclarativeTextTool } from './static-text-tool'
 
 const directoryName = 'installed-static-tools'
+
+export type StoredStaticKind = 'text-tool' | 'composer-action'
 
 export interface StoredStaticTool {
   readonly v: 1
   readonly revision: number
   readonly enabled: boolean
+  /** Missing on records stored before composer actions were persisted. Those stay text tools. */
+  readonly kind: StoredStaticKind
   readonly manifest: PluginManifestV1
   readonly tool: DeclarativeTextTool
 }
@@ -162,11 +166,13 @@ export class InstalledStaticToolStore {
 
 export async function restoreInstalledStaticTools(store: InstalledStaticToolStore, plugins: {
   installStaticTool(manifest: PluginManifestV1, tool: DeclarativeTextTool, persist?: () => Promise<void>): Promise<unknown>
+  installStaticComposerAction(manifest: PluginManifestV1, action: DeclarativeComposerAction, persist?: () => Promise<void>): Promise<unknown>
   setEnabled(pluginId: string, enabled: boolean): Promise<unknown>
 }): Promise<void> {
   for (const record of await store.list()) {
     try {
-      await plugins.installStaticTool(record.manifest, record.tool)
+      if (record.kind === 'composer-action') await plugins.installStaticComposerAction(record.manifest, record.tool)
+      else await plugins.installStaticTool(record.manifest, record.tool)
       if (!record.enabled) await plugins.setEnabled(record.manifest.id, false)
     }
     catch {
@@ -198,14 +204,23 @@ function parseStoredStaticTool(value: unknown): StoredStaticTool | null {
     return null
   }
   const tool = record.tool
+  const kind = storedKind(record.kind)
+  if (!kind) return null
   if (!isAcceptedStaticTextTool(record.manifest, { id: tool.id, label: tool.label, text: tool.text })) return null
   return {
     v: 1,
     revision,
     enabled: record.enabled,
+    kind,
     manifest: record.manifest,
     tool: { id: tool.id, label: tool.label, text: tool.text },
   }
+}
+
+function storedKind(value: unknown): StoredStaticKind | null {
+  if (value === undefined) return 'text-tool'
+  if (value === 'text-tool' || value === 'composer-action') return value
+  return null
 }
 
 function isPluginFileId(value: string): boolean {

@@ -47,7 +47,8 @@ describe('installed declarative text tools', () => {
     expect(saved).toContain('"revision":1')
     expect(sealed).toBe(saved)
     expect(saved).not.toContain('globalThis')
-    expect(saved).not.toContain('"kind"')
+    expect(saved).not.toContain('host-text-tool')
+    expect(saved).toContain('"kind":"text-tool"')
     if (process.platform !== 'win32') {
       expect((await stat(file)).mode & 0o777).toBe(0o600)
       expect((await stat(versionFile)).mode & 0o777).toBe(0o600)
@@ -108,6 +109,7 @@ describe('installed declarative text tools', () => {
       v: 1,
       revision: 1,
       enabled: true,
+      kind: 'text-tool',
       manifest: staticManifest('builtin.time-tool'),
       tool: { id: 'current-time', label: '当前时间', text: 'replaced-time' },
     })
@@ -285,14 +287,23 @@ describe('installed declarative text tools', () => {
     await legacyPlugins.stop()
   })
 
-  it('installs a composer action for this session without replacing a stored text tool', async () => {
+  it('stores a composer action across restart without turning it into a text tool', async () => {
     const directory = await makeDirectory()
     const store = new InstalledStaticToolStore(directory)
     const plugins = new HostPluginService(10, [])
     await plugins.start()
     const drafts = draftService(directory, plugins)
     const marker = 'stored-note'
-    const actionMarker = 'session-sign-off'
+    const actionMarker = 'persisted-sign-off'
+    const executed = '__mtcDraftSourceExecuted'
+    Reflect.deleteProperty(globalThis, executed)
+    await drafts.create({ manifestJson: manifest('example.script'), source: `globalThis.${executed} = true\n` })
+    const script = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.script', confirmed: true,
+    })
+    expect(script.installed).toBe(false)
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
+
     await drafts.create({
       manifestJson: manifest('example.note'),
       source: JSON.stringify({ kind: 'host-text-tool', toolId: 'note', label: '便签', text: marker }),
@@ -310,6 +321,7 @@ describe('installed declarative text tools', () => {
     expect(replaced.installed).toBe(false)
     expect(replaced.issues.map(issue => issue.code)).toContain('INSTALLED_ID')
     await expect(plugins.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+    expect(plugins.catalog().plugins.find(plugin => plugin.id === 'example.note')?.composerActions).toEqual([])
 
     await drafts.create({
       manifestJson: manifest('example.sign'),
@@ -319,21 +331,97 @@ describe('installed declarative text tools', () => {
       drafts, plugins, store, draftId: 'example.sign', confirmed: true,
     })
     expect(installed.installed).toBe(true)
+    expect(installed.summary).toContain('重启后仍会保留')
     expect(installed.catalog.plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
       tools: [], composerActions: [{ id: 'sign', label: '署名' }],
     })
     expect(JSON.stringify(installed)).not.toContain(actionMarker)
-    await expect(readFile(currentPath(directory, 'example.sign'))).rejects.toMatchObject({ code: 'ENOENT' })
+    const file = currentPath(directory, 'example.sign')
+    const versionFile = versionPath(directory, 'example.sign', 1)
+    const saved = await readFile(file, 'utf8')
+    expect(saved).toContain(actionMarker)
+    expect(saved).toContain('"kind":"composer-action"')
+    expect(saved).not.toContain('composer-text-action')
+    expect(saved).not.toContain('actionId')
+    expect(saved).not.toContain('globalThis')
+    expect(await readFile(versionFile, 'utf8')).toBe(saved)
+    if (process.platform !== 'win32') expect((await stat(file)).mode & 0o777).toBe(0o600)
     await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+
+    await drafts.create({
+      manifestJson: manifest('example.sign'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: 'should-not-replace' }),
+    })
+    const again = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.sign', confirmed: true,
+    })
+    expect(again.installed).toBe(false)
+    expect(again.issues.map(issue => issue.code)).toContain('INSTALLED_ID')
+    expect(await readFile(versionFile, 'utf8')).toBe(saved)
+    await expect(readFile(versionPath(directory, 'example.sign', 2))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+
+    await drafts.create({
+      manifestJson: manifest('example.sign'),
+      source: JSON.stringify({ kind: 'host-text-tool', toolId: 'sign', label: '便签', text: 'should-not-convert' }),
+    })
+    const converted = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.sign', confirmed: true,
+    })
+    expect(converted.installed).toBe(false)
+    expect(converted.issues.map(issue => issue.code)).toContain('INSTALLED_ID')
+    expect(plugins.catalog().plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      tools: [], composerActions: [{ id: 'sign', label: '署名' }],
+    })
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+
+    const broken = new BrokenStore(directory)
+    await drafts.create({
+      manifestJson: manifest('example.other'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'other', label: '另一条', text: 'should-not-remain' }),
+    })
+    const failed = await installConfirmedTextTool({
+      drafts, plugins, store: broken, draftId: 'example.other', confirmed: true,
+    })
+    expect(failed.installed).toBe(false)
+    expect(failed.summary).toContain('撤回')
+    expect(plugins.catalog().plugins.map(plugin => plugin.id)).toEqual(['example.note', 'example.sign'])
+    await expect(readFile(currentPath(directory, 'example.other'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+
     await plugins.setEnabled('example.sign', false)
-    await expect(plugins.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await store.setEnabled('example.sign', false)
+    expect(await readFile(versionFile, 'utf8')).toBe(saved)
+    const disabledRecord = JSON.parse(await readFile(file, 'utf8')) as { enabled: boolean; kind: string; tool: { text: string } }
+    expect(disabledRecord.enabled).toBe(false)
+    expect(disabledRecord.kind).toBe('composer-action')
+    expect(disabledRecord.tool.text).toBe(actionMarker)
     await plugins.stop()
 
+    const badKind = currentPath(directory, 'example.badkind')
+    await writeFile(badKind, `${JSON.stringify({
+      v: 1,
+      revision: 1,
+      enabled: true,
+      kind: 'host-text-tool',
+      manifest: staticManifest('example.badkind'),
+      tool: { id: 'bad', label: '坏', text: 'nope' },
+    })}\n`)
     const restarted = new HostPluginService(11, [])
     await restarted.start()
     await restoreInstalledStaticTools(store, restarted)
+    expect(restarted.catalog().plugins.map(plugin => plugin.id)).toEqual(['example.note', 'example.sign'])
+    expect(restarted.catalog().plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      status: 'inactive', tools: [], composerActions: [],
+    })
     await expect(restarted.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
-    expect(restarted.catalog().plugins.map(plugin => plugin.id)).toEqual(['example.note'])
+    await expect(restarted.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await restarted.setEnabled('example.sign', true)
+    expect(restarted.catalog().plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      status: 'active', tools: [], composerActions: [{ id: 'sign', label: '署名' }],
+    })
+    await expect(restarted.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
     await restarted.stop()
   })
 })

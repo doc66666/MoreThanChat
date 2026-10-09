@@ -23,6 +23,11 @@ export async function installConfirmedTextTool(options: InstallOptions): Promise
     ? await options.drafts.planInstall(options.draftId, options.confirmed, { ignoreInstalledId: true })
     : await options.drafts.planInstall(options.draftId, options.confirmed)
   if (!plan.installable) return refused(plan.draft, plan.summary, plan.issues, options.plugins.catalog())
+  if (previous && previous.kind !== plan.kind) {
+    return refused(plan.draft, '没有安装：这个 id 已经安装，草稿不会替换它。', [
+      installIssue('INSTALLED_ID', '插件已经安装。这份草稿不会替换它。'),
+    ], options.plugins.catalog())
+  }
   if (plan.kind === 'composer-action') return installComposer(options, plan, previous)
   if (!previous || !options.store) return installFirst(options, plan)
   return installUpdate(options, plan, previous, options.store)
@@ -45,12 +50,20 @@ async function installComposer(
     ], options.plugins.catalog())
   }
   try {
-    const catalog = await options.plugins.installStaticComposerAction(plan.manifest, plan.action)
+    const store = options.store
+    const record: StoredStaticTool = {
+      v: 1, revision: 1, enabled: true, kind: 'composer-action', manifest: plan.manifest, tool: plan.action,
+    }
+    const catalog = store
+      ? await options.plugins.installStaticComposerAction(plan.manifest, plan.action, async () => { await store.save(record) })
+      : await options.plugins.installStaticComposerAction(plan.manifest, plan.action)
     return {
       installed: true,
       draft: plan.draft,
       ok: true,
-      summary: '已安装声明式输入框动作。现在可以在输入框使用，也可以停用。源码没有被执行。',
+      summary: store
+        ? '已安装声明式输入框动作。现在可以在输入框使用，也可以停用，重启后仍会保留。源码没有被执行。'
+        : '已安装声明式输入框动作。现在可以在输入框使用，也可以停用。源码没有被执行。',
       issues: [],
       catalog,
     }
@@ -65,7 +78,7 @@ async function installFirst(options: InstallOptions, plan: TextPlan): Promise<Pl
     const store = options.store
     const catalog = store
       ? await options.plugins.installStaticTool(plan.manifest, plan.tool, async () => {
-          await store.save({ v: 1, revision: 1, enabled: true, manifest: plan.manifest, tool: plan.tool })
+          await store.save({ v: 1, revision: 1, enabled: true, kind: 'text-tool', manifest: plan.manifest, tool: plan.tool })
         })
       : await options.plugins.installStaticTool(plan.manifest, plan.tool)
     return {
@@ -176,7 +189,7 @@ function nextRecord(
   tool: DeclarativeTextTool,
   revision: number,
 ): StoredStaticTool {
-  return { v: 1, revision, enabled: previous.enabled, manifest, tool }
+  return { v: 1, revision, enabled: previous.enabled, kind: previous.kind, manifest, tool }
 }
 
 function refused(

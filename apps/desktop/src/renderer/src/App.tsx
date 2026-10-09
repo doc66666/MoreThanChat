@@ -799,7 +799,7 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
         </div>
         <section className="draft-section">
           <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
-          <p className="settings-note">确认后可以安装固定 JSON 形状的文本工具或输入框动作。源码不会执行。安装后可立即使用和停用。文本工具会在 Host 重启后保留；输入框动作只在本次 Host 运行期间保留。再次确认文本工具会写入新版本，更新失败时仍使用上一版本。</p>
+          <p className="settings-note">确认后可以安装固定 JSON 形状的文本工具或输入框动作。源码不会执行。安装后可立即使用和停用。文本工具和输入框动作都会在 Host 重启后保留启停状态。再次确认文本工具会写入新版本，更新失败时仍使用上一版本。再次确认输入框动作不会替换已安装的动作。</p>
           {(drafts?.drafts ?? []).map(item => {
             const installed = hostPlugins.some(plugin => plugin.id === item.id)
             return (

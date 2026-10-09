@@ -53,7 +53,7 @@ services: { requires: ['ui.composer-actions'] }
 - 运行时异常可以回滚，死循环、进程退出和内存耗尽尚不能隔离；
 - target 已预留 `pc-host`、`android-runtime`、`android-ui`，但 Android 不加载 PC 产物。
 
-未安装草稿由 PC Host 的 `pluginDrafts.*` 方法保存。它们和已安装 catalog 分开，只做 manifest、凭据痕迹和危险 API 的静态检查。用户确认后，`pluginDrafts.install` 接受两种固定 JSON：`{ kind: "host-text-tool", toolId, label, text }` 与 `{ kind: "composer-text-action", actionId, label, text }`。Host 用其中的文本注册静态贡献，不执行草稿源码。文本工具和输入框动作安装后都立即出现在输入框，并可通过现有启停停用。清单只含 id 和标签。文本工具记录写在 Host 私有目录，重启后按上次启停状态恢复。保存失败会撤回这次安装。再次确认同一文本工具时，Host 先封存不可变版本，再切换当前记录；更新失败会恢复上一版本，已提交的版本文件不会改写。输入框动作只保留到本次 Host 进程退出。内置插件和其他已安装 id 不会被这份草稿替换。签名，以及任意插件的阶段式版本切换事务仍未实现。
+未安装草稿由 PC Host 的 `pluginDrafts.*` 方法保存。它们和已安装 catalog 分开，只做 manifest、凭据痕迹和危险 API 的静态检查。用户确认后，`pluginDrafts.install` 接受两种固定 JSON：`{ kind: "host-text-tool", toolId, label, text }` 与 `{ kind: "composer-text-action", actionId, label, text }`。Host 用其中的文本注册静态贡献，不执行草稿源码。文本工具和输入框动作安装后都立即出现在输入框，并可通过现有启停停用。清单只含 id 和标签。文本工具记录写在 Host 私有目录，重启后按上次启停状态恢复。保存失败会撤回这次安装。再次确认同一文本工具时，Host 先封存不可变版本，再切换当前记录；更新失败会恢复上一版本，已提交的版本文件不会改写。输入框动作同样写入 Host 私有目录，重启后按上次启停状态恢复为输入框动作，不会变成文本工具。再次确认输入框动作不会替换已安装的动作。内置插件和其他已安装 id 不会被这份草稿替换。签名，以及任意插件的阶段式版本切换事务仍未实现。
 
 下一阶段应把可安装的 PC host 插件放进 Electron utility process/独立 worker，经签名、内容哈希、权限 broker 和 IPC 暴露结构化贡献，再实现 stage、健康检查、commit 和 rollback 的版本切换事务。
 
