@@ -26,7 +26,7 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 - `model.getSettings` / `model.setSettings`：读取或更新 Base URL、模型名和提供方。响应只有 `hasApiKey`，不回传原始密钥。
 - `model.chat.start` / `model.chat.cancel`：在 Host 内开始或取消一次流式回复。
 - `pluginDrafts.inspect` / `create` / `validate` / `diagnose`：管理未安装草稿。响应不回传源码或 API Key。
-- `pluginDrafts.install`：在 `confirmed: true` 时安装声明式文本工具。响应带回插件清单，不回传工具正文或源码。`confirmed: false`、非声明式源码、危险 API、非空权限和已安装 id 都不会安装。
+- `pluginDrafts.install`：在 `confirmed: true` 时安装声明式文本工具。响应带回插件清单，不回传工具正文或源码。`confirmed: false`、非声明式源码、危险 API、非空权限和已安装 id 都不会安装。成功的安装写入 `host-private/installed-static-tools`，只保存 manifest 和静态文本，重启后恢复；停用状态一并保存。
 
 当前事件：
 

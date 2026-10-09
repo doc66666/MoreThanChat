@@ -1,4 +1,5 @@
 import type { PluginDraftInstallResult, PluginDraftIssue } from '@more-than-chat/protocol'
+import type { InstalledStaticToolStore } from './installed-static-tools'
 import { PluginDraftService } from './plugin-drafts'
 import { HostPluginService, StaticToolInstallError } from './plugin-service'
 
@@ -6,6 +7,7 @@ import { HostPluginService, StaticToolInstallError } from './plugin-service'
 export async function installConfirmedTextTool(options: {
   drafts: PluginDraftService
   plugins: HostPluginService
+  store?: InstalledStaticToolStore
   draftId: string
   confirmed: boolean
 }): Promise<PluginDraftInstallResult> {
@@ -21,7 +23,12 @@ export async function installConfirmedTextTool(options: {
     }
   }
   try {
-    const catalog = await options.plugins.installStaticTool(plan.manifest, plan.tool)
+    const store = options.store
+    const catalog = store
+      ? await options.plugins.installStaticTool(plan.manifest, plan.tool, async () => {
+          await store.save({ v: 1, enabled: true, manifest: plan.manifest, tool: plan.tool })
+        })
+      : await options.plugins.installStaticTool(plan.manifest, plan.tool)
     return {
       installed: true,
       draft: plan.draft,
@@ -44,12 +51,15 @@ export async function installConfirmedTextTool(options: {
       }
     }
     if (error instanceof StaticToolInstallError) {
+      const persisted = error.reason === 'persist-failed'
       return {
         installed: false,
         draft: plan.draft,
         ok: false,
-        summary: '没有安装：声明式文本工具未能启用。源码没有被执行。',
-        issues: [installIssue('NOT_INSTALLABLE', '声明式文本工具没有启用。')],
+        summary: persisted
+          ? '没有安装：声明式文本工具未能保存，已撤回。源码没有被执行。'
+          : '没有安装：声明式文本工具未能启用。源码没有被执行。',
+        issues: [installIssue('NOT_INSTALLABLE', persisted ? '声明式文本工具没有保存。' : '声明式文本工具没有启用。')],
         catalog,
       }
     }

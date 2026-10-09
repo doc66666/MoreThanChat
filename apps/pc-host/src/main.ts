@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { HostPluginError, HostPluginService } from './plugin-service'
 import { PluginDraftError, PluginDraftService } from './plugin-drafts'
+import { InstalledStaticToolStore, restoreInstalledStaticTools } from './installed-static-tools'
 import { installConfirmedTextTool } from './static-tool-install'
 import { ModelService } from './model-service'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
@@ -24,6 +25,7 @@ const HOST_VERSION = '0.1.0'
 const generation = parseGeneration(process.env.MTC_HOST_GENERATION)
 const hostDataDir = process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private')
 const plugins = new HostPluginService(generation)
+const staticTools = new InstalledStaticToolStore(hostDataDir)
 const model = new ModelService({ dataDir: hostDataDir, generation })
 const drafts = new PluginDraftService({
   dataDir: hostDataDir,
@@ -34,7 +36,7 @@ const drafts = new PluginDraftService({
     status: plugin.status,
   })),
 })
-const pluginsReady = plugins.start()
+const pluginsReady = plugins.start().then(() => restoreInstalledStaticTools(staticTools, plugins))
 const modelReady = model.load()
 void pluginsReady.catch(reportFatalError)
 void modelReady.catch(reportFatalError)
@@ -116,10 +118,13 @@ async function handleRequest(request: HostRequest): Promise<void> {
     case 'plugins.list':
       parentPort.postMessage(createHostSuccessResponse(request, plugins.catalog()))
       return
-    case 'plugins.setEnabled':
-      parentPort.postMessage(createHostSuccessResponse(request, await plugins.setEnabled(request.payload.pluginId, request.payload.enabled)))
+    case 'plugins.setEnabled': {
+      const catalog = await plugins.setEnabled(request.payload.pluginId, request.payload.enabled)
+      await staticTools.setEnabled(request.payload.pluginId, request.payload.enabled)
+      parentPort.postMessage(createHostSuccessResponse(request, catalog))
       if (!request.payload.enabled) scheduleQaCrash()
       return
+    }
     case 'tools.invoke':
       parentPort.postMessage(createHostSuccessResponse(request, await plugins.invoke(request.payload.pluginId, request.payload.toolId)))
       return
@@ -151,6 +156,7 @@ async function handleRequest(request: HostRequest): Promise<void> {
       parentPort.postMessage(createHostSuccessResponse(request, await installConfirmedTextTool({
         drafts,
         plugins,
+        store: staticTools,
         draftId: request.payload.draftId,
         confirmed: request.payload.confirmed,
       })))

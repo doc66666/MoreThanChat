@@ -11,7 +11,7 @@ export class HostPluginError extends Error {
 }
 
 export class StaticToolInstallError extends Error {
-  constructor(readonly reason: 'already-installed' | 'not-installable' | 'activation-failed') {
+  constructor(readonly reason: 'already-installed' | 'not-installable' | 'activation-failed' | 'persist-failed') {
     super(`Static tool install failed: ${reason}`)
     this.name = 'StaticToolInstallError'
   }
@@ -49,7 +49,7 @@ export class HostPluginService {
     }
   }
 
-  installStaticTool(manifest: PluginManifestV1, tool: DeclarativeTextTool): Promise<HostPluginCatalog> {
+  installStaticTool(manifest: PluginManifestV1, tool: DeclarativeTextTool, persist?: () => Promise<void>): Promise<HostPluginCatalog> {
     const toolId = tool.id
     const label = tool.label
     const text = tool.text
@@ -76,7 +76,21 @@ export class HostPluginService {
         await this.#runtime.uninstall(manifest.id).catch(() => undefined)
         throw new StaticToolInstallError('activation-failed')
       }
+      try {
+        await persist?.()
+      }
+      catch {
+        await this.#runtime.uninstall(manifest.id).catch(() => undefined)
+        throw new StaticToolInstallError('persist-failed')
+      }
       return this.catalog()
+    })
+  }
+
+  uninstall(pluginId: string): Promise<void> {
+    return this.#enqueue(async () => {
+      if (!this.#runtime.list().some(plugin => plugin.manifest.id === pluginId)) return
+      await this.#runtime.uninstall(pluginId)
     })
   }
 

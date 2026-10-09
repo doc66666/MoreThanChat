@@ -785,7 +785,7 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
         </div>
         <section className="draft-section">
           <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
-          <p className="settings-note">确认后只能安装固定 JSON 形状的文本工具。源码不会执行。安装后可立即使用和停用；Host 重启后需要再次确认。</p>
+          <p className="settings-note">确认后只能安装固定 JSON 形状的文本工具。源码不会执行。安装后可立即使用和停用，并在 Host 重启后保留。</p>
           {(drafts?.drafts ?? []).map(item => {
             const installed = hostPlugins.some(plugin => plugin.id === item.id)
             return (
