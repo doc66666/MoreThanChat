@@ -479,14 +479,30 @@ export function App() {
     finally { setHostPluginBusy(false) }
   }
 
-  async function runHostTool(pluginId: string, toolId: string) {
+  async function installPluginDraft(draftId: string) {
+    if (hostPluginBusy || hostStatusRef.current.state !== 'ready') return
+    setHostPluginBusy(true)
+    try {
+      const result = await window.moreThanChat.installPluginDraft({ draftId, confirmed: true })
+      setPluginDraftReport(result.summary)
+      if (hostStatusRef.current.state === 'ready' && hostStatusRef.current.generation === result.catalog.generation) {
+        setHostPlugins(result.catalog.plugins)
+      }
+      await refreshPluginDrafts()
+      setToast(result.installed ? '文本工具已安装，可以在输入框使用' : '草稿没有安装')
+    }
+    catch (error) { console.error(error instanceof Error ? error.message : 'install'); setToast(errorText(error)) }
+    finally { setHostPluginBusy(false) }
+  }
+
+  async function runHostTool(pluginId: string, toolId: string, label: string) {
     if (hostPluginBusy || hostStatus.state !== 'ready') return
     setHostPluginBusy(true)
     try {
       const result = await window.moreThanChat.invokeHostTool(pluginId, toolId)
       if (hostStatusRef.current.state !== 'ready' || hostStatusRef.current.generation !== result.generation) return
       setDraft(draft => draft.trim() ? `${draft}\n${result.text}` : result.text)
-      setToast('时间工具已写入输入框')
+      setToast(`${label}已写入输入框`)
     }
     catch (error) { console.error(error); setToast('工具暂时不可用，请稍后重试') }
     finally { setHostPluginBusy(false) }
@@ -637,7 +653,7 @@ export function App() {
                 {hostPlugins.filter(plugin => plugin.status === 'active').flatMap(plugin => plugin.tools.map(tool => (
                   <button key={`${plugin.id}:${tool.id}`} className="plugin-composer-action host-tool-action"
                     data-plugin-id={plugin.id} data-tool-id={tool.id} disabled={hostPluginBusy}
-                    title={plugin.description} onClick={() => void runHostTool(plugin.id, tool.id)}>
+                    title={plugin.description} onClick={() => void runHostTool(plugin.id, tool.id, tool.label)}>
                     <Server size={16} /><span>{tool.label}</span>
                   </button>
                 )))}
@@ -658,6 +674,7 @@ export function App() {
         drafts={pluginDrafts} draftReport={pluginDraftReport}
         onCreateDraft={(manifestJson, source) => void createPluginDraft(manifestJson, source)}
         onDiagnoseDraft={draftId => void diagnosePluginDraft(draftId)}
+        onInstallDraft={draftId => void installPluginDraft(draftId)}
         onHostToggle={plugin => void toggleHostPlugin(plugin)} onToggle={plugin => void togglePlugin(plugin)} onClose={() => setShowPlugins(false)} />}
       {showNewChat && <NewChatDialog onClose={() => setShowNewChat(false)} onCreate={createConversation} />}
       {showSettings && <ModelSettingsPanel snapshot={modelSettings} onClose={() => setShowSettings(false)} onSave={saveModelSettings} onClearKey={clearModelKey} />}
@@ -718,14 +735,16 @@ function DetailsPanel({ conversation, transportName, modelLabel, onClose }: { co
   )
 }
 
-function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCreateDraft, onDiagnoseDraft, onHostToggle, onToggle, onClose }: {
+function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCreateDraft, onDiagnoseDraft, onInstallDraft, onHostToggle, onToggle, onClose }: {
   plugins: readonly PluginSnapshot[]; hostPlugins: readonly HostPluginSnapshot[]; hostBusy: boolean;
   drafts: PluginDraftInspection | null; draftReport: string | null;
   onCreateDraft: (manifestJson: string, source: string) => void; onDiagnoseDraft: (draftId: string) => void;
+  onInstallDraft: (draftId: string) => void;
   onHostToggle: (plugin: HostPluginSnapshot) => void; onToggle: (plugin: PluginSnapshot) => void; onClose: () => void;
 }) {
   const [manifestJson, setManifestJson] = useState('')
   const [source, setSource] = useState('')
+  const [confirmId, setConfirmId] = useState<string | null>(null)
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside className="plugin-drawer" onMouseDown={event => event.stopPropagation()}>
@@ -766,14 +785,30 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
         </div>
         <section className="draft-section">
           <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
-          <p className="settings-note">草稿只保存在 Host 的草稿目录。创建、校验和诊断都不会加载代码，也不会替换已安装插件。</p>
-          {(drafts?.drafts ?? []).map(item => (
-            <div className="draft-card" key={item.id} data-draft-id={item.id} data-draft-installed="false" data-draft-ok={item.ok ? 'true' : 'false'}>
+          <p className="settings-note">确认后只能安装固定 JSON 形状的文本工具。源码不会执行。安装后可立即使用和停用；Host 重启后需要再次确认。</p>
+          {(drafts?.drafts ?? []).map(item => {
+            const installed = hostPlugins.some(plugin => plugin.id === item.id)
+            return (
+            <div className="draft-card" key={item.id} data-draft-id={item.id} data-draft-installed={installed ? 'true' : 'false'} data-draft-ok={item.ok ? 'true' : 'false'}>
               <strong>{item.displayName}</strong>
-              <small>{item.id} · r{item.revision} · 未安装 · {item.ok ? '校验通过' : '校验未通过'}</small>
-              <button type="button" className="secondary-button" disabled={hostBusy} onClick={() => onDiagnoseDraft(item.id)}>诊断</button>
+              <small>{item.id} · r{item.revision} · {installed ? '已安装' : '未安装'} · {item.ok ? '校验通过' : '校验未通过'}</small>
+              <div className="draft-actions">
+                <button type="button" className="secondary-button" data-draft-diagnose disabled={hostBusy} onClick={() => onDiagnoseDraft(item.id)}>诊断</button>
+                {installed ? null : confirmId === item.id ? (
+                  <div className="draft-confirm" data-draft-confirm={item.id}>
+                    <p>确认安装这个声明式文本工具？源码不会被执行。</p>
+                    <div className="draft-actions">
+                      <button type="button" className="secondary-button" data-draft-confirm-cancel disabled={hostBusy} onClick={() => setConfirmId(null)}>取消</button>
+                      <button type="button" className="secondary-button" data-draft-confirm-ok disabled={hostBusy} onClick={() => { setConfirmId(null); onInstallDraft(item.id) }}>确认安装</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" className="secondary-button" data-draft-install disabled={hostBusy} onClick={() => setConfirmId(item.id)}>安装</button>
+                )}
+              </div>
             </div>
-          ))}
+            )
+          })}
           {drafts && drafts.drafts.length === 0 && <p className="settings-note">还没有草稿。</p>}
           <label className="settings-field"><span>Manifest JSON</span>
             <textarea data-draft-field="manifest" value={manifestJson} onChange={event => setManifestJson(event.target.value)} spellCheck={false} />

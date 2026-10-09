@@ -187,6 +187,9 @@ button { color: inherit; }
 .draft-section h3 { margin: 0; font-size: 16px; }
 .draft-card { display: grid; gap: 6px; padding: 12px; border: 1px dashed #d9dbe3; border-radius: 12px; background: #fff; }
 .draft-card small { color: #80838e; font-size: 10px; }
+.draft-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.draft-confirm { display: grid; gap: 8px; width: 100%; padding: 8px; border-radius: 10px; background: #f6f5ff; }
+.draft-confirm p { margin: 0; color: #4d5160; font-size: 12px; line-height: 1.45; }
 .draft-section textarea { width: 100%; min-height: 72px; padding: 8px 10px; resize: vertical; border: 1px solid #dedfe5; border-radius: 11px; font: 12px/1.45 ui-monospace, monospace; }
 .draft-report { margin: 0; color: #4d5160; font-size: 12px; line-height: 1.5; }
 .plugin-empty { margin-top: 22px; padding: 18px; text-align: center; color: #9699a4; border-radius: 15px; background: #f7f7fa; }

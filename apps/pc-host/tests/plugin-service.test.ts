@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostToolsServiceId, type ContributionRegistrar, type HostTool, type PluginSource } from '@more-than-chat/plugin-runtime'
+import { hostToolsServiceId, type ContributionRegistrar, type HostTool, type PluginManifestV1, type PluginSource } from '@more-than-chat/plugin-runtime'
 import { timeToolPlugin } from '@more-than-chat/plugin-time-tool'
 import { HostPluginService } from '../src/plugin-service'
 
@@ -20,6 +20,33 @@ describe('HostPluginService', () => {
     await service.stop()
     expect(service.catalog().plugins[0]).toMatchObject({ status: 'inactive', tools: [] })
     await expect(service.invoke('builtin.time-tool', 'current-time')).rejects.toThrow('shutting down')
+  })
+
+  it('installs a declarative text tool without replacing an existing plugin', async () => {
+    const service = new HostPluginService(3)
+    await service.start()
+    const marker = 'static-note-body'
+    const catalog = await service.installStaticTool(staticManifest(), { id: 'note', label: '便签', text: marker })
+    expect(catalog.plugins.map(plugin => plugin.id)).toEqual(['builtin.time-tool', 'example.note'])
+    expect(catalog.plugins[1]).toMatchObject({ status: 'active', tools: [{ id: 'note', label: '便签' }] })
+    await expect(service.invoke('example.note', 'note')).resolves.toEqual({ generation: 3, text: marker })
+
+    const disabled = await service.setEnabled('example.note', false)
+    expect(disabled.plugins.find(plugin => plugin.id === 'example.note')).toMatchObject({ status: 'inactive', tools: [] })
+    await expect(service.invoke('example.note', 'note')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    const enabled = await service.setEnabled('example.note', true)
+    expect(enabled.plugins.find(plugin => plugin.id === 'example.note')?.tools).toEqual([{ id: 'note', label: '便签' }])
+    await expect(service.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+
+    await expect(service.installStaticTool(staticManifest(), { id: 'note', label: '便签', text: 'replaced' })).rejects.toMatchObject({ reason: 'already-installed' })
+    await expect(service.installStaticTool(staticManifest('builtin.time-tool'), { id: 'current-time', label: '当前时间', text: 'replaced' })).rejects.toMatchObject({ reason: 'already-installed' })
+    expect((await service.invoke('builtin.time-tool', 'current-time')).text).not.toBe('replaced')
+    await expect(service.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+
+    const hostile: PluginManifestV1 = { ...staticManifest('example.files'), permissions: ['files'] }
+    await expect(service.installStaticTool(hostile, { id: 'note', label: '便签', text: marker })).rejects.toMatchObject({ reason: 'not-installable' })
+    expect(service.catalog().plugins.map(plugin => plugin.id)).toEqual(['builtin.time-tool', 'example.note'])
+    await service.stop()
   })
 
   it('rejects unknown plugins and tools', async () => {
@@ -55,3 +82,17 @@ describe('HostPluginService', () => {
     expect(service.catalog().plugins[0]!.tools).toHaveLength(0)
   })
 })
+
+function staticManifest(id = 'example.note'): PluginManifestV1 {
+  return {
+    manifestVersion: 1,
+    id,
+    version: '0.1.0',
+    displayName: '便签',
+    description: '返回一段固定文本。',
+    targets: ['pc-host'],
+    engine: { moreThanChat: '^0.1.0' },
+    permissions: [],
+    services: { requires: ['host.tools'] },
+  }
+}

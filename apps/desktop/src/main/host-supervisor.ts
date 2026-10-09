@@ -215,6 +215,10 @@ export class HostSupervisor {
     return this.#request('pluginDrafts.diagnose', { draftId })
   }
 
+  installPluginDraft(payload: HostRequestPayloadMap['pluginDrafts.install']): Promise<HostResponsePayloadMap['pluginDrafts.install']> {
+    return this.#request('pluginDrafts.install', payload)
+  }
+
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     const stopped = createReadyWaiter()

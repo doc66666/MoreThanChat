@@ -15,6 +15,7 @@ export const HOST_METHODS = [
   "pluginDrafts.create",
   "pluginDrafts.validate",
   "pluginDrafts.diagnose",
+  "pluginDrafts.install",
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];
@@ -125,6 +126,9 @@ export const PLUGIN_DRAFT_ISSUE_CODES = [
   "DANGEROUS_API",
   "EMPTY_SOURCE",
   "INSTALLED_ID",
+  "NOT_DECLARATIVE",
+  "NOT_INSTALLABLE",
+  "CONFIRMATION_REQUIRED",
 ] as const;
 
 export type PluginDraftIssueCode = (typeof PLUGIN_DRAFT_ISSUE_CODES)[number];
@@ -172,6 +176,16 @@ export interface PluginDraftInspection {
   drafts: PluginDraftSummary[];
 }
 
+/** Result of a confirmed declarative install. Tool text stays out of this payload. */
+export interface PluginDraftInstallResult {
+  installed: boolean;
+  draft: PluginDraftSummary;
+  ok: boolean;
+  summary: string;
+  issues: PluginDraftIssue[];
+  catalog: HostPluginCatalog;
+}
+
 export interface HostRequestPayloadMap {
   "host.handshake": {
     clientName: string;
@@ -206,6 +220,7 @@ export interface HostRequestPayloadMap {
   "pluginDrafts.create": { manifestJson: string; source: string };
   "pluginDrafts.validate": { draftId: string };
   "pluginDrafts.diagnose": { draftId: string };
+  "pluginDrafts.install": { draftId: string; confirmed: boolean };
 }
 
 export interface HostResponsePayloadMap {
@@ -233,6 +248,7 @@ export interface HostResponsePayloadMap {
   "pluginDrafts.create": PluginDraftCreateResult;
   "pluginDrafts.validate": PluginDraftReport;
   "pluginDrafts.diagnose": PluginDraftReport;
+  "pluginDrafts.install": PluginDraftInstallResult;
 }
 
 export interface HostEventPayloadMap {
@@ -923,6 +939,21 @@ const parsePluginDraftReport = (value: unknown): PluginDraftReport => {
   return { draft: parseDraftSummary(object.draft, `${path}.draft`), ...parseDraftDiagnosis(object, path) };
 };
 
+const parsePluginDraftInstallResult = (value: unknown): PluginDraftInstallResult => {
+  const path = "$.payload";
+  const object = asObject(value, path, "INVALID_PAYLOAD");
+  assertKeys(object, ["installed", "draft", "ok", "summary", "issues", "catalog"], [], path, "INVALID_PAYLOAD");
+  if (typeof object.installed !== "boolean") {
+    throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.installed must be a boolean`, `${path}.installed`);
+  }
+  return {
+    installed: object.installed,
+    draft: parseDraftSummary(object.draft, `${path}.draft`),
+    ...parseDraftDiagnosis(object, path),
+    catalog: parseHostPluginCatalog(object.catalog),
+  };
+};
+
 const parseRequestPayload = <M extends HostMethod>(
   method: M,
   value: unknown,
@@ -967,6 +998,17 @@ const parseRequestPayload = <M extends HostMethod>(
       const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
       assertKeys(object, ["draftId"], [], "$.payload", "INVALID_PAYLOAD");
       return { draftId: parseBoundedText(object.draftId, "$.payload.draftId", 128) } as HostRequestPayloadMap[M];
+    }
+    case "pluginDrafts.install": {
+      const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
+      assertKeys(object, ["draftId", "confirmed"], [], "$.payload", "INVALID_PAYLOAD");
+      if (typeof object.confirmed !== "boolean") {
+        throw new ProtocolValidationError("INVALID_PAYLOAD", "$.payload.confirmed must be a boolean", "$.payload.confirmed");
+      }
+      return {
+        draftId: parseBoundedText(object.draftId, "$.payload.draftId", 128),
+        confirmed: object.confirmed,
+      } as HostRequestPayloadMap[M];
     }
   }
 };
@@ -1084,6 +1126,8 @@ const parseResponsePayload = <M extends HostMethod>(
     case "pluginDrafts.validate":
     case "pluginDrafts.diagnose":
       return parsePluginDraftReport(value) as HostResponsePayloadMap[M];
+    case "pluginDrafts.install":
+      return parsePluginDraftInstallResult(value) as HostResponsePayloadMap[M];
   }
 };
 

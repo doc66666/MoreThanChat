@@ -53,7 +53,7 @@ services: { requires: ['ui.composer-actions'] }
 - 运行时异常可以回滚，死循环、进程退出和内存耗尽尚不能隔离；
 - target 已预留 `pc-host`、`android-runtime`、`android-ui`，但 Android 不加载 PC 产物。
 
-未安装草稿由 PC Host 的 `pluginDrafts.*` 方法保存。它们和已安装 catalog 分开，只做 manifest、凭据痕迹和危险 API 的静态检查，不进入 `PluginRuntime`。确认安装、签名和热更新事务仍未实现。
+未安装草稿由 PC Host 的 `pluginDrafts.*` 方法保存。它们和已安装 catalog 分开，只做 manifest、凭据痕迹和危险 API 的静态检查。用户确认后，`pluginDrafts.install` 只接受 `{ kind: "host-text-tool", toolId, label, text }` 这一固定 JSON。Host 用这段数据注册一个返回静态文本的工具，不执行草稿源码。安装成功后工具立即出现在输入框，并可通过现有启停停用。已安装 id 不会被替换。签名、版本事务和重启后的安装记录仍未实现。
 
 下一阶段应把可安装的 PC host 插件放进 Electron utility process/独立 worker，经签名、内容哈希、权限 broker 和 IPC 暴露结构化贡献，再实现 stage、健康检查、commit 和 rollback 的版本切换事务。
 

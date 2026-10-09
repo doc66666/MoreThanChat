@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { HostPluginError, HostPluginService } from './plugin-service'
 import { PluginDraftError, PluginDraftService } from './plugin-drafts'
+import { installConfirmedTextTool } from './static-tool-install'
 import { ModelService } from './model-service'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
@@ -145,6 +146,14 @@ async function handleRequest(request: HostRequest): Promise<void> {
       return
     case 'pluginDrafts.diagnose':
       parentPort.postMessage(createHostSuccessResponse(request, await drafts.diagnose(request.payload.draftId)))
+      return
+    case 'pluginDrafts.install':
+      parentPort.postMessage(createHostSuccessResponse(request, await installConfirmedTextTool({
+        drafts,
+        plugins,
+        draftId: request.payload.draftId,
+        confirmed: request.payload.confirmed,
+      })))
       return
     default:
       parentPort.postMessage(createHostErrorResponse(request, {

@@ -1,11 +1,19 @@
-import { ContributionRegistry, hostToolsServiceId, type HostTool, type PluginSource } from '@more-than-chat/plugin-runtime'
+import { ContributionRegistry, definePlugin, hostToolsServiceId, type HostTool, type PluginManifestV1, type PluginSource } from '@more-than-chat/plugin-runtime'
 import { CordisPluginRuntime } from '@more-than-chat/runtime-cordis'
 import { timeToolPlugin } from '@more-than-chat/plugin-time-tool'
 import type { HostPluginCatalog } from '@more-than-chat/protocol'
+import { isAcceptedStaticTextTool, type DeclarativeTextTool } from './static-text-tool'
 
 export class HostPluginError extends Error {
   constructor(readonly code: 'PLUGIN_NOT_FOUND' | 'TOOL_UNAVAILABLE', message: string) {
     super(message)
+  }
+}
+
+export class StaticToolInstallError extends Error {
+  constructor(readonly reason: 'already-installed' | 'not-installable' | 'activation-failed') {
+    super(`Static tool install failed: ${reason}`)
+    this.name = 'StaticToolInstallError'
   }
 }
 
@@ -39,6 +47,37 @@ export class HostPluginService {
           .map(({ contribution }) => ({ id: contribution.id, label: contribution.label })),
       })),
     }
+  }
+
+  installStaticTool(manifest: PluginManifestV1, tool: DeclarativeTextTool): Promise<HostPluginCatalog> {
+    const toolId = tool.id
+    const label = tool.label
+    const text = tool.text
+    return this.#enqueue(async () => {
+      if (!isAcceptedStaticTextTool(manifest, { id: toolId, label, text })) throw new StaticToolInstallError('not-installable')
+      if (this.#runtime.list().some(plugin => plugin.manifest.id === manifest.id)) {
+        throw new StaticToolInstallError('already-installed')
+      }
+      this.#runtime.install({
+        manifest,
+        trust: 'trusted',
+        load: async () => definePlugin({
+          manifest,
+          activate(context) {
+            const tools = context.getService<ContributionRegistry<HostTool>>(hostToolsServiceId)
+            context.contribute(tools, { id: toolId, label, run: () => text })
+          },
+        }),
+      })
+      try {
+        await this.#runtime.activate(manifest.id)
+      }
+      catch {
+        await this.#runtime.uninstall(manifest.id).catch(() => undefined)
+        throw new StaticToolInstallError('activation-failed')
+      }
+      return this.catalog()
+    })
   }
 
   setEnabled(pluginId: string, enabled: boolean): Promise<HostPluginCatalog> {

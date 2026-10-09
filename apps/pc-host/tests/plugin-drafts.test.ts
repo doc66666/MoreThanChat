@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createHostSuccessResponse, parseHostMessage } from '@more-than-chat/protocol'
 import { HostPluginService } from '../src/plugin-service'
 import { PluginDraftError, PluginDraftService } from '../src/plugin-drafts'
+import { installConfirmedTextTool } from '../src/static-tool-install'
 
 const secret = 'sk-test-more-than-chat-secret'
 const sourceMarker = 'draft-source-marker-not-a-secret'
@@ -78,6 +79,86 @@ describe('PluginDraftService', () => {
     expect(dangerous.ok).toBe(false)
     expect((await service.diagnose('example.fetch')).issues.map(issue => issue.code)).toContain('DANGEROUS_API')
     await expect(service.validate('missing.draft')).rejects.toBeInstanceOf(PluginDraftError)
+  })
+
+  it('installs a confirmed declarative text tool and does not execute other source', async () => {
+    const plugins = new HostPluginService(2, [])
+    await plugins.start()
+    const { service } = await createService(plugins)
+    const marker = 'declared-text-marker'
+    const executed = '__mtcDraftSourceExecuted'
+    Reflect.deleteProperty(globalThis, executed)
+    const script = await service.create({
+      manifestJson: manifest('example.script'),
+      source: `globalThis.${executed} = true\n`,
+    })
+    expect(script.persisted).toBe(true)
+    const refused = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.script', confirmed: true })
+    expect(refused.installed).toBe(false)
+    expect(refused.issues.map(issue => issue.code)).toContain('NOT_DECLARATIVE')
+    expect(JSON.stringify(refused)).not.toContain('globalThis')
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
+    expect(plugins.catalog().plugins).toEqual([])
+
+    const source = JSON.stringify({ kind: 'host-text-tool', toolId: 'note', label: '便签', text: marker })
+    const created = await service.create({ manifestJson: manifest('example.note'), source })
+    expect(created.ok).toBe(true)
+    const unconfirmed = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.note', confirmed: false })
+    expect(unconfirmed.installed).toBe(false)
+    expect(unconfirmed.issues.map(issue => issue.code)).toContain('CONFIRMATION_REQUIRED')
+    expect(JSON.stringify(unconfirmed)).not.toContain(marker)
+    expect(plugins.catalog().plugins).toEqual([])
+
+    const installed = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.note', confirmed: true })
+    expect(installed.installed).toBe(true)
+    expect(installed.catalog.plugins[0]).toMatchObject({ id: 'example.note', status: 'active', tools: [{ id: 'note', label: '便签' }] })
+    expect(JSON.stringify(installed)).not.toContain(marker)
+    expect(parseHostMessage(createHostSuccessResponse({ requestId: 'install', method: 'pluginDrafts.install' }, installed)).kind).toBe('response')
+    await expect(plugins.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+    await plugins.setEnabled('example.note', false)
+    await expect(plugins.invoke('example.note', 'note')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await plugins.setEnabled('example.note', true)
+    await expect(plugins.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+
+    const again = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.note', confirmed: true })
+    expect(again.installed).toBe(false)
+    expect(again.issues.map(issue => issue.code)).toContain('INSTALLED_ID')
+    await expect(plugins.invoke('example.note', 'note')).resolves.toMatchObject({ text: marker })
+
+    const sneaky = `${source}; globalThis.${executed} = true`
+    await service.create({ manifestJson: manifest('example.sneaky'), source: sneaky })
+    const sneakyResult = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.sneaky', confirmed: true })
+    expect(sneakyResult.installed).toBe(false)
+    expect(sneakyResult.issues.map(issue => issue.code)).toContain('NOT_DECLARATIVE')
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
+
+    const dangerous = await service.create({
+      manifestJson: manifest('example.fetch'),
+      source: JSON.stringify({ kind: 'host-text-tool', toolId: 'bad', label: '坏工具', text: 'please fetch("https://example.invalid")' }),
+    })
+    expect(dangerous.persisted).toBe(true)
+    const blocked = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.fetch', confirmed: true })
+    expect(blocked.installed).toBe(false)
+    expect(blocked.issues.map(issue => issue.code)).toContain('DANGEROUS_API')
+    expect(JSON.stringify(blocked)).not.toContain('example.invalid')
+
+    await service.create({
+      manifestJson: manifest('example.files').replace('"permissions":[]', '"permissions":["files"]'),
+      source,
+    })
+    const permissionRefusal = await installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.files', confirmed: true })
+    expect(permissionRefusal.installed).toBe(false)
+    expect(permissionRefusal.issues.map(issue => issue.code)).toContain('NOT_INSTALLABLE')
+    expect(plugins.catalog().plugins.map(plugin => plugin.id)).toEqual(['example.note'])
+
+    const leaked = await service.create({
+      manifestJson: manifest('example.leak'),
+      source: JSON.stringify({ kind: 'host-text-tool', toolId: 'note', label: '便签', text: `token ${secret}` }),
+    })
+    expect(leaked.persisted).toBe(false)
+    await expect(installConfirmedTextTool({ drafts: service, plugins, draftId: 'example.leak', confirmed: true })).rejects.toBeInstanceOf(PluginDraftError)
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
+    await plugins.stop()
   })
 })
 

@@ -47,6 +47,8 @@ const api = {
     parsePluginDraftReport(await ipcRenderer.invoke('host:plugin-drafts:validate', { draftId })),
   diagnosePluginDraft: async (draftId: string) =>
     parsePluginDraftReport(await ipcRenderer.invoke('host:plugin-drafts:diagnose', { draftId })),
+  installPluginDraft: async (input: { draftId: string; confirmed: boolean }) =>
+    parsePluginDraftInstallResult(await ipcRenderer.invoke('host:plugin-drafts:install', input)),
   onHostStatusChanged: (listener: (status: HostStatusSnapshot) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => listener(parseHostStatus(value))
     ipcRenderer.on('host:status:changed', handler)
@@ -222,7 +224,7 @@ function isBoundedText(value: unknown, maxLength: number): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength
 }
 
-const draftIssueCodes = new Set(['MANIFEST_INVALID', 'SECRET_MATERIAL', 'DANGEROUS_API', 'EMPTY_SOURCE', 'INSTALLED_ID'])
+const draftIssueCodes = new Set(['MANIFEST_INVALID', 'SECRET_MATERIAL', 'DANGEROUS_API', 'EMPTY_SOURCE', 'INSTALLED_ID', 'NOT_DECLARATIVE', 'NOT_INSTALLABLE', 'CONFIRMATION_REQUIRED'])
 
 function parsePluginDraftInspection(value: unknown) {
   const record = asRecord(value, 'Invalid plugin draft inspection.')
@@ -263,6 +265,18 @@ function parsePluginDraftReport(value: unknown) {
   return { draft: parseDraftSummary(record.draft), ...parseDraftDiagnosis(record) }
 }
 
+function parsePluginDraftInstallResult(value: unknown) {
+  const record = asRecord(value, 'Invalid plugin draft install result.')
+  assertExactKeys(record, ['installed', 'draft', 'ok', 'summary', 'issues', 'catalog'], 'Invalid plugin draft install result.')
+  if (typeof record.installed !== 'boolean') throw new Error('Invalid plugin draft install result.')
+  return {
+    installed: record.installed,
+    draft: parseDraftSummary(record.draft),
+    ...parseDraftDiagnosis(record),
+    catalog: parsePluginCatalog(record.catalog),
+  }
+}
+
 function parseDraftDiagnosis(record: Record<string, unknown>) {
   if (typeof record.ok !== 'boolean' || !Array.isArray(record.issues) || record.issues.length > 20) throw new Error('Invalid plugin draft report.')
   return {
@@ -276,7 +290,7 @@ function parseDraftDiagnosis(record: Record<string, unknown>) {
       }
       return {
         severity: issue.severity,
-        code: issue.code as 'MANIFEST_INVALID' | 'SECRET_MATERIAL' | 'DANGEROUS_API' | 'EMPTY_SOURCE' | 'INSTALLED_ID',
+        code: issue.code as 'MANIFEST_INVALID' | 'SECRET_MATERIAL' | 'DANGEROUS_API' | 'EMPTY_SOURCE' | 'INSTALLED_ID' | 'NOT_DECLARATIVE' | 'NOT_INSTALLABLE' | 'CONFIRMATION_REQUIRED',
         message: requiredBounded(issue.message, 240, 'Invalid plugin draft issue.'),
       }
     }),

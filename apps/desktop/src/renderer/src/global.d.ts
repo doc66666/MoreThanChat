@@ -8,6 +8,7 @@ import type {
   ModelSettingsSnapshot,
   PluginDraftCreateResult,
   PluginDraftInspection,
+  PluginDraftInstallResult,
   PluginDraftReport,
 } from '@more-than-chat/protocol'
 
@@ -67,6 +68,7 @@ declare global {
       createPluginDraft(input: { manifestJson: string; source: string }): Promise<PluginDraftCreateResult>
       validatePluginDraft(draftId: string): Promise<PluginDraftReport>
       diagnosePluginDraft(draftId: string): Promise<PluginDraftReport>
+      installPluginDraft(input: { draftId: string; confirmed: boolean }): Promise<PluginDraftInstallResult>
       onHostStatusChanged(listener: (status: HostStatusSnapshot) => void): () => void
       onModelChatEvent(listener: (event: ModelClientEvent) => void): () => void
     }

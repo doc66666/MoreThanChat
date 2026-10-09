@@ -188,7 +188,7 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(34);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(36);
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.handshakeRequest).toBeDefined();
   });
@@ -304,5 +304,28 @@ describe("Host protocol v1", () => {
       }),
       'INVALID_PAYLOAD',
     );
+    const marker = 'static-tool-text-must-not-ride-along';
+    const install = createHostRequest('pluginDrafts.install', 'install-draft', { draftId: 'example.note', confirmed: true });
+    const installed = createHostSuccessResponse(install, {
+      installed: true,
+      draft: inspection.payload.drafts[0]!,
+      ok: true,
+      summary: '已安装声明式文本工具。源码没有被执行。',
+      issues: [],
+      catalog: {
+        generation: 1,
+        plugins: [{
+          id: 'example.note', displayName: '草稿示例', description: '静态文本', version: '0.1.0',
+          status: 'active', error: null, tools: [{ id: 'note', label: '便签' }],
+        }],
+      },
+    });
+    expect(parseHostMessage(install)).toEqual(install);
+    expect(parseHostMessage(installed)).toEqual(installed);
+    expect(JSON.stringify(installed)).not.toContain(marker);
+    expect(JSON.stringify(installed)).not.toContain(secret);
+    expectProtocolError({ ...installed, payload: { ...installed.payload, source: marker } }, 'INVALID_PAYLOAD');
+    const missingConfirm = createHostRequest('pluginDrafts.install', 'missing-confirm', { draftId: 'example.note', confirmed: true });
+    expectProtocolError({ ...missingConfirm, payload: { draftId: 'example.note' } }, 'INVALID_PAYLOAD');
   });
 });

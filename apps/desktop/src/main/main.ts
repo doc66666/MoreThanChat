@@ -139,6 +139,13 @@ function registerIpc(): void {
     if (request.kind !== 'request' || request.method !== 'pluginDrafts.diagnose') throw new Error('Invalid plugin draft.')
     return hostSupervisor.diagnosePluginDraft(request.payload.draftId)
   })
+  ipcMain.handle('host:plugin-drafts:install', (event, payload: unknown) => {
+    assertTrustedIpc(event)
+    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
+    const request = parseHostMessage(createHostRequest('pluginDrafts.install', 'ipc', payload as never))
+    if (request.kind !== 'request' || request.method !== 'pluginDrafts.install') throw new Error('Invalid plugin draft.')
+    return hostSupervisor.installPluginDraft(request.payload)
+  })
 }
 
 function assertTrustedIpc(event: IpcMainInvokeEvent): void {

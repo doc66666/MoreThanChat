@@ -9,6 +9,7 @@ import type {
   PluginDraftReport,
   PluginDraftSummary,
 } from '@more-than-chat/protocol'
+import { isStaticTextToolManifest, parseDeclarativeTextTool, type DeclarativeTextTool } from './static-text-tool'
 
 export class PluginDraftError extends Error {
   constructor(readonly code: 'DRAFT_NOT_FOUND', message: string) {
@@ -96,6 +97,38 @@ export class PluginDraftService {
 
   diagnose(draftId: string): Promise<PluginDraftReport> {
     return this.#report(draftId, 'diagnose')
+  }
+
+  /** Plans a declarative install. The returned tool text is data; the source is not executable code. */
+  planInstall(draftId: string, confirmed: boolean): Promise<DraftInstallPlan> {
+    return this.#enqueue(async () => {
+      const stored = await this.#readLatest(draftId)
+      const assessed = assessDraft(JSON.stringify(stored.manifest), stored.source, this.#installedPlugins())
+      if (!assessed.manifest) throw new PluginDraftError('DRAFT_NOT_FOUND', '没有找到这份插件草稿。')
+      const draft = summaryOf(assessed.manifest, stored.revision, stored.createdAt, assessed.ok)
+      const issues = installBlockers(assessed, stored.source)
+      if (issues.length > 0) {
+        return { installable: false, draft, summary: refusalSummary(issues), issues: issues.slice(0, 20) }
+      }
+      if (!confirmed) {
+        return {
+          installable: false,
+          draft,
+          summary: '需要确认后才会安装。源码不会被执行。',
+          issues: [finding('error', 'CONFIRMATION_REQUIRED', '安装声明式文本工具需要明确确认。')],
+        }
+      }
+      const tool = parseDeclarativeTextTool(stored.source)
+      if (!tool || !isStaticTextToolManifest(assessed.manifest)) {
+        return {
+          installable: false,
+          draft,
+          summary: '没有安装：这不是声明式文本工具，源码也没有执行。',
+          issues: [finding('error', 'NOT_DECLARATIVE', '草稿不是声明式文本工具，源码没有执行。')],
+        }
+      }
+      return { installable: true, manifest: assessed.manifest, tool, draft }
+    })
   }
 
   async #report(draftId: string, kind: 'validate' | 'diagnose'): Promise<PluginDraftReport> {
@@ -205,6 +238,18 @@ export class PluginDraftService {
   }
 }
 
+export type DraftInstallPlan = {
+  installable: false
+  draft: PluginDraftSummary
+  summary: string
+  issues: PluginDraftIssue[]
+} | {
+  installable: true
+  manifest: PluginManifestV1
+  tool: DeclarativeTextTool
+  draft: PluginDraftSummary
+}
+
 interface StoredRevision {
   v: 1
   revision: number
@@ -267,12 +312,37 @@ function summaryOf(manifest: PluginManifestV1, revision: number, updatedAt: numb
   }
 }
 
+function installBlockers(assessed: Assessment, source: string): PluginDraftIssue[] {
+  const issues: PluginDraftIssue[] = []
+  for (const issue of assessed.issues) {
+    if (issue.severity === 'error' || issue.code === 'INSTALLED_ID') {
+      issues.push(issue.code === 'INSTALLED_ID' ? { ...issue, severity: 'error' } : issue)
+    }
+  }
+  if (!parseDeclarativeTextTool(source)) {
+    issues.push(finding('error', 'NOT_DECLARATIVE', '草稿不是声明式文本工具，源码没有执行。'))
+  }
+  if (assessed.manifest && !isStaticTextToolManifest(assessed.manifest)) {
+    issues.push(finding('error', 'NOT_INSTALLABLE', '只接受无权限、且仅依赖 host.tools 的 pc-host 文本工具。'))
+  }
+  return issues
+}
+
+function refusalSummary(issues: readonly PluginDraftIssue[]): string {
+  if (issues.some(issue => issue.code === 'SECRET_MATERIAL')) return '没有安装：草稿包含疑似凭据。源码没有执行。'
+  if (issues.some(issue => issue.code === 'NOT_DECLARATIVE')) return '没有安装：这不是声明式文本工具，源码也没有执行。'
+  if (issues.some(issue => issue.code === 'INSTALLED_ID')) return '没有安装：这个 id 已经安装，草稿不会替换它。'
+  if (issues.some(issue => issue.code === 'DANGEROUS_API')) return '没有安装：草稿包含未允许的 API。源码没有执行。'
+  if (issues.some(issue => issue.code === 'NOT_INSTALLABLE')) return '没有安装：manifest 不满足声明式文本工具的限制。源码没有执行。'
+  return '没有安装。源码没有执行。'
+}
+
 function summaryText(kind: 'create' | 'validate' | 'diagnose', assessed: Assessment): string {
   const head = !assessed.ok
-    ? '校验未通过。这份草稿仍未安装。'
-    : assessed.issues.some(item => item.severity === 'warning')
-      ? '校验通过。这份草稿仍未安装，也不会替换已安装插件。'
-      : '校验通过。这份草稿仍未安装。'
+    ? '校验未通过。这份草稿没有安装。'
+    : assessed.issues.some(item => item.code === 'INSTALLED_ID')
+      ? '校验通过。同 id 的插件已安装，这份草稿不会替换它，源码也没有执行。'
+      : '校验通过。这份草稿尚未安装。'
   if (kind !== 'diagnose') return head
   const details = assessed.issues.map(item => item.message).join(' ')
   return clamp(`${head}${details ? ` ${details}` : ''}`, 500, head)

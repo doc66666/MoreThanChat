@@ -3,7 +3,7 @@ const nonEmptyString = { type: "string", minLength: 1, pattern: ".*\\S.*" } as c
 const requestId = { ...nonEmptyString, maxLength: 256 } as const;
 const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke'] as const;
 const modelMethods = ['model.getSettings', 'model.setSettings', 'model.chat.start', 'model.chat.cancel'] as const;
-const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose'] as const;
+const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose', 'pluginDrafts.install'] as const;
 const boundedId = { ...nonEmptyString, maxLength: 256 } as const;
 const modelSettings = {
   type: 'object', additionalProperties: false, required: ['baseUrl', 'model', 'providerMode', 'hasApiKey'],
@@ -58,7 +58,7 @@ const draftIssue = {
   type: 'object', additionalProperties: false, required: ['severity', 'code', 'message'],
   properties: {
     severity: { enum: ['error', 'warning'] },
-    code: { enum: ['MANIFEST_INVALID', 'SECRET_MATERIAL', 'DANGEROUS_API', 'EMPTY_SOURCE', 'INSTALLED_ID'] },
+    code: { enum: ['MANIFEST_INVALID', 'SECRET_MATERIAL', 'DANGEROUS_API', 'EMPTY_SOURCE', 'INSTALLED_ID', 'NOT_DECLARATIVE', 'NOT_INSTALLABLE', 'CONFIRMATION_REQUIRED'] },
     message: { ...nonEmptyString, maxLength: 240 },
   },
 } as const;
@@ -103,6 +103,15 @@ const draftInspection = {
       },
     } },
     drafts: { type: 'array', maxItems: 100, items: draftSummary },
+  },
+} as const;
+const draftInstallResult = {
+  type: 'object', additionalProperties: false, required: ['installed', 'draft', 'ok', 'summary', 'issues', 'catalog'],
+  properties: {
+    installed: { type: 'boolean' },
+    draft: draftSummary,
+    ...draftDiagnosisProperties,
+    catalog: pluginCatalog,
   },
 } as const;
 function request(method: string, payload: unknown) {
@@ -154,6 +163,8 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/pluginDraftCreateResponse' },
     { $ref: '#/$defs/pluginDraftValidateResponse' },
     { $ref: '#/$defs/pluginDraftDiagnoseResponse' },
+    { $ref: '#/$defs/pluginDraftInstallRequest' },
+    { $ref: '#/$defs/pluginDraftInstallResponse' },
   ],
   $defs: {
     protocolError: {
@@ -448,6 +459,11 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     pluginDraftCreateResponse: response('pluginDrafts.create', draftCreateResult),
     pluginDraftValidateResponse: response('pluginDrafts.validate', draftReport),
     pluginDraftDiagnoseResponse: response('pluginDrafts.diagnose', draftReport),
+    pluginDraftInstallRequest: request('pluginDrafts.install', {
+      type: 'object', additionalProperties: false, required: ['draftId', 'confirmed'],
+      properties: { draftId: { ...nonEmptyString, maxLength: 128 }, confirmed: { type: 'boolean' } },
+    }),
+    pluginDraftInstallResponse: response('pluginDrafts.install', draftInstallResult),
     modelChatCancelledEvent: {
       type: 'object', additionalProperties: false,
       required: ['protocolVersion', 'kind', 'event', 'payload'],

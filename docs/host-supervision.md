@@ -8,7 +8,7 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 - `apps/pc-host`：独立进程入口，运行 `CordisPluginRuntime({ target: 'pc-host' })`，处理 handshake、ping、插件控制、工具执行与 shutdown；
 - `host-supervisor.ts`：请求关联、超时、generation、崩溃检测、有限退避重启和退出清理；
 - `electron-host-process.ts`：对 Electron `utilityProcess.fork()` 的薄适配；
-- `preload.ts`：只暴露状态查询、状态事件、ping、插件清单/启停、工具调用，以及模型设置和聊天流事件，不暴露任意 channel，也不回传 API Key；
+- `preload.ts`：只暴露状态查询、状态事件、ping、插件清单/启停、工具调用、模型设置和聊天流事件，以及草稿检查与确认安装，不暴露任意 channel，也不回传 API Key 或草稿源码；
 - Renderer 状态按钮：显示连接中、已连接、重连中、失败或已停止。
 
 ## v1 消息
@@ -26,6 +26,7 @@ MoreThanChat 已将未来的模型调用、数据库和 PC Host 插件预留到�
 - `model.getSettings` / `model.setSettings`：读取或更新 Base URL、模型名和提供方。响应只有 `hasApiKey`，不回传原始密钥。
 - `model.chat.start` / `model.chat.cancel`：在 Host 内开始或取消一次流式回复。
 - `pluginDrafts.inspect` / `create` / `validate` / `diagnose`：管理未安装草稿。响应不回传源码或 API Key。
+- `pluginDrafts.install`：在 `confirmed: true` 时安装声明式文本工具。响应带回插件清单，不回传工具正文或源码。`confirmed: false`、非声明式源码、危险 API、非空权限和已安装 id 都不会安装。
 
 当前事件：
 
