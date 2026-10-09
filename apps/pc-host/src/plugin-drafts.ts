@@ -100,13 +100,13 @@ export class PluginDraftService {
   }
 
   /** Plans a declarative install. The returned tool text is data; the source is not executable code. */
-  planInstall(draftId: string, confirmed: boolean): Promise<DraftInstallPlan> {
+  planInstall(draftId: string, confirmed: boolean, options?: { readonly ignoreInstalledId?: boolean }): Promise<DraftInstallPlan> {
     return this.#enqueue(async () => {
       const stored = await this.#readLatest(draftId)
       const assessed = assessDraft(JSON.stringify(stored.manifest), stored.source, this.#installedPlugins())
       if (!assessed.manifest) throw new PluginDraftError('DRAFT_NOT_FOUND', '没有找到这份插件草稿。')
       const draft = summaryOf(assessed.manifest, stored.revision, stored.createdAt, assessed.ok)
-      const issues = installBlockers(assessed, stored.source)
+      const issues = installBlockers(assessed, stored.source, options?.ignoreInstalledId === true)
       if (issues.length > 0) {
         return { installable: false, draft, summary: refusalSummary(issues), issues: issues.slice(0, 20) }
       }
@@ -312,9 +312,10 @@ function summaryOf(manifest: PluginManifestV1, revision: number, updatedAt: numb
   }
 }
 
-function installBlockers(assessed: Assessment, source: string): PluginDraftIssue[] {
+function installBlockers(assessed: Assessment, source: string, ignoreInstalledId = false): PluginDraftIssue[] {
   const issues: PluginDraftIssue[] = []
   for (const issue of assessed.issues) {
+    if (ignoreInstalledId && issue.code === 'INSTALLED_ID') continue
     if (issue.severity === 'error' || issue.code === 'INSTALLED_ID') {
       issues.push(issue.code === 'INSTALLED_ID' ? { ...issue, severity: 'error' } : issue)
     }

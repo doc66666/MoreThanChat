@@ -483,13 +483,16 @@ export function App() {
     if (hostPluginBusy || hostStatusRef.current.state !== 'ready') return
     setHostPluginBusy(true)
     try {
+      const alreadyInstalled = hostPlugins.some(plugin => plugin.id === draftId)
       const result = await window.moreThanChat.installPluginDraft({ draftId, confirmed: true })
       setPluginDraftReport(result.summary)
       if (hostStatusRef.current.state === 'ready' && hostStatusRef.current.generation === result.catalog.generation) {
         setHostPlugins(result.catalog.plugins)
       }
       await refreshPluginDrafts()
-      setToast(result.installed ? '文本工具已安装，可以在输入框使用' : '草稿没有安装')
+      setToast(result.installed
+        ? (alreadyInstalled ? '文本工具已更新' : '文本工具已安装，可以在输入框使用')
+        : (alreadyInstalled ? result.summary : '草稿没有安装'))
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'install'); setToast(errorText(error)) }
     finally { setHostPluginBusy(false) }
@@ -785,7 +788,7 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
         </div>
         <section className="draft-section">
           <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
-          <p className="settings-note">确认后只能安装固定 JSON 形状的文本工具。源码不会执行。安装后可立即使用和停用，并在 Host 重启后保留。</p>
+          <p className="settings-note">确认后只能安装固定 JSON 形状的文本工具。源码不会执行。安装后可立即使用和停用，并在 Host 重启后保留。再次确认会写入新版本；更新失败时仍使用上一版本。</p>
           {(drafts?.drafts ?? []).map(item => {
             const installed = hostPlugins.some(plugin => plugin.id === item.id)
             return (
@@ -794,16 +797,18 @@ function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCr
               <small>{item.id} · r{item.revision} · {installed ? '已安装' : '未安装'} · {item.ok ? '校验通过' : '校验未通过'}</small>
               <div className="draft-actions">
                 <button type="button" className="secondary-button" data-draft-diagnose disabled={hostBusy} onClick={() => onDiagnoseDraft(item.id)}>诊断</button>
-                {installed ? null : confirmId === item.id ? (
+                {confirmId === item.id ? (
                   <div className="draft-confirm" data-draft-confirm={item.id}>
-                    <p>确认安装这个声明式文本工具？源码不会被执行。</p>
+                    <p>{installed
+                      ? '确认用这份草稿更新已安装的文本工具？失败会保留当前版本。源码不会被执行。'
+                      : '确认安装这个声明式文本工具？源码不会被执行。'}</p>
                     <div className="draft-actions">
                       <button type="button" className="secondary-button" data-draft-confirm-cancel disabled={hostBusy} onClick={() => setConfirmId(null)}>取消</button>
-                      <button type="button" className="secondary-button" data-draft-confirm-ok disabled={hostBusy} onClick={() => { setConfirmId(null); onInstallDraft(item.id) }}>确认安装</button>
+                      <button type="button" className="secondary-button" data-draft-confirm-ok disabled={hostBusy} onClick={() => { setConfirmId(null); onInstallDraft(item.id) }}>{installed ? '确认更新' : '确认安装'}</button>
                     </div>
                   </div>
                 ) : (
-                  <button type="button" className="secondary-button" data-draft-install disabled={hostBusy} onClick={() => setConfirmId(item.id)}>安装</button>
+                  <button type="button" className="secondary-button" {...(installed ? { 'data-draft-update': 'true' } : { 'data-draft-install': 'true' })} disabled={hostBusy} onClick={() => setConfirmId(item.id)}>{installed ? '更新' : '安装'}</button>
                 )}
               </div>
             </div>

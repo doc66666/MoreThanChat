@@ -30,6 +30,8 @@ describe('HostPluginService', () => {
     expect(catalog.plugins.map(plugin => plugin.id)).toEqual(['builtin.time-tool', 'example.note'])
     expect(catalog.plugins[1]).toMatchObject({ status: 'active', tools: [{ id: 'note', label: '便签' }] })
     await expect(service.invoke('example.note', 'note')).resolves.toEqual({ generation: 3, text: marker })
+    expect(service.isStaticInstall('example.note')).toBe(true)
+    expect(service.isStaticInstall('builtin.time-tool')).toBe(false)
 
     const disabled = await service.setEnabled('example.note', false)
     expect(disabled.plugins.find(plugin => plugin.id === 'example.note')).toMatchObject({ status: 'inactive', tools: [] })

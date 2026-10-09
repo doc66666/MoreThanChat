@@ -21,6 +21,7 @@ export class StaticToolInstallError extends Error {
 export class HostPluginService {
   readonly #tools = new ContributionRegistry<HostTool>()
   readonly #runtime = new CordisPluginRuntime({ target: 'pc-host', services: { [hostToolsServiceId]: this.#tools } })
+  readonly #staticIds = new Set<string>()
   #operation: Promise<unknown> = Promise.resolve()
   #closing = false
 
@@ -34,6 +35,10 @@ export class HostPluginService {
     return this.#enqueue(async () => {
       for (const plugin of this.#runtime.list()) await this.#runtime.activate(plugin.manifest.id)
     })
+  }
+
+  isStaticInstall(id: string): boolean {
+    return this.#staticIds.has(id)
   }
 
   catalog(): HostPluginCatalog {
@@ -74,6 +79,7 @@ export class HostPluginService {
       }
       catch {
         await this.#runtime.uninstall(manifest.id).catch(() => undefined)
+        this.#staticIds.delete(manifest.id)
         throw new StaticToolInstallError('activation-failed')
       }
       try {
@@ -81,16 +87,20 @@ export class HostPluginService {
       }
       catch {
         await this.#runtime.uninstall(manifest.id).catch(() => undefined)
+        this.#staticIds.delete(manifest.id)
         throw new StaticToolInstallError('persist-failed')
       }
+      this.#staticIds.add(manifest.id)
       return this.catalog()
     })
   }
 
   uninstall(pluginId: string): Promise<void> {
     return this.#enqueue(async () => {
-      if (!this.#runtime.list().some(plugin => plugin.manifest.id === pluginId)) return
-      await this.#runtime.uninstall(pluginId)
+      if (this.#runtime.list().some(plugin => plugin.manifest.id === pluginId)) {
+        await this.#runtime.uninstall(pluginId)
+      }
+      this.#staticIds.delete(pluginId)
     })
   }
 

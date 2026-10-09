@@ -1,4 +1,4 @@
-import { chmod, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, link, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { validatePluginManifest, type PluginManifestV1 } from '@more-than-chat/plugin-runtime'
 import { isAcceptedStaticTextTool, type DeclarativeTextTool } from './static-text-tool'
@@ -7,6 +7,7 @@ const directoryName = 'installed-static-tools'
 
 export interface StoredStaticTool {
   readonly v: 1
+  readonly revision: number
   readonly enabled: boolean
   readonly manifest: PluginManifestV1
   readonly tool: DeclarativeTextTool
@@ -46,10 +47,45 @@ export class InstalledStaticToolStore {
     return records
   }
 
+  async read(id: string): Promise<StoredStaticTool | null> {
+    if (!isPluginFileId(id)) return null
+    let text: string
+    try {
+      text = await readFile(this.#file(id), 'utf8')
+    }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+    try {
+      const record = parseStoredStaticTool(JSON.parse(text) as unknown)
+      return record && record.manifest.id === id ? record : null
+    }
+    catch {
+      return null
+    }
+  }
+
+  /** Writes an immutable version file, then the current record. */
   async save(record: StoredStaticTool): Promise<void> {
-    const stored = parseStoredStaticTool(record)
-    if (!stored) throw new Error('Refusing to store an invalid declarative text tool.')
+    const stored = requireStored(record)
+    const placed = await this.#placeVersion(stored)
+    if (placed === 'exists') {
+      const existing = await readFile(this.#versionFile(stored.manifest.id, stored.revision), 'utf8')
+      if (existing !== serialized(stored)) throw new Error('Refusing to replace an immutable declarative tool version.')
+    }
     await this.#write(stored.manifest.id, stored)
+  }
+
+  /** Rewrites only the current record. Version files stay untouched. */
+  async saveCurrent(record: StoredStaticTool): Promise<void> {
+    const stored = requireStored(record)
+    await this.#write(stored.manifest.id, stored)
+  }
+
+  /** Creates the version file when a record was stored before versions existed. */
+  async preserveVersion(record: StoredStaticTool): Promise<void> {
+    await this.#placeVersion(requireStored(record))
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<void> {
@@ -66,12 +102,37 @@ export class InstalledStaticToolStore {
     await this.#write(id, { ...record, enabled })
   }
 
+  async #placeVersion(record: StoredStaticTool): Promise<'created' | 'exists'> {
+    const directory = this.#versionDirectory(record.manifest.id)
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    await chmod(path.dirname(directory), 0o700)
+    await chmod(directory, 0o700)
+    const file = this.#versionFile(record.manifest.id, record.revision)
+    const temporary = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
+    try {
+      await writeFile(temporary, serialized(record), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      await chmod(temporary, 0o600)
+      try {
+        await link(temporary, file)
+      }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return 'exists'
+        throw error
+      }
+      await chmod(file, 0o600)
+      return 'created'
+    }
+    finally {
+      await rm(temporary, { force: true })
+    }
+  }
+
   async #write(id: string, record: StoredStaticTool): Promise<void> {
     await mkdir(this.#root, { recursive: true, mode: 0o700 })
     await chmod(this.#root, 0o700)
     const file = this.#file(id)
     const temporary = `${file}.${process.pid}.tmp`
-    await writeFile(temporary, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await writeFile(temporary, serialized(record), { encoding: 'utf8', mode: 0o600 })
     await chmod(temporary, 0o600)
     await rename(temporary, file)
     await chmod(file, 0o600)
@@ -80,6 +141,21 @@ export class InstalledStaticToolStore {
   #file(id: string): string {
     const file = path.resolve(this.#root, `${id}.json`)
     if (file !== path.join(this.#root, `${id}.json`)) throw new Error('Invalid declarative tool id.')
+    return file
+  }
+
+  #versionDirectory(id: string): string {
+    if (!isPluginFileId(id)) throw new Error('Invalid declarative tool id.')
+    const directory = path.resolve(this.#root, 'versions', id)
+    if (directory !== path.join(this.#root, 'versions', id)) throw new Error('Invalid declarative tool id.')
+    return directory
+  }
+
+  #versionFile(id: string, revision: number): string {
+    if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('Invalid declarative tool revision.')
+    const directory = this.#versionDirectory(id)
+    const file = path.resolve(directory, `version-${revision}.json`)
+    if (file !== path.join(directory, `version-${revision}.json`)) throw new Error('Invalid declarative tool revision.')
     return file
   }
 }
@@ -99,10 +175,22 @@ export async function restoreInstalledStaticTools(store: InstalledStaticToolStor
   }
 }
 
+function requireStored(record: StoredStaticTool): StoredStaticTool {
+  const stored = parseStoredStaticTool(record)
+  if (!stored) throw new Error('Refusing to store an invalid declarative text tool.')
+  return stored
+}
+
+function serialized(record: StoredStaticTool): string {
+  return `${JSON.stringify(record)}\n`
+}
+
 function parseStoredStaticTool(value: unknown): StoredStaticTool | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Partial<StoredStaticTool>
+  const revision = record.revision === undefined ? 1 : record.revision
   if (record.v !== 1 || typeof record.enabled !== 'boolean' || !record.tool) return null
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return null
   try {
     validatePluginManifest(record.manifest)
   }
@@ -113,6 +201,7 @@ function parseStoredStaticTool(value: unknown): StoredStaticTool | null {
   if (!isAcceptedStaticTextTool(record.manifest, { id: tool.id, label: tool.label, text: tool.text })) return null
   return {
     v: 1,
+    revision,
     enabled: record.enabled,
     manifest: record.manifest,
     tool: { id: tool.id, label: tool.label, text: tool.text },
