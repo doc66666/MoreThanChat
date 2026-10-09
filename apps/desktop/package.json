@@ -6,7 +6,7 @@
   "main": "dist-main/main.js",
   "build": {
     "extraResources": [
-      { "from": "../pc-host/dist", "to": "pc-host" }
+      { "from": "../../.artifacts/host-resources", "to": "pc-host" }
     ]
   },
   "scripts": {

@@ -28,13 +28,13 @@ describe('Host bundle entry', () => {
     expect(() => resolveHostEntry({ packaged: true, resourcesPath: ' ', moduleDir })).toThrow(/resources path/)
   })
 
-  it('points the desktop package extraResources copy at the pc-host dist', () => {
+  it('points the desktop package extraResources copy at the staged Host closure', () => {
     const desktopDir = path.resolve(import.meta.dirname, '..')
     const manifest = JSON.parse(readFileSync(path.join(desktopDir, 'package.json'), 'utf8')) as {
       build?: { extraResources?: Array<{ from?: string; to?: string }> }
     }
     const copy = manifest.build?.extraResources?.[0]
     expect(copy?.to).toBe('pc-host')
-    expect(path.resolve(desktopDir, copy?.from ?? '')).toBe(path.resolve(desktopDir, '../pc-host/dist'))
+    expect(path.resolve(desktopDir, copy?.from ?? '')).toBe(path.resolve(desktopDir, '../../.artifacts/host-resources'))
   })
 })
