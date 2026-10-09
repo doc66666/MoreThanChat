@@ -21,7 +21,10 @@ pnpm build
 pnpm verify:plugin-ui
 pnpm verify:host
 pnpm verify:protocol
+pnpm package:dir
 ```
+
+`pnpm package:dir` 在当前系统生成 unpacked 目录，并检查 Host 依赖位于 `resources/pc-host`、不在 `app.asar` 里。Linux 上的结果不是 Windows 安装包验收。
 
 - [架构与安全边界](docs/architecture.md)
 - [插件运行时与示例](docs/plugin-runtime.md)

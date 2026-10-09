@@ -6,7 +6,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 
-const requiredModules = [
+export const requiredHostModules = [
   '@more-than-chat/protocol',
   '@more-than-chat/plugin-runtime',
   '@more-than-chat/runtime-cordis',
@@ -49,7 +49,7 @@ export async function stageHostResources(root, output) {
 export async function verifyHostResources(output) {
   const entry = path.join(output, 'main.js')
   const requireFromHost = createRequire(entry)
-  for (const name of requiredModules) {
+  for (const name of requiredHostModules) {
     const resolved = await realpath(requireFromHost.resolve(name))
     if (!isInside(output, resolved)) throw new Error(`${name} resolved outside the staged Host: ${resolved}`)
   }

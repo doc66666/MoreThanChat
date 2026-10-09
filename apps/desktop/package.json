@@ -3,11 +3,31 @@
   "productName": "MoreThanChat",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.21.0",
   "main": "dist-main/main.js",
   "build": {
-    "extraResources": [
-      { "from": "../../.artifacts/host-resources", "to": "pc-host" }
-    ]
+    "appId": "dev.morethanchat.desktop",
+    "productName": "MoreThanChat",
+    "asar": true,
+    "compression": "store",
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "afterPack": "./scripts/copy-host-resources.cjs",
+    "files": [
+      "!**/*.bak",
+      "!scripts{,/**/*}"
+    ],
+    "directories": {
+      "output": "../../.artifacts/desktop-release"
+    },
+    "linux": {
+      "target": "dir",
+      "executableName": "morethanchat"
+    },
+    "win": {
+      "target": "dir",
+      "signAndEditExecutable": false
+    }
   },
   "scripts": {
     "dev": "pnpm run build:main && concurrently -k -s first \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && electron . --dev\"",
@@ -34,6 +54,7 @@
     "@vitejs/plugin-react": "5.2.0",
     "concurrently": "10.0.5",
     "electron": "43.5.1",
+    "electron-builder": "26.15.3",
     "typescript": "5.9.3",
     "vite": "7.3.1",
     "vitest": "4.1.11",

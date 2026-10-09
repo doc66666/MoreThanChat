@@ -70,5 +70,5 @@ pnpm verify:host
 - PC Host 运行随应用内置的可信插件，以及用户确认后的声明式文本工具和输入框动作。`plugin-drafts/` 里的草稿按修订号追加保存，校验和诊断只做静态检查，不会执行源码。内置插件和其他非声明式 id 不会被草稿替换；
 - API Key 只写在 Host 数据目录的 `model-credentials.json`（权限 0600）。设置快照、聊天记录、插件服务和 Renderer 都不接收原始密钥。模拟模式不会把密钥交给提供方，也不会访问网络；
 - utility process 是崩溃隔离与权限收敛边界，但不是完整恶意代码沙箱；
-- 开发构建从 `apps/pc-host/dist/main.js` 启动。`pnpm stage:host` 把 Host 的 `dist` 和生产依赖复制到 `.artifacts/host-resources`，打包后放在 `resources/pc-host/main.js`（`extraResources`，不进入 `app.asar`）。现有 CI 的 `pnpm build` 会在 Windows 与 Ubuntu 上检查这份目录能脱离仓库加载。还没有生成 Windows 安装包，Linux 通过不等于 Windows 验收；
-- Cordis 适配层和契约测试已接入，CI 配置已建立；下一步是用 electron-builder 生成安装目录并在 Windows 上验收，随后进入 SQLite 与模型 Provider。声明式文本工具已能追加不可变版本，并在更新失败时恢复上一版本。声明式输入框动作可立即使用和停用，并在重启后保留启停状态。再次确认会追加不可变版本，更新失败时恢复上一版本。任意插件的签名、阶段检查和版本切换事务仍未实现。
+- 开发构建从 `apps/pc-host/dist/main.js` 启动。`pnpm stage:host` 把 Host 的 `dist` 和生产依赖复制到 `.artifacts/host-resources`。`pnpm package:dir` 用 electron-builder 生成当前系统的 unpacked 目录，并在 `afterPack` 把这份目录复制到 `resources/pc-host/main.js`（不进入 `app.asar`）。electron-builder 会跳过 extraResources 根目录上的 `node_modules`，所以不能靠 extraResources 带上 Host 依赖。现有 CI 的 `pnpm build` 在 CI 环境中会做同样的目录打包和加载检查。这不是 Windows 安装包验收，Linux 通过不等于 Windows 验收；
+- Cordis 适配层和契约测试已接入，CI 配置已建立；下一步是在 Windows 上验收 unpacked 目录能启动，并生成安装包，随后进入 SQLite 与模型 Provider。声明式文本工具已能追加不可变版本，并在更新失败时恢复上一版本。声明式输入框动作可立即使用和停用，并在重启后保留启停状态。再次确认会追加不可变版本，更新失败时恢复上一版本。任意插件的签名、阶段检查和版本切换事务仍未实现。

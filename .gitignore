@@ -11,6 +11,10 @@ coverage/
 .turbo/
 .artifacts/
 
+# electron-builder metadata. Unpacked output lives under .artifacts/.
+apps/desktop/builder-debug.yml
+apps/desktop/builder-effective-config.yaml
+
 # Local configuration and secrets.
 .env
 .env.*

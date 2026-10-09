@@ -38,8 +38,8 @@ pnpm verify:host
 
 `.github/workflows/ci.yml` 在 main 推送与 PR 时运行：
 
-- Windows Server 2022 与 Ubuntu 24.04：Node 24.12.0、pnpm 11.21.0、锁定安装、类型检查、单测、构建和 Android JSON Schema 一致性；
+- Windows Server 2022 与 Ubuntu 24.04：Node 24.12.0、pnpm 11.21.0、锁定安装、类型检查、单测、构建和 Android JSON Schema 一致性。CI 中的 `pnpm build` 还会用 electron-builder 生成当前系统的 unpacked 目录，并检查 Host 生产依赖在 `app.asar` 之外；
 - Windows：真实 Electron UI 插件启停、Host 崩溃恢复与停用选择恢复；
 - 截图保留 14 天；actions 固定提交 SHA，工作流权限为 `contents: read`。
 
-QA 崩溃仅在第一代 Host 确认停用插件后触发，不依赖冷启动速度。Linux 目前验证构建与契约，不表示已验收 Linux 桌面产品。正式安装包仍需完成资源路径、ASAR 与 clean-machine 启动验证。
+QA 崩溃仅在第一代 Host 确认停用插件后触发，不依赖冷启动速度。Linux unpacked 目录只说明布局和依赖能在当前系统加载到 utility process 守卫。正式 Windows 安装包仍需在 Windows 上验收启动。

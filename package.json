@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "pnpm build:host && pnpm --filter @more-than-chat/desktop dev",
     "build:host": "pnpm --filter @more-than-chat/protocol build && pnpm --filter @more-than-chat/plugin-runtime build && pnpm --filter @more-than-chat/runtime-cordis build && pnpm --filter @more-than-chat/plugin-time-tool build && pnpm --filter @more-than-chat/pc-host build",
-    "build": "pnpm build:host && pnpm --filter @more-than-chat/desktop build && node scripts/stage-host-resources.mjs",
+    "build": "pnpm build:host && pnpm --filter @more-than-chat/desktop build && node scripts/stage-host-resources.mjs && node scripts/package-dir.mjs --if-ci",
     "stage:host": "node scripts/stage-host-resources.mjs",
+    "package:dir": "pnpm build && node scripts/package-dir.mjs",
     "test": "pnpm build:host && pnpm -r --if-present test",
     "verify:plugin-ui": "pnpm build && node scripts/verify-plugin-ui.mjs",
     "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",

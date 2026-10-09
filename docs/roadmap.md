@@ -4,7 +4,7 @@
 
 ## Phase 0：架构钉子（1 周）
 
-当前进度（2026-10-09）：可信 `pc-ui` 插件生命周期、manifest 基础校验、v1 Host 协议与 JSON Schema、Electron Main↔utility process 监督与崩溃恢复已完成。独立 `pc-host` 时间工具插件通过 `runtime-cordis` 运行。Host 已能保存 OpenAI 兼容 / DeepSeek 的 Base URL、模型名和 API Key，并在 Host 进程内流式生成、取消和报告失败；中断回复不会记为正常完成。没有真实密钥时走模拟提供方，不代表线上 API 已实测。插件草稿已能 inspect、create、validate、diagnose。用户确认后可安装声明式文本工具，安装后立即可用、可停用，并在 Host 重启后恢复。任意草稿源码不会执行。保存失败会撤回本次安装。声明式文本工具已保存不可变版本，更新失败会恢复上一版本。声明式输入框动作确认后可立即使用和停用，并在 Host 重启后按启停状态恢复。再次确认会追加不可变版本，更新失败时恢复上一版本。任意插件的签名和阶段式版本切换、以及 AI 通过工具写草稿仍未完成。SQLite 事件存储、费用元数据和 OS 凭据库仍未接入，当前密钥放在 Host 私有文件。Cordis Core 固定为 `3.18.1`。`pnpm build` 会生成带生产依赖的 Host 资源目录，因此现有 CI 的 Windows 与 Ubuntu 作业都会检查它能脱离仓库加载。Windows 安装包尚未生成。动态服务提供/撤销和依赖自动等待仍在后续。
+当前进度（2026-10-09）：可信 `pc-ui` 插件生命周期、manifest 基础校验、v1 Host 协议与 JSON Schema、Electron Main↔utility process 监督与崩溃恢复已完成。独立 `pc-host` 时间工具插件通过 `runtime-cordis` 运行。Host 已能保存 OpenAI 兼容 / DeepSeek 的 Base URL、模型名和 API Key，并在 Host 进程内流式生成、取消和报告失败；中断回复不会记为正常完成。没有真实密钥时走模拟提供方，不代表线上 API 已实测。插件草稿已能 inspect、create、validate、diagnose。用户确认后可安装声明式文本工具，安装后立即可用、可停用，并在 Host 重启后恢复。任意草稿源码不会执行。保存失败会撤回本次安装。声明式文本工具已保存不可变版本，更新失败会恢复上一版本。声明式输入框动作确认后可立即使用和停用，并在 Host 重启后按启停状态恢复。再次确认会追加不可变版本，更新失败时恢复上一版本。任意插件的签名和阶段式版本切换、以及 AI 通过工具写草稿仍未完成。SQLite 事件存储、费用元数据和 OS 凭据库仍未接入，当前密钥放在 Host 私有文件。Cordis Core 固定为 `3.18.1`。`pnpm package:dir` 会在当前系统生成 unpacked 目录，并检查 `resources/pc-host` 带生产依赖且位于 `app.asar` 之外。CI 上的 `pnpm build` 会做同样的检查。Windows 安装包尚未生成，Linux 通过不等于 Windows 验收。动态服务提供/撤销和依赖自动等待仍在后续。
 
 交付：
 
