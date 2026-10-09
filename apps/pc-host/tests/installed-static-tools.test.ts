@@ -350,19 +350,6 @@ describe('installed declarative text tools', () => {
 
     await drafts.create({
       manifestJson: manifest('example.sign'),
-      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: 'should-not-replace' }),
-    })
-    const again = await installConfirmedTextTool({
-      drafts, plugins, store, draftId: 'example.sign', confirmed: true,
-    })
-    expect(again.installed).toBe(false)
-    expect(again.issues.map(issue => issue.code)).toContain('INSTALLED_ID')
-    expect(await readFile(versionFile, 'utf8')).toBe(saved)
-    await expect(readFile(versionPath(directory, 'example.sign', 2))).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
-
-    await drafts.create({
-      manifestJson: manifest('example.sign'),
       source: JSON.stringify({ kind: 'host-text-tool', toolId: 'sign', label: '便签', text: 'should-not-convert' }),
     })
     const converted = await installConfirmedTextTool({
@@ -423,6 +410,129 @@ describe('installed declarative text tools', () => {
     await expect(restarted.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: actionMarker })
     expect(Reflect.get(globalThis, executed)).toBeUndefined()
     await restarted.stop()
+  })
+
+  it('keeps the first composer version immutable when a confirmed draft updates it', async () => {
+    const directory = await makeDirectory()
+    const store = new InstalledStaticToolStore(directory)
+    const plugins = new HostPluginService(12, [])
+    await plugins.start()
+    const drafts = draftService(directory, plugins)
+    const marker = 'composer-version-one'
+    const updated = 'composer-version-two'
+    const executed = '__mtcDraftSourceExecuted'
+    await drafts.create({
+      manifestJson: manifest('example.sign'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: marker }),
+    })
+    expect((await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.sign', confirmed: true,
+    })).installed).toBe(true)
+    const versionFile = versionPath(directory, 'example.sign', 1)
+    const sealed = await readFile(versionFile, 'utf8')
+    expect(sealed).toContain('"kind":"composer-action"')
+
+    Reflect.deleteProperty(globalThis, executed)
+    await drafts.create({ manifestJson: manifest('example.sign'), source: `globalThis.${executed} = true\n` })
+    const script = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.sign', confirmed: true,
+    })
+    expect(script.installed).toBe(false)
+    expect(script.issues.map(issue => issue.code)).toContain('NOT_DECLARATIVE')
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
+    expect(await readFile(versionFile, 'utf8')).toBe(sealed)
+
+    await drafts.create({
+      manifestJson: manifest('example.sign'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: updated }),
+    })
+    const unconfirmed = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.sign', confirmed: false,
+    })
+    expect(unconfirmed.installed).toBe(false)
+    expect(unconfirmed.issues.map(issue => issue.code)).toContain('CONFIRMATION_REQUIRED')
+    expect(await readFile(versionFile, 'utf8')).toBe(sealed)
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: marker })
+
+    await plugins.setEnabled('example.sign', false)
+    await store.setEnabled('example.sign', false)
+    const changed = await installConfirmedTextTool({
+      drafts, plugins, store, draftId: 'example.sign', confirmed: true,
+    })
+    expect(changed.installed).toBe(true)
+    expect(changed.summary).toContain('已更新')
+    expect(changed.summary).toContain('输入框动作')
+    expect(JSON.stringify(changed)).not.toContain(updated)
+    expect(changed.catalog.plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      status: 'inactive', tools: [], composerActions: [],
+    })
+    expect(await readFile(versionFile, 'utf8')).toBe(sealed)
+    const current = JSON.parse(await readFile(currentPath(directory, 'example.sign'), 'utf8')) as {
+      revision: number
+      enabled: boolean
+      kind: string
+      tool: { text: string }
+    }
+    expect(current.revision).toBe(2)
+    expect(current.enabled).toBe(false)
+    expect(current.kind).toBe('composer-action')
+    expect(current.tool.text).toBe(updated)
+    const versionTwo = await readFile(versionPath(directory, 'example.sign', 2), 'utf8')
+    expect(versionTwo).toContain(updated)
+    expect(versionTwo).toContain('"kind":"composer-action"')
+    expect(versionTwo).not.toContain('composer-text-action')
+    if (process.platform !== 'win32') expect((await stat(versionPath(directory, 'example.sign', 2))).mode & 0o777).toBe(0o600)
+    await expect(plugins.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await plugins.setEnabled('example.sign', true)
+    expect(plugins.catalog().plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      tools: [], composerActions: [{ id: 'sign', label: '署名' }],
+    })
+    await expect(plugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: updated })
+    await plugins.stop()
+
+    const restored = new HostPluginService(13, [])
+    await restored.start()
+    await restoreInstalledStaticTools(store, restored)
+    expect(restored.catalog().plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      status: 'inactive', tools: [], composerActions: [],
+    })
+    await expect(restored.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await restored.setEnabled('example.sign', true)
+    await expect(restored.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: updated })
+    expect(await readdir(path.join(directory, 'installed-static-tools', 'versions', 'example.sign')))
+      .toEqual(expect.arrayContaining(['version-1.json', 'version-2.json']))
+    await restored.stop()
+
+    const failedStore = new FailUpdateStore(directory)
+    const failedPlugins = new HostPluginService(14, [])
+    await failedPlugins.start()
+    await restoreInstalledStaticTools(failedStore, failedPlugins)
+    await failedPlugins.setEnabled('example.sign', false)
+    const failedDrafts = draftService(directory, failedPlugins)
+    await failedDrafts.create({
+      manifestJson: manifest('example.sign'),
+      source: JSON.stringify({ kind: 'composer-text-action', actionId: 'sign', label: '署名', text: 'should-not-stick' }),
+    })
+    const failed = await installConfirmedTextTool({
+      drafts: failedDrafts, plugins: failedPlugins, store: failedStore, draftId: 'example.sign', confirmed: true,
+    })
+    expect(failed.installed).toBe(false)
+    expect(failed.summary).toContain('已恢复上一版本')
+    expect(failed.catalog.plugins.find(plugin => plugin.id === 'example.sign')).toMatchObject({
+      status: 'inactive', tools: [], composerActions: [],
+    })
+    expect(await readFile(versionFile, 'utf8')).toBe(sealed)
+    await expect(readFile(versionPath(directory, 'example.sign', 3))).rejects.toMatchObject({ code: 'ENOENT' })
+    const rolled = JSON.parse(await readFile(currentPath(directory, 'example.sign'), 'utf8')) as { revision: number; tool: { text: string }; kind: string }
+    expect(rolled.revision).toBe(2)
+    expect(rolled.kind).toBe('composer-action')
+    expect(rolled.tool.text).toBe(updated)
+    await expect(failedPlugins.invoke('example.sign', 'sign')).rejects.toMatchObject({ code: 'TOOL_UNAVAILABLE' })
+    await failedPlugins.setEnabled('example.sign', true)
+    expect(failedPlugins.catalog().plugins.find(plugin => plugin.id === 'example.sign')?.tools).toEqual([])
+    await expect(failedPlugins.invoke('example.sign', 'sign')).resolves.toMatchObject({ text: updated })
+    expect(Reflect.get(globalThis, executed)).toBeUndefined()
+    await failedPlugins.stop()
   })
 })
 

@@ -44,11 +44,11 @@ async function installComposer(
   plan: ComposerPlan,
   previous: StoredStaticTool | null,
 ): Promise<PluginDraftInstallResult> {
-  if (previous) {
-    return refused(plan.draft, '没有安装：这个 id 已经安装，草稿不会替换它。', [
-      installIssue('INSTALLED_ID', '插件已经安装。这份草稿不会替换它。'),
-    ], options.plugins.catalog())
-  }
+  if (!previous || !options.store) return installComposerFirst(options, plan)
+  return installComposerUpdate(options, plan, previous, options.store)
+}
+
+async function installComposerFirst(options: InstallOptions, plan: ComposerPlan): Promise<PluginDraftInstallResult> {
   try {
     const store = options.store
     const record: StoredStaticTool = {
@@ -70,6 +70,69 @@ async function installComposer(
   }
   catch (error) {
     return installFailure(plan.draft, error, options.plugins.catalog(), '输入框动作')
+  }
+}
+
+async function installComposerUpdate(
+  options: InstallOptions,
+  plan: ComposerPlan,
+  previous: StoredStaticTool,
+  store: InstalledStaticToolStore,
+): Promise<PluginDraftInstallResult> {
+  const nextRevision = previous.revision + 1
+  if (!Number.isSafeInteger(nextRevision) || plan.manifest.id !== previous.manifest.id || previous.kind !== 'composer-action') {
+    return refused(plan.draft, '没有更新：当前版本仍在使用。源码没有被执行。', [
+      installIssue('NOT_INSTALLABLE', '声明式输入框动作没有更新。'),
+    ], options.plugins.catalog())
+  }
+  try {
+    await store.preserveVersion(previous)
+  }
+  catch {
+    return refused(plan.draft, '没有更新：上一版本未能封存，当前版本仍在使用。源码没有被执行。', [
+      installIssue('NOT_INSTALLABLE', '上一版本没有封存。'),
+    ], options.plugins.catalog())
+  }
+  try {
+    await options.plugins.uninstall(previous.manifest.id)
+    let catalog = await options.plugins.installStaticComposerAction(plan.manifest, plan.action, async () => {
+      await store.save(nextRecord(previous, plan.manifest, plan.action, nextRevision))
+    })
+    if (!previous.enabled) catalog = await options.plugins.setEnabled(previous.manifest.id, false)
+    return {
+      installed: true,
+      draft: plan.draft,
+      ok: true,
+      summary: '已更新声明式输入框动作。现在使用新版本，源码没有被执行。',
+      issues: [],
+      catalog,
+    }
+  }
+  catch {
+    return recoverComposer(options, plan, previous, store)
+  }
+}
+
+async function recoverComposer(
+  options: InstallOptions,
+  plan: ComposerPlan,
+  previous: StoredStaticTool,
+  store: InstalledStaticToolStore,
+): Promise<PluginDraftInstallResult> {
+  try {
+    await options.plugins.uninstall(previous.manifest.id)
+    let catalog = await options.plugins.installStaticComposerAction(previous.manifest, previous.tool, async () => {
+      await store.saveCurrent(previous)
+    })
+    if (!previous.enabled) catalog = await options.plugins.setEnabled(previous.manifest.id, false)
+    return refused(plan.draft, '更新没有完成，已恢复上一版本。源码没有被执行。', [
+      installIssue('NOT_INSTALLABLE', '更新没有完成，已恢复上一版本。'),
+    ], catalog)
+  }
+  catch {
+    return refused(plan.draft, '更新没有完成，上一版本也未能恢复。源码没有被执行。', [
+      installIssue('NOT_INSTALLABLE', '上一版本未能恢复。'),
+    ], options.plugins.catalog())
   }
 }
 
