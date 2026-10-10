@@ -47,9 +47,11 @@ Host 通过私有 `credentials.read/write` request-response 获取凭据，Rende
 - 标准锁定安装、跨平台类型检查和单测；Windows 符号链接测试使用无管理员要求的目录 junction。
 - 回归测试覆盖 SSE 提前 EOF、长度截断、非声明式待安装提示、回滚后新修订，以及转换的空输入/持久恢复。
 - 加密适配测试覆盖 ciphertext、删除、旧数据迁移和不可用时保留原数据。
-- `verify:ai-ui` 在 Windows 使用本地模拟兼容服务，实际经过聊天工具循环、确认界面、执行、重启、加密凭据恢复与删除。
+- `verify:ai-ui` 在 Windows 使用本地模拟兼容服务，实际经过聊天工具循环、确认界面、执行、修订、更新和重启；验证取消确认不改变安装状态，停用插件更新后仍停用、版本文件不覆盖，以及加密凭据恢复与删除。
 - `test:live-ai` 在隔离临时数据中使用真实模型，验证生成、修订、安装、执行和恢复。Key 交互输入，输出只记录结果和请求数。
 - `verify-ai-ui.mjs --live` 已在 Windows 用真实 DeepSeek 验证聊天内生成、确认安装、执行与加密恢复。测试结束清除保存的 Key，不把它写入报告或 Git。
 - CI 不使用真实 Key：Windows 执行模拟 UI、目录版 UI 验证并上传可分发目录和截图；Linux 验证构建/协议/契约。
 
 当前 Windows 目录版是未签名内测产物；SQLite、Markdown 完整渲染、费用展示、任意逻辑插件与 Android 留待后续。
+
+2026-10-10 已在开发模式和 Windows 目录版完成上述扩展验收。记录与内测操作见 [阶段验收记录](stage-acceptance-2026-10-10.md)。

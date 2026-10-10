@@ -4,7 +4,13 @@
 
 ## Phase 0：架构钉子（1 周）
 
-当前进度（2026-10-09）：可信 `pc-ui` 插件生命周期、manifest 基础校验、v1 Host 协议与 JSON Schema、Electron Main↔utility process 监督与崩溃恢复已完成。独立 `pc-host` 时间工具插件通过 `runtime-cordis` 运行。Host 已能保存 OpenAI 兼容 / DeepSeek 的 Base URL、模型名和 API Key，并在 Host 进程内流式生成、取消和报告失败；中断回复不会记为正常完成。没有真实密钥时走模拟提供方，不代表线上 API 已实测。插件草稿已能 inspect、create、validate、diagnose。用户确认后可安装声明式文本工具，安装后立即可用、可停用，并在 Host 重启后恢复。任意草稿源码不会执行。保存失败会撤回本次安装。声明式文本工具已保存不可变版本，更新失败会恢复上一版本。声明式输入框动作确认后可立即使用和停用，并在 Host 重启后按启停状态恢复。再次确认会追加不可变版本，更新失败时恢复上一版本。任意插件的签名和阶段式版本切换仍未完成。聊天模型可以通过工具检查、创建、校验和诊断草稿，不能代替用户安装，源码不会执行。聊天界面显示这些调用的进度、失败原因和待安装草稿，不显示源码或密钥。SQLite 事件存储、费用元数据和 OS 凭据库仍未接入，当前密钥放在 Host 私有文件。Cordis Core 固定为 `3.18.1`。`pnpm package:dir` 会在当前系统生成 unpacked 目录，并检查 `resources/pc-host` 带生产依赖且位于 `app.asar` 之外。CI 上的 `pnpm build` 会做同样的检查。Windows 安装包尚未生成，Linux 通过不等于 Windows 验收。动态服务提供/撤销和依赖自动等待仍在后续。
+当前进度（2026-10-10）：已完成 Windows AI 聊天与受限 AI 插件创作 MVP。可信 `pc-ui` 插件生命周期、manifest 校验、v1 Host 协议与 JSON Schema、Electron Main↔utility process 监督及崩溃恢复均已落地。Cordis Core 固定为 `3.18.1`，独立 `pc-host` 时间工具插件通过适配层运行。
+
+模型已支持兼容 API 的流式回复、取消和失败处理，并已用真实 DeepSeek 验证插件生成、修订、执行及恢复。Key 通过 Electron Main 的 `safeStorage` 加密，Host 通过私有 RPC 获取运行时凭据；不再使用明文凭据文件。聊天模型可读取契约、创建、校验、诊断和修订受限 JSON 插件，用户确认后立即启用。支持固定文本、输入追加和 uppercase/lowercase/trim 转换。更新保存不可变版本，失败回滚后可以继续修订；取消确认不会安装或替换，停用状态在更新及重启后保留。
+
+本机 Windows 目录版已完成聊天内生成、确认安装、执行、修订、确认更新和加密凭据恢复的模拟服务验收。CI 对 Windows/Linux 做锁定安装、类型检查、单测、构建及协议验证，并在 Windows 验证目录版、上传可分发目录。Host 与生产依赖位于 `resources/pc-host`，在 `app.asar` 之外。详情见 [阶段验收记录](stage-acceptance-2026-10-10.md)。
+
+本阶段提前实现了 Phase 4 的受限子集；完整路线图仍保留。SQLite、Markdown 完整渲染、重试/Token/费用元数据、动态服务依赖、签名插件包及完整更新事务、任意逻辑插件、人与人的在线聊天传输和 Android Host 均待后续。目录版是未签名内测分发，正式安装器另列发布阶段。
 
 交付：
 

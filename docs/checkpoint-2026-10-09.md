@@ -11,7 +11,7 @@
 - 失败更新保留旧版本，后续修订号从已保留版本最大值继续分配。
 - Electron Main 通过 `safeStorage` 加密保存模型 Key；Host 只能通过私有凭据 RPC 读取，Renderer 不可读取。
 - Host 协议 JSON Schema 与 TypeScript 定义已同步，保留 Android 后续接入所需的协议边界。
-- CI 已允许 `electron-winstaller` 的构建脚本，修复标准 `pnpm install --frozen-lockfile` 的安装失败。
+- CI 已明确拒绝目录版不需要的 `electron-winstaller` 构建脚本，修复标准 `pnpm install --frozen-lockfile` 的未决脚本失败。
 
 ## 本地验证结果
 
@@ -30,3 +30,5 @@
 4. 完善产品级错误提示、费用/Token 展示和发布签名。
 
 构建产物和临时测试数据在 `.gitignore` 中，不属于源码检查点。
+
+2026-10-10 的继续开发与目录版验收见 [阶段验收记录](stage-acceptance-2026-10-10.md)。

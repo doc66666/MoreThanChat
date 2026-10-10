@@ -48,6 +48,7 @@ node scripts/verify-ai-ui.mjs --live
 - [Cordis 适配与 CI 基线](docs/runtime-cordis.md)
 - [开发路线图](docs/roadmap.md)
 - [AI 插件创作与加密凭据](docs/ai-plugin-mvp.md)
+- [Windows 内测阶段验收与使用](docs/stage-acceptance-2026-10-10.md)
 - [DeepSeek Harness / Cordis 调研记录](docs/upstream-study.md)
 
 更新本地参考源码：
