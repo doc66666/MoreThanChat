@@ -104,6 +104,14 @@ export interface HostPluginCatalog {
 export const MODEL_PROVIDER_MODES = ["mock", "openai-compatible"] as const;
 export type ModelProviderMode = (typeof MODEL_PROVIDER_MODES)[number];
 
+export interface ModelTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reportedRequests: number;
+  requestCount: number;
+}
+
 export interface ModelChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -294,7 +302,7 @@ export interface ModelAuthorToolPayload extends ModelChatStreamRef {
 export interface HostEventPayloadMap {
   "host.statusChanged": HostStatusSnapshot;
   "model.chat.delta": ModelChatStreamRef & { textDelta: string };
-  "model.chat.completed": ModelChatStreamRef & { text: string };
+  "model.chat.completed": ModelChatStreamRef & { text: string; usage?: ModelTokenUsage };
   "model.chat.failed": ModelChatStreamRef & { partialText: string; error: ProtocolErrorPayload };
   "model.chat.cancelled": ModelChatStreamRef & { partialText: string };
   "model.authorTool": ModelAuthorToolPayload;
@@ -744,14 +752,29 @@ export const parseModelChatCompletedEvent = (value: unknown): HostEventPayloadMa
   assertKeys(
     object,
     ["streamId", "conversationId", "assistantMessageId", "generation", "text"],
-    [],
+    ["usage"],
     path,
     "INVALID_PAYLOAD",
   );
   if (typeof object.text !== "string" || object.text.length > 500_000) {
     throw new ProtocolValidationError("INVALID_PAYLOAD", "text must be a string", `${path}.text`);
   }
-  return { ...parseModelChatStreamRef(object, path), text: object.text };
+  return { ...parseModelChatStreamRef(object, path), text: object.text,
+    ...(object.usage === undefined ? {} : { usage: parseModelTokenUsage(object.usage) }) };
+};
+
+export const parseModelTokenUsage = (value: unknown): ModelTokenUsage => {
+  const path = '$.payload.usage';
+  const object = asObject(value, path, 'INVALID_PAYLOAD');
+  const fields = ['inputTokens', 'outputTokens', 'totalTokens', 'reportedRequests', 'requestCount'];
+  assertKeys(object, fields, [], path, 'INVALID_PAYLOAD');
+  for (const field of fields) if (!Number.isSafeInteger(object[field]) || Number(object[field]) < 0 || Number(object[field]) > 1_000_000_000) {
+    throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid token usage', `${path}.${field}`);
+  }
+  if (Number(object.reportedRequests) < 1 || Number(object.reportedRequests) > Number(object.requestCount) || Number(object.requestCount) > 6 || Number(object.totalTokens) !== Number(object.inputTokens) + Number(object.outputTokens)) {
+    throw new ProtocolValidationError('INVALID_PAYLOAD', 'Inconsistent token usage', path);
+  }
+  return object as unknown as ModelTokenUsage;
 };
 
 export const parseModelChatFailedEvent = (value: unknown): HostEventPayloadMap["model.chat.failed"] => {

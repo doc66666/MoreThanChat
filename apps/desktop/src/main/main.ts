@@ -1,61 +1,44 @@
-import { app, BrowserWindow, ipcMain, shell, safeStorage, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell, safeStorage, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import { EncryptedCredentialStore } from './credential-store'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createElectronHostProcessFactory } from './electron-host-process'
 import { resolveHostEntry } from './host-entry'
 import { HostSupervisor } from './host-supervisor'
 import { toClientModelEvent } from './model-client-event'
-import { redactSecretFields } from './secret-redaction'
+import { ChatStore } from './chat-store'
 import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
 
-const MAX_STATE_BYTES = 8 * 1024 * 1024
+let chatStore: ChatStore | null = null
 let mainWindow: BrowserWindow | null = null
 let hostSupervisor: HostSupervisor | null = null
 let hostStatusCleanup: (() => void) | null = null
 let hostEventCleanup: (() => void) | null = null
 let quitAfterHostStops = false
+let quitRequested = false
 
 if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
   app.setPath('userData', process.env.MTC_QA_USER_DATA_DIR || path.join(app.getPath('temp'), 'MoreThanChat-QA'))
 }
 
-function statePath(): string {
-  return path.join(app.getPath('userData'), 'chat-state.json')
-}
-
-async function loadState(): Promise<unknown | null> {
-  try {
-    const raw = await readFile(statePath(), 'utf8')
-    if (Buffer.byteLength(raw, 'utf8') > MAX_STATE_BYTES) throw new Error('Persisted chat state is too large.')
-    return JSON.parse(raw) as unknown
-  }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    console.error('[persistence] Failed to load chat state:', error)
-    return null
-  }
-}
-
-async function saveState(value: unknown): Promise<void> {
-  const raw = JSON.stringify(redactSecretFields(value))
-  if (Buffer.byteLength(raw, 'utf8') > MAX_STATE_BYTES) throw new Error('Chat state exceeds the local storage limit.')
-
-  const target = statePath()
-  const temporary = `${target}.next`
-  await mkdir(path.dirname(target), { recursive: true })
-  await writeFile(temporary, raw, { encoding: 'utf8', mode: 0o600 })
-  await rename(temporary, target)
-}
+if (!app.requestSingleInstanceLock()) app.exit(0)
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+})
 
 function registerIpc(): void {
   ipcMain.handle('chat:state:load', event => {
     assertTrustedIpc(event)
-    return loadState()
+    if (!chatStore) throw new Error('Chat storage is unavailable.')
+    return chatStore.load()
   })
   ipcMain.handle('chat:state:save', (event, value: unknown) => {
     assertTrustedIpc(event)
-    return saveState(value)
+    if (!chatStore) throw new Error('Chat storage is unavailable.')
+    return chatStore.save(value)
   })
   ipcMain.handle('app:info', event => {
     assertTrustedIpc(event)
@@ -222,6 +205,38 @@ async function createWindow(): Promise<void> {
     },
   })
   mainWindow = window
+  let allowClose = false
+  let flushing = false
+  window.on('close', event => {
+    if (allowClose) return
+    event.preventDefault()
+    if (flushing) return
+    flushing = true
+    const token = crypto.randomUUID()
+    const cleanup = () => {
+      clearTimeout(timer)
+      ipcMain.removeListener('chat:state:flushed', acknowledged)
+    }
+    const finish = () => {
+      cleanup()
+      allowClose = true
+      if (!window.isDestroyed()) window.close()
+    }
+    const stay = () => { cleanup(); flushing = false; quitRequested = false }
+    const acknowledged = (event: IpcMainEvent, reply: unknown) => {
+      const result = reply as { token?: unknown; ok?: unknown } | null
+      if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || result?.token !== token) return
+      if (result.ok === true) finish()
+      else { stay(); dialog.showErrorBox('会话未保存', '本地保存失败，应用已保持打开。请检查磁盘空间后再次关闭。') }
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      if (window.isDestroyed()) return
+      void dialog.showMessageBox(window, { type: 'warning', message: '会话保存尚未完成', detail: '退出可能丢失最近的消息。可以留在应用稍后再试。', buttons: ['留在应用', '仍然退出'], defaultId: 0, cancelId: 0 }).then(result => result.response === 1 ? finish() : stay())
+    }, 2500)
+    ipcMain.on('chat:state:flushed', acknowledged)
+    window.webContents.send('chat:state:flush', token)
+  })
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url)
@@ -260,6 +275,7 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  chatStore = await ChatStore.open(app.getPath('userData'))
   registerIpc()
   startHostSupervisor()
   await createWindow()
@@ -268,16 +284,24 @@ app.whenReady().then(async () => {
   })
 }).catch(error => {
   console.error('[main] Failed to start:', error)
+  dialog.showErrorBox('无法启动 MoreThanChat', '应用未能打开本地会话存储或后台服务。原数据已保留，请检查磁盘空间或应用版本后重试。')
   app.exit(1)
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (quitRequested || process.platform !== 'darwin') app.quit()
 })
+
+app.on('will-quit', () => { chatStore?.close(); chatStore = null })
 
 app.on('before-quit', event => {
   if (quitAfterHostStops || !hostSupervisor) return
   event.preventDefault()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    quitRequested = true
+    mainWindow.close()
+    return
+  }
   quitAfterHostStops = true
   hostStatusCleanup?.()
   hostStatusCleanup = null

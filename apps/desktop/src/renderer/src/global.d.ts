@@ -6,6 +6,7 @@ import type {
   ModelChatMessage,
   ModelProviderMode,
   ModelSettingsSnapshot,
+  ModelTokenUsage,
   PluginDraftCreateResult,
   PluginDraftInspection,
   PluginDraftInstallResult,
@@ -36,7 +37,7 @@ export interface ModelAuthorToolClientEvent extends ModelClientIdentity {
 
 export type ModelClientEvent =
   | (ModelClientIdentity & { type: 'delta'; textDelta: string })
-  | (ModelClientIdentity & { type: 'completed'; text: string })
+  | (ModelClientIdentity & { type: 'completed'; text: string; usage?: ModelTokenUsage })
   | (ModelClientIdentity & { type: 'failed'; partialText: string; errorMessage: string })
   | (ModelClientIdentity & { type: 'cancelled'; partialText: string })
   | ModelAuthorToolClientEvent
@@ -61,6 +62,7 @@ declare global {
     moreThanChat: {
       loadState(): Promise<unknown | null>
       saveState(value: unknown): Promise<void>
+      onBeforeClose(listener: () => Promise<void>): () => void
       getAppInfo(): Promise<{ version: string; platform: string }>
       getHostStatus(): Promise<HostStatusSnapshot>
       getHostPlugins(): Promise<HostPluginCatalog>

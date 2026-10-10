@@ -52,6 +52,6 @@ Host 通过私有 `credentials.read/write` request-response 获取凭据，Rende
 - `verify-ai-ui.mjs --live` 已在 Windows 用真实 DeepSeek 验证聊天内生成、确认安装、执行与加密恢复。测试结束清除保存的 Key，不把它写入报告或 Git。
 - CI 不使用真实 Key：Windows 执行模拟 UI、目录版 UI 验证并上传可分发目录和截图；Linux 验证构建/协议/契约。
 
-当前 Windows 目录版是未签名内测产物；SQLite、Markdown 完整渲染、费用展示、任意逻辑插件与 Android 留待后续。
+当前 Windows 目录版是未签名内测产物。后续聊天内核阶段已接入 SQLite、Markdown、AI 回复重试和 Token 展示，详见 [实现与验收](chat-core-stage-2026-10-10.md)。费用金额、任意逻辑插件与 Android 留待后续。
 
 2026-10-10 已在开发模式和 Windows 目录版完成上述扩展验收。记录与内测操作见 [阶段验收记录](stage-acceptance-2026-10-10.md)。

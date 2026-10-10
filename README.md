@@ -5,7 +5,9 @@
 
 用户在设置中配置 API、模型和 Key，在 More AI 会话中描述需要的插件，再到插件面板确认安装。当前支持固定文本、输入框文本追加，以及大写/小写/首尾空白转换。模型读取实际契约和样例，通过工具创建、校验与修订；用户掌握安装和更新决定。插件启停与版本会保存，失败更新可恢复旧版并继续提交修订。
 
-Key 由 Electron Main 的系统加密服务保存，Host 通过私有 RPC 获取运行时凭据；不使用明文文件回退。任意 JS/TS 代码、文件/网络权限插件、SQLite、Android 与正式签名安装器仍属后续阶段。
+聊天内核已接入 SQLite 事务存储，自动迁移旧会话并保留备份；退出前确认保存。AI 回复支持 Markdown、代码块、表格、失败/取消后重新生成，以及接口报告的 Token 用量。重试保留原问题和失败记录，不重复发送问题到会话列表。
+
+Key 由 Electron Main 的系统加密服务保存，Host 通过私有 RPC 获取运行时凭据；不使用明文文件回退。任意 JS/TS 代码、文件/网络权限插件、真实联系人联网聊天、Android 与正式签名安装器仍属后续阶段。
 
 ## 当前可运行原型
 
@@ -26,6 +28,7 @@ pnpm verify:plugin-ui
 pnpm verify:host
 pnpm verify:protocol
 pnpm verify:ai-ui
+pnpm verify:chat-ui
 pnpm package:dir
 ```
 
@@ -49,6 +52,7 @@ node scripts/verify-ai-ui.mjs --live
 - [开发路线图](docs/roadmap.md)
 - [AI 插件创作与加密凭据](docs/ai-plugin-mvp.md)
 - [Windows 内测阶段验收与使用](docs/stage-acceptance-2026-10-10.md)
+- [SQLite、Markdown、重试与 Token 阶段](docs/chat-core-stage-2026-10-10.md)
 - [DeepSeek Harness / Cordis 调研记录](docs/upstream-study.md)
 
 更新本地参考源码：

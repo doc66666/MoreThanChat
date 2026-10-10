@@ -1,4 +1,4 @@
-import type { ModelChatMessage } from '@more-than-chat/protocol'
+import type { ModelChatMessage, ModelTokenUsage } from '@more-than-chat/protocol'
 import { AUTHOR_TOOL_DEFINITIONS, type AuthorToolCall } from './author-tools'
 import { ModelServiceError } from './model-error'
 
@@ -15,6 +15,7 @@ export type ProviderMessage = ModelChatMessage | {
 
 export interface ProviderTurn {
   readonly toolCalls: readonly AuthorToolCall[]
+  readonly usage?: Pick<ModelTokenUsage, 'inputTokens' | 'outputTokens' | 'totalTokens'>
 }
 
 export interface ProviderChatRequest {
@@ -60,7 +61,7 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
       try {
         response = await fetchImpl(chatCompletionsUrl(request.baseUrl), {
           method: 'POST',
-          signal: request.signal,
+          signal: AbortSignal.any([request.signal, AbortSignal.timeout(60000)]),
           headers: {
             accept: 'text/event-stream, application/json',
             authorization: `Bearer ${request.apiKey}`,
@@ -76,6 +77,7 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
             // loop uses non-thinking mode; no provider-specific field elsewhere.
             ...(new URL(request.baseUrl).hostname === 'api.deepseek.com' ? { thinking: { type: 'disabled' } } : {}),
             stream: true,
+            stream_options: { include_usage: true },
           }),
         })
       }
@@ -95,10 +97,19 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
         if (typeof reason === 'string' && reason !== 'stop' && reason !== 'tool_calls') throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型返回了未完成的回复。', true)
         const text = extractMessageText(payload)
         if (text) onDelta(text)
-        return { toolCalls: collectToolCalls(payload) }
+        const usage = providerUsage(payload)
+        return { toolCalls: collectToolCalls(payload), ...(usage ? { usage } : {}) }
       }
       if (!response.body) throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型服务没有返回响应体。', true)
-      return { toolCalls: await readServerSentEvents(response.body, onDelta) }
+      let usage: ProviderTurn['usage']
+      try {
+        const toolCalls = await readServerSentEvents(response.body, onDelta, value => { usage = value })
+        return { toolCalls, ...(usage ? { usage } : {}) }
+      } catch (error) {
+        if (request.signal.aborted) throw abortError()
+        if (error instanceof ModelServiceError) throw error
+        throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型连接超时或中断，请重试。', true)
+      }
     },
   }
 }
@@ -121,7 +132,7 @@ function toApiMessage(message: ProviderMessage): Record<string, unknown> {
   return { role: message.role, content: message.content }
 }
 
-export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onDelta: (text: string) => void): Promise<AuthorToolCall[]> {
+export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onDelta: (text: string) => void, onUsage?: (usage: NonNullable<ProviderTurn['usage']>) => void): Promise<AuthorToolCall[]> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   const partials = new Map<number, MutableToolCall>()
@@ -134,12 +145,12 @@ export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onD
     const lines = buffer.split(/\r?\n/)
     buffer = lines.pop() ?? ''
     for (const line of lines) {
-      consumeSseLine(line, onDelta, partials, termination)
+      consumeSseLine(line, onDelta, partials, termination, onUsage)
       if (termination.done) break
     }
   }
   buffer += decoder.decode()
-  if (!termination.done && buffer.trim()) consumeSseLine(buffer, onDelta, partials, termination)
+  if (!termination.done && buffer.trim()) consumeSseLine(buffer, onDelta, partials, termination, onUsage)
   if (!termination.done && !['stop', 'tool_calls'].includes(termination.finishReason ?? '')) {
     throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型连接提前结束，回复未完成。', true)
   }
@@ -147,7 +158,7 @@ export async function readServerSentEvents(body: ReadableStream<Uint8Array>, onD
   } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
 }
 
-function consumeSseLine(line: string, onDelta: (text: string) => void, partials: Map<number, MutableToolCall>, termination: { done: boolean; finishReason: string | null }): void {
+function consumeSseLine(line: string, onDelta: (text: string) => void, partials: Map<number, MutableToolCall>, termination: { done: boolean; finishReason: string | null }, onUsage?: (usage: NonNullable<ProviderTurn['usage']>) => void): void {
   const trimmed = line.trim()
   if (!trimmed.startsWith('data:')) return
   const data = trimmed.slice(5).trim()
@@ -164,6 +175,8 @@ function consumeSseLine(line: string, onDelta: (text: string) => void, partials:
     throw new ModelServiceError('MODEL_REQUEST_FAILED', publicStreamError((parsed as { error?: unknown }).error), true)
   }
   const text = extractDeltaText(parsed)
+  const usage = providerUsage(parsed)
+  if (usage) onUsage?.(usage)
   if (text) onDelta(text)
   const reason = (parsed as { choices?: { finish_reason?: unknown }[] })?.choices?.[0]?.finish_reason
   if (typeof reason === 'string') {
@@ -171,6 +184,18 @@ function consumeSseLine(line: string, onDelta: (text: string) => void, partials:
     if (reason !== 'stop' && reason !== 'tool_calls') throw new ModelServiceError('MODEL_REQUEST_FAILED', `模型回复未完成（${reason.slice(0, 40)}）。`, true)
   }
   absorbToolCalls(parsed, partials)
+}
+
+function providerUsage(value: unknown): ProviderTurn['usage'] {
+  if (!value || typeof value !== 'object') return undefined
+  const usage = (value as { usage?: unknown }).usage
+  if (!usage || typeof usage !== 'object') return undefined
+  const record = usage as { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown }
+  const inputTokens = record.prompt_tokens, outputTokens = record.completion_tokens
+  if (!Number.isSafeInteger(inputTokens) || !Number.isSafeInteger(outputTokens) || Number(inputTokens) < 0 || Number(outputTokens) < 0) return undefined
+  const totalTokens = Number(inputTokens) + Number(outputTokens)
+  if (totalTokens > 100000000 || (record.total_tokens !== undefined && record.total_tokens !== totalTokens)) return undefined
+  return { inputTokens: Number(inputTokens), outputTokens: Number(outputTokens), totalTokens }
 }
 
 interface MutableToolCall {

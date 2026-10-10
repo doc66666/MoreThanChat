@@ -13,6 +13,7 @@
     "verify:plugin-ui": "pnpm build && node scripts/verify-plugin-ui.mjs",
     "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",
     "verify:ai-ui": "pnpm build && node scripts/verify-ai-ui.mjs",
+    "verify:chat-ui": "pnpm build && node scripts/verify-chat-core-ui.mjs",
     "test:live-ai": "pnpm build:host && node scripts/test-live-ai.mjs",
     "verify:protocol": "pnpm --filter @more-than-chat/protocol build && node scripts/verify-protocol-schema.mjs",
     "typecheck": "pnpm -r typecheck"

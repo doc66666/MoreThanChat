@@ -8,6 +8,7 @@ import {
   type ModelChatStreamRef,
   type ModelProviderMode,
   type ModelSettingsSnapshot,
+  type ModelTokenUsage,
 } from '@more-than-chat/protocol'
 import { authorToolStarted, type AuthorToolCall, type AuthorToolExecutor, type AuthorToolNotice } from './author-tools'
 import { PLUGIN_AUTHOR_CONTRACT } from './author-contract'
@@ -195,6 +196,7 @@ export class ModelService {
       const provider = this.#providers[stream.settings.providerMode]
       if (!provider) throw new ModelServiceError('MODEL_NOT_CONFIGURED', '模型提供方不可用。', false)
       const transcript: ProviderMessage[] = providerMessages(stream.messages)
+      const usage: ModelTokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, requestCount: 0, reportedRequests: 0 }
       let unresolvedTools = false
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         if (stream.cancelRequested || stream.controller.signal.aborted) {
@@ -209,6 +211,13 @@ export class ModelService {
           signal: stream.controller.signal,
         }
         const turn = await provider.stream(request, delta => this.#appendDelta(stream, delta))
+        usage.requestCount++
+        if (turn?.usage) {
+          usage.reportedRequests++
+          usage.inputTokens += turn.usage.inputTokens
+          usage.outputTokens += turn.usage.outputTokens
+          usage.totalTokens += turn.usage.totalTokens
+        }
         if (stream.state !== 'running') return
         const calls = (turn?.toolCalls ?? []).slice(0, MAX_TOOL_CALLS)
         if (calls.length === 0) {
@@ -233,7 +242,7 @@ export class ModelService {
       }
       stream.state = 'completed'
       this.#streams.delete(stream.ref.streamId)
-      stream.emit(createHostEvent('model.chat.completed', { ...stream.ref, text: stream.text }))
+      stream.emit(createHostEvent('model.chat.completed', { ...stream.ref, text: stream.text, ...(usage.reportedRequests ? { usage } : {}) }))
     }
     catch (error) {
       if (stream.state !== 'running') return

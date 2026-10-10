@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { HostPluginCatalog, HostStatusSnapshot, ModelProviderMode, ModelSettingsSnapshot, ProtocolErrorCode } from '@more-than-chat/protocol'
+import type { HostPluginCatalog, HostStatusSnapshot, ModelProviderMode, ModelSettingsSnapshot, ModelTokenUsage, ProtocolErrorCode } from '@more-than-chat/protocol'
 
 interface HostPingResult {
   generation: number
@@ -11,6 +11,14 @@ interface HostPingResult {
 const api = {
   loadState: (): Promise<unknown | null> => ipcRenderer.invoke('chat:state:load') as Promise<unknown | null>,
   saveState: (value: unknown): Promise<void> => ipcRenderer.invoke('chat:state:save', value) as Promise<void>,
+  onBeforeClose: (listener: () => Promise<void>): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, token: unknown) => {
+      if (typeof token !== 'string') return
+      void listener().then(() => ipcRenderer.send('chat:state:flushed', { token, ok: true })).catch(() => ipcRenderer.send('chat:state:flushed', { token, ok: false }))
+    }
+    ipcRenderer.on('chat:state:flush', handler)
+    return () => ipcRenderer.removeListener('chat:state:flush', handler)
+  },
   getAppInfo: (): Promise<{ version: string; platform: string }> => ipcRenderer.invoke('app:info') as Promise<{ version: string; platform: string }>,
   getHostStatus: async (): Promise<HostStatusSnapshot> => parseHostStatus(await ipcRenderer.invoke('host:status:get')),
   pingHost: async (): Promise<HostPingResult> => parseHostPing(await ipcRenderer.invoke('host:ping')),
@@ -80,6 +88,7 @@ interface ModelClientEventBase extends ModelClientIdentity {
   type: 'delta' | 'completed' | 'failed' | 'cancelled' | 'author-tool'
   textDelta?: string
   text?: string
+  usage?: ModelTokenUsage
   partialText?: string
   errorMessage?: string
   phase?: 'started' | 'finished'
@@ -159,7 +168,7 @@ function parseHostStatus(value: unknown): HostStatusSnapshot {
 const modelProviderModes = new Set(['mock', 'openai-compatible'])
 const modelEventFields = new Set([
   'type', 'streamId', 'conversationId', 'assistantMessageId', 'generation',
-  'textDelta', 'text', 'partialText', 'errorMessage',
+  'textDelta', 'text', 'partialText', 'errorMessage', 'usage',
   'phase', 'tool', 'ok', 'summary', 'pendingInstall', 'draft',
 ])
 const authorToolNames = new Set(['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'])
@@ -219,7 +228,7 @@ function parseModelClientEvent(value: unknown): ModelClientEvent {
   }
   if (record.type === 'completed') {
     if (typeof record.text !== 'string') throw new Error('Invalid model event.')
-    return { type: 'completed', ...identity, text: record.text }
+    return { type: 'completed', ...identity, text: record.text, ...(record.usage === undefined ? {} : { usage: parseClientUsage(record.usage) }) }
   }
   if (record.type === 'failed') {
     if (typeof record.partialText !== 'string' || typeof record.errorMessage !== 'string' || !record.errorMessage.trim()) {
@@ -233,6 +242,15 @@ function parseModelClientEvent(value: unknown): ModelClientEvent {
   }
   if (record.type === 'author-tool') return parseAuthorToolClientEvent(record, identity)
   throw new Error('Invalid model event.')
+}
+
+function parseClientUsage(value: unknown): ModelTokenUsage {
+  const record = asRecord(value, 'Invalid token usage.')
+  const fields = ['inputTokens', 'outputTokens', 'totalTokens', 'reportedRequests', 'requestCount']
+  assertExactKeys(record, fields, 'Invalid token usage.')
+  for (const field of fields) if (!Number.isSafeInteger(record[field]) || Number(record[field]) < 0 || Number(record[field]) > 1000000000) throw new Error('Invalid token usage.')
+  if (Number(record.totalTokens) !== Number(record.inputTokens) + Number(record.outputTokens) || Number(record.reportedRequests) < 1 || Number(record.reportedRequests) > Number(record.requestCount) || Number(record.requestCount) > 6) throw new Error('Invalid token usage.')
+  return record as unknown as ModelTokenUsage
 }
 
 function parseAuthorToolClientEvent(

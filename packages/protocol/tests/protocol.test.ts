@@ -11,6 +11,7 @@ import {
   createHostSuccessResponse,
   isResponseForRequest,
   parseHostMessage,
+  parseModelTokenUsage,
   safeParseHostMessage,
   type ProtocolErrorCode,
 } from "../src";
@@ -24,6 +25,16 @@ const expectProtocolError = (value: unknown, code: ProtocolErrorCode): void => {
     expect((error as ProtocolValidationError).code).toBe(code);
   }
 };
+
+it('validates optional usage while keeping old completed events compatible', () => {
+  const event = createHostEvent('model.chat.completed', { streamId: 's', conversationId: 'c', assistantMessageId: 'm', generation: 1, text: 'ok' });
+  expect(parseHostMessage(event)).toEqual(event);
+  const usage = { inputTokens: 12, outputTokens: 4, totalTokens: 16, reportedRequests: 1, requestCount: 1 };
+  expect(parseHostMessage({ ...event, payload: { ...event.payload, usage } })).toMatchObject({ payload: { usage } });
+  expect(() => parseModelTokenUsage({ ...usage, totalTokens: 99 })).toThrow();
+  expect(() => parseModelTokenUsage({ ...usage, requestCount: 0 })).toThrow();
+  expect(() => parseModelTokenUsage({ ...usage, apiKey: 'forbidden' })).toThrow();
+});
 
 describe("Host protocol v1", () => {
   it("parses each legal request method", () => {

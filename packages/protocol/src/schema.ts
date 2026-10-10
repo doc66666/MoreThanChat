@@ -28,6 +28,16 @@ const modelMessages = {
   },
 } as const;
 const generation = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER } as const;
+const modelUsage = { type: 'object', additionalProperties: false,
+  required: ['inputTokens', 'outputTokens', 'totalTokens', 'reportedRequests', 'requestCount'],
+  properties: {
+    inputTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
+    outputTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
+    totalTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
+    reportedRequests: { type: 'integer', minimum: 1, maximum: 6 },
+    requestCount: { type: 'integer', minimum: 1, maximum: 6 },
+  },
+} as const;
 const streamIdentityProperties = {
   streamId: boundedId,
   conversationId: boundedId,
@@ -436,7 +446,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
         payload: {
           type: 'object', additionalProperties: false,
           required: ['streamId', 'conversationId', 'assistantMessageId', 'generation', 'text'],
-          properties: { ...streamRefProperties, text: { type: 'string', maxLength: 500000 } },
+          properties: { ...streamRefProperties, text: { type: 'string', maxLength: 500000 }, usage: modelUsage },
         },
       },
     },

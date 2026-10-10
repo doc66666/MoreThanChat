@@ -1811,6 +1811,18 @@
             "text": {
               "type": "string",
               "maxLength": 500000
+            },
+            "usage": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["inputTokens", "outputTokens", "totalTokens", "reportedRequests", "requestCount"],
+              "properties": {
+                "inputTokens": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+                "outputTokens": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+                "totalTokens": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+                "reportedRequests": { "type": "integer", "minimum": 1, "maximum": 6 },
+                "requestCount": { "type": "integer", "minimum": 1, "maximum": 6 }
+              }
             }
           }
         }

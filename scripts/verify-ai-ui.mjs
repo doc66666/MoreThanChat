@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
+import { DatabaseSync } from 'node:sqlite'
 import { readSecret } from './live-test-input.mjs'
 import { CdpClient, evaluate, waitForExpression, waitForTarget, reservePort, waitForExit, delay } from './verify-plugin-ui.mjs'
 
@@ -124,7 +125,10 @@ try {
   await writeFile(path.join(root, '.artifacts', live ? 'ai-plugin-live-e2e.png' : packaged ? 'ai-plugin-packaged-e2e.png' : 'ai-plugin-e2e.png'), Buffer.from(capture.data, 'base64'))
   await close(session); session = await launch()
   assert((await evaluate(session.client, `window.moreThanChat.getModelSettings()`)).hasApiKey, 'Credential did not restore')
-  const savedChat = JSON.parse(await readFile(path.join(profile, 'chat-state.json'), 'utf8'))
+  const database = new DatabaseSync(path.join(profile, 'chat.sqlite'), { readOnly: true })
+  const savedMessages = database.prepare('SELECT payload FROM messages ORDER BY position').all().map(row => JSON.parse(row.payload))
+  database.close()
+  const savedChat = { messages: { all: savedMessages } }
   assert(!JSON.stringify(savedChat).includes(key), 'Credential entered chat history')
   assert(Object.values(savedChat.messages).flat().some(message => message.status === 'sent' && message.authorNotes?.length), 'Authored chat did not persist')
   let installed = await installedPlugin()

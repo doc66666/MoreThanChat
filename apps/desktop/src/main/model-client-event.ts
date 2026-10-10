@@ -1,4 +1,4 @@
-import type { HostEventMessage } from '@more-than-chat/protocol'
+import type { HostEventMessage, ModelTokenUsage } from '@more-than-chat/protocol'
 
 export interface ModelClientIdentity {
   streamId: string
@@ -24,7 +24,7 @@ export interface ModelAuthorToolClientEvent extends ModelClientIdentity {
 
 export type ModelClientEvent =
   | (ModelClientIdentity & { type: 'delta'; textDelta: string })
-  | (ModelClientIdentity & { type: 'completed'; text: string })
+  | (ModelClientIdentity & { type: 'completed'; text: string; usage?: ModelTokenUsage })
   | (ModelClientIdentity & { type: 'failed'; partialText: string; errorMessage: string })
   | (ModelClientIdentity & { type: 'cancelled'; partialText: string })
   | ModelAuthorToolClientEvent
@@ -37,7 +37,7 @@ export function toClientModelEvent(event: HostEventMessage): ModelClientEvent | 
     case 'model.chat.delta':
       return { type: 'delta', ...identity(event.payload), textDelta: event.payload.textDelta }
     case 'model.chat.completed':
-      return { type: 'completed', ...identity(event.payload), text: event.payload.text }
+      return { type: 'completed', ...identity(event.payload), text: event.payload.text, ...(event.payload.usage ? { usage: { ...event.payload.usage } } : {}) }
     case 'model.chat.failed':
       return {
         type: 'failed',

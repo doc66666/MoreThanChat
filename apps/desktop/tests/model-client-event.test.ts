@@ -3,6 +3,12 @@ import { createHostEvent } from '@more-than-chat/protocol'
 import { toClientModelEvent } from '../src/main/model-client-event'
 
 describe('toClientModelEvent', () => {
+  it('publishes token counts without forwarding provider-specific fields', () => {
+    const usage = { inputTokens: 10, outputTokens: 2, totalTokens: 12, reportedRequests: 1, requestCount: 1 }
+    const client = toClientModelEvent(createHostEvent('model.chat.completed', { streamId: 's', conversationId: 'c', assistantMessageId: 'm', generation: 1, text: 'reply', usage }))
+    expect(client).toMatchObject({ type: 'completed', usage })
+    if (client?.type === 'completed') expect(client.usage).not.toBe(usage)
+  })
   it('copies only renderer-visible stream fields', () => {
     const secret = 'sk-test-more-than-chat-secret'
     const failed = createHostEvent('model.chat.failed', {

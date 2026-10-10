@@ -7,6 +7,7 @@ import {
   formatRelativeTime,
   interruptStreamingMessages,
   normalizeState,
+  planAssistantRetry,
   toModelTranscript,
   type ChatMessage,
   type ChatState,
@@ -84,7 +85,7 @@ describe('model chat updates', () => {
     const messages = state.messages['conversation-assistant'] ?? []
     const transcript = toModelTranscript(messages, '新的问题')
     expect(transcript.at(-1)).toEqual({ role: 'user', content: '新的问题' })
-    expect(transcript.some(message => message.content === '先前取消的回复')).toBe(true)
+    expect(transcript.some(message => message.content === '先前取消的回复')).toBe(false)
     expect(JSON.stringify(transcript)).not.toContain(secret)
     expect(transcript.some(message => message.content === '')).toBe(false)
   })
@@ -170,6 +171,22 @@ describe('TransportRegistry', () => {
 })
 
 describe('chat state', () => {
+  it('restores interrupted outgoing messages as failed instead of forever sending', () => {
+    const state = createSeedState()
+    const item = state.messages['conversation-assistant']![0]!
+    item.status = 'sending'
+    expect(normalizeState(state).messages['conversation-assistant']![0]!.status).toBe('failed')
+  })
+  it('retries the original question exactly once and rejects old or busy turns', () => {
+    const user: ChatMessage = { ...assistantMessage('test', 'sent', 'original question'), id: 'user', role: 'self' }
+    const failed: ChatMessage = { ...assistantMessage('test', 'failed', 'partial answer'), replyToId: 'user' }
+    expect(planAssistantRetry([user, failed], failed.id)?.transcript).toEqual([{ role: 'user', content: 'original question' }])
+    const next: ChatMessage = { ...failed, id: 'retry', retryOfId: failed.id, status: 'streaming' }
+    expect(planAssistantRetry([user, failed, next], failed.id)).toBeNull()
+    expect(planAssistantRetry([user, { ...failed, supersededById: next.id }], failed.id)).toBeNull()
+    expect(planAssistantRetry([user, failed, { ...user, id: 'later' }], failed.id)).toBeNull()
+    expect(planAssistantRetry([user, { ...failed, supersededById: next.id }, { ...next, status: 'cancelled' }], next.id)?.transcript).toEqual([{ role: 'user', content: 'original question' }])
+  })
   it('falls back to a usable seed when persisted data is invalid', () => {
     const state = normalizeState({ version: 99 })
     expect(state.conversations.length).toBeGreaterThan(0)

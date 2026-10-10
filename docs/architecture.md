@@ -12,9 +12,9 @@ PC 第一版建议使用：
 
 - **桌面壳：Electron**。Windows 优先，随后支持 macOS/Linux；采用 Electron 自带的固定 Node/Chromium 版本，不依赖用户机器上的运行时。
 - **前端：React + TypeScript + Vite**。UI 插件运行在受控的 Renderer realm，通过 slot 注册界面。
-- **PC host：Electron utility process + Cordis**。Node 负责 AI 流式协议、插件编译/测试、聊天存储与 PC host 插件；Electron main 只负责窗口、应用生命周期、协议入口和进程监督。
+- **PC host：Electron utility process + Cordis**。独立进程负责 AI 流式协议与 PC host 插件；Electron Main 负责窗口、生命周期、协议入口、进程监督、系统加密凭据及本机 SQLite 连接。Renderer 通过窄 IPC 接口访问存储。
 - **协议：类型化 IPC + 版本化事件流**。Renderer、utility process 与未来 Android host 使用同一套 schema，但各自采用平台合适的传输。
-- **本地存储：SQLite + append-only session events**。派生视图可以重建，密钥进入系统凭据库而不是数据库正文。
+- **本地存储：SQLite 会话/消息投影 + 事务变更日志**。当前日志只保留最近 10000 条诊断事件，完整当前消息由投影保留；后续再增加可重放的完整事件流和同步协议。密钥进入系统加密凭据存储。
 
 选择 Electron 的首要原因是稳定性：Cordis Loader/HMR 与 Harness host 都以 Node 为主要运行环境，Electron 可以直接承载它们，避免 Rust↔Node sidecar、额外运行时分发和跨语言故障面。Android 本来就使用独立插件产物，因此不以牺牲 PC 稳定性为代价强求共享宿主。
 
@@ -29,7 +29,7 @@ PC 第一版建议使用：
 
 ## 分层
 
-当前实现已经建立 `apps/pc-host` utility process、`packages/protocol` v1 envelope，以及 Electron Main 中的 Host Supervisor。PC Host 通过 `packages/runtime-cordis` 运行可信时间工具插件，提供清单、启停、执行和退出清理，并在同一进程内完成 OpenAI 兼容模型的流式调用。API Key 留在 Host 凭据文件，不进入插件上下文。插件草稿与已安装插件分开存放，创建后不会被动态加载。适配层锁定 `@cordisjs/core 3.18.1`；通用 SDK 负责状态、逆序清理与失败项保留，Cordis 负责每次激活的独立作用域，框架对象不进入插件接口。SQLite、动态服务依赖与产品级热更新事务仍按后续阶段推进。
+当前实现已经建立 `apps/pc-host` utility process、`packages/protocol` v1 envelope，以及 Electron Main 中的 Host Supervisor。PC Host 通过 `packages/runtime-cordis` 运行可信时间工具插件，提供清单、启停、执行和退出清理，并在同一进程内完成 OpenAI 兼容模型的流式调用。API Key 由 Main 用 `safeStorage` 加密保存，Host 通过私有 RPC 取得运行时凭据，不进入插件上下文。插件草稿与已安装插件分开存放，创建后不会被动态加载。适配层锁定 `@cordisjs/core 3.18.1`；通用 SDK 负责状态、逆序清理与失败项保留，Cordis 负责每次激活的独立作用域，框架对象不进入插件接口。Main 已接入随固定 Electron 运行时分发的 `node:sqlite`；动态服务依赖与产品级热更新事务仍按后续阶段推进。
 
 ```text
 apps/desktop (Electron)           apps/android (后续)

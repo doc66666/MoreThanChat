@@ -48,6 +48,11 @@ export interface ChatMessage {
   createdAt: number
   status: MessageStatus
   authorNotes?: readonly AuthorToolNote[]
+  errorMessage?: string
+  replyToId?: string
+  retryOfId?: string
+  supersededById?: string
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number; reportedRequests: number; requestCount: number }
 }
 
 export interface ChatState {
@@ -85,8 +90,8 @@ export type ModelTranscriptMessage = {
 
 export type ModelChatUpdate =
   | { type: 'delta'; conversationId: string; assistantMessageId: string; textDelta: string }
-  | { type: 'completed'; conversationId: string; assistantMessageId: string; text: string }
-  | { type: 'failed'; conversationId: string; assistantMessageId: string; partialText: string }
+  | { type: 'completed'; conversationId: string; assistantMessageId: string; text: string; usage?: NonNullable<ChatMessage['usage']> }
+  | { type: 'failed'; conversationId: string; assistantMessageId: string; partialText: string; errorMessage?: string }
   | { type: 'cancelled'; conversationId: string; assistantMessageId: string; partialText: string }
   | { type: 'author-tool'; conversationId: string; assistantMessageId: string; note: AuthorToolNote }
 
@@ -234,7 +239,15 @@ export function normalizeState(candidate: unknown): ChatState {
   for (const list of Object.values(value.messages)) {
     if (!Array.isArray(list)) return createSeedState()
   }
-  return interruptStreamingMessages(value as ChatState)
+  const restored = interruptStreamingMessages(value as ChatState)
+  let changed = false
+  const messages: ChatState['messages'] = {}
+  for (const [id, list] of Object.entries(restored.messages)) messages[id] = list.map(message => {
+    if (message.status !== 'sending') return message
+    changed = true
+    return { ...message, status: 'failed' }
+  })
+  return changed ? { ...restored, messages } : restored
 }
 
 /** An interrupted reply is restored as cancelled, never as a normal completion. */
@@ -281,12 +294,13 @@ export function applyModelChatUpdate(state: ChatState, update: ModelChatUpdate):
         status: 'streaming',
       })
     case 'completed':
-      return replaceMessage(state, update.conversationId, index, { ...current, text: update.text, status: 'sent' })
+      return replaceMessage(state, update.conversationId, index, { ...current, text: update.text, status: 'sent', ...(update.usage ? { usage: update.usage } : {}) })
     case 'failed':
       return replaceMessage(state, update.conversationId, index, {
         ...current,
         text: update.partialText || current.text,
         status: 'failed',
+        ...(update.errorMessage ? { errorMessage: update.errorMessage } : {}),
       })
     case 'cancelled':
       return replaceMessage(state, update.conversationId, index, {
@@ -301,13 +315,29 @@ export function toModelTranscript(messages: readonly ChatMessage[], outgoingText
   const transcript: ModelTranscriptMessage[] = []
   for (const message of messages) {
     if (message.type !== 'text') continue
-    if (message.status === 'sending' || message.status === 'failed' || message.status === 'streaming') continue
+    if (message.status !== 'sent') continue
     if (!message.text.trim()) continue
     const role = message.role === 'self' ? 'user' : message.role === 'system' ? 'system' : 'assistant'
     transcript.push({ role, content: message.text })
   }
   if (outgoingText?.trim()) transcript.push({ role: 'user', content: outgoingText })
   return transcript.slice(-40)
+}
+
+/** Retry the latest failed turn without duplicating its user message or partial reply. */
+export function planAssistantRetry(messages: readonly ChatMessage[], messageId: string): { user: ChatMessage; transcript: ModelTranscriptMessage[] } | null {
+  if (messages.some(message => message.status === 'streaming')) return null
+  const index = messages.findIndex(message => message.id === messageId)
+  const failed = messages[index]
+  if (!failed || failed.role !== 'peer' || !['failed', 'cancelled'].includes(failed.status) || failed.supersededById) return null
+  if (messages.slice(index + 1).some(message => message.type === 'text')) return null
+  let userIndex = failed.replyToId ? messages.findIndex(message => message.id === failed.replyToId && message.role === 'self') : -1
+  if (!failed.replyToId) for (let candidate = index - 1; candidate >= 0; candidate--) {
+    if (messages[candidate]?.role === 'self' && messages[candidate]?.type === 'text') { userIndex = candidate; break }
+  }
+  const user = messages[userIndex]
+  if (!user || userIndex >= index || !user.text.trim()) return null
+  return { user, transcript: toModelTranscript(messages.slice(0, userIndex), user.text) }
 }
 
 function replaceMessage(state: ChatState, conversationId: string, index: number, message: ChatMessage): ChatState {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   Archive,
   Bot,
@@ -29,6 +29,7 @@ import {
   formatRelativeTime,
   interruptStreamingMessages,
   normalizeState,
+  planAssistantRetry,
   toModelTranscript,
   type AuthorToolNote,
   type ChatMessage,
@@ -49,6 +50,7 @@ import {
   startBundledPlugins,
   transportRegistry,
 } from './plugin-host'
+import { MessageMarkdown } from './MessageMarkdown'
 
 function uid(): string {
   return crypto.randomUUID()
@@ -60,6 +62,7 @@ function initials(value: string): string {
 
 export function App() {
   const [state, setState] = useState<ChatState | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState('')
   const [showDetails, setShowDetails] = useState(true)
@@ -76,10 +79,14 @@ export function App() {
   const [modelSettings, setModelSettings] = useState<ModelSettingsSnapshot | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const streamIdsRef = useRef(new Map<string, string>())
+  const startingConversationsRef = useRef(new Set<string>())
   const pendingModelEventsRef = useRef<ModelClientEvent[]>([])
   const hostStatusRef = useRef(hostStatus)
   hostStatusRef.current = hostStatus
   const endRef = useRef<HTMLDivElement>(null)
+  const stateRef = useRef(state)
+  stateRef.current = state
+  const saveTimerRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     const syncPlugins = () => setPlugins(pluginRuntime.list())
@@ -175,19 +182,25 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    void window.moreThanChat.loadState().then(value => setState(value ? normalizeState(value) : createSeedState()))
+    void window.moreThanChat.loadState().then(value => setState(value ? normalizeState(value) : createSeedState())).catch(() => setLoadError(true))
   }, [])
 
   useEffect(() => {
     if (!state) return
-    const timer = window.setTimeout(() => {
-      void window.moreThanChat.saveState(state).catch(error => {
-        console.error(error)
+    if (saveTimerRef.current !== undefined) return
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = undefined
+      void window.moreThanChat.saveState(stateRef.current).catch(() => {
         setToast('本地保存失败，请稍后重试')
       })
     }, 180)
-    return () => window.clearTimeout(timer)
   }, [state])
+
+  useEffect(() => window.moreThanChat.onBeforeClose(async () => {
+    if (saveTimerRef.current !== undefined) window.clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = undefined
+    if (stateRef.current) await window.moreThanChat.saveState(stateRef.current)
+  }), [])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -209,8 +222,10 @@ export function App() {
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
   }, [query, state])
 
-  if (!state || !active) return <LoadingScreen />
+  if (!state || !active) return <LoadingScreen error={loadError} />
   const readyState = state
+  const lastMessage = messages.at(-1)
+  const canRetryLast = active.kind === 'assistant' && lastMessage && hostStatus.state === 'ready' && planAssistantRetry(messages, lastMessage.id)
 
   function selectConversation(id: string) {
     setState(current => current ? {
@@ -294,17 +309,21 @@ export function App() {
     }
   }
 
-  async function sendAssistantMessage(text: string) {
+  async function sendAssistantMessage(text: string, retry?: ChatMessage) {
     if (!active) return
+    if (startingConversationsRef.current.has(active.id)) return
     if (hostStatusRef.current.state !== 'ready') {
       setToast('PC Host 还没有就绪，暂时不能生成回复')
       return
     }
     const now = Date.now()
-    const userId = uid()
+    const retryPlan = retry ? planAssistantRetry(messages, retry.id) : null
+    if (retry && !retryPlan) { setToast('只能重试最近一次未完成的回复'); return }
+    const userId = retryPlan?.user.id ?? uid()
     const assistantId = uid()
     const streamId = uid()
     const conversationId = active.id
+    startingConversationsRef.current.add(conversationId)
     const userMessage: ChatMessage = {
       id: userId,
       clientMessageId: userId,
@@ -330,14 +349,17 @@ export function App() {
       text: '',
       createdAt: now + 1,
       status: 'streaming',
+      replyToId: userId,
+      ...(retry ? { retryOfId: retry.id } : {}),
     }
-    const transcript = toModelTranscript(messages, text)
-    setDraft('')
+    const transcript = retryPlan?.transcript ?? toModelTranscript(messages, text)
+    if (!retry) setDraft('')
     streamIdsRef.current.set(assistantId, streamId)
     setState(current => {
       if (!current) return current
+      const base = retry ? { ...current, messages: { ...current.messages, [conversationId]: (current.messages[conversationId] ?? []).map(message => message.id === retry.id ? { ...message, supersededById: assistantId } : message) } } : appendMessage(current, userMessage)
       return drainModelEvents(
-        appendMessage(appendMessage(current, userMessage), assistantMessage),
+        appendMessage(base, assistantMessage),
         pendingModelEventsRef.current,
       )
     })
@@ -365,10 +387,12 @@ export function App() {
           conversationId,
           assistantMessageId: assistantId,
           partialText: '',
+          errorMessage: errorText(error),
         })
       })
       setToast(errorText(error))
     }
+    finally { startingConversationsRef.current.delete(conversationId) }
   }
 
   async function cancelGeneration() {
@@ -643,7 +667,8 @@ export function App() {
           <div className="message-day"><span>今天</span></div>
           {messages.length === 0
             ? <div className="empty-conversation"><div className="empty-icon"><MessageCircleMore /></div><h2>开始一段新对话</h2><p>消息暂存在本机，接入服务器 transport 后可自动同步。</p></div>
-            : messages.map((message, index) => <MessageBubble key={message.id} message={message} compact={messages[index - 1]?.senderId === message.senderId} />)}
+            : messages.map((message, index) => <MessageBubble key={message.id} message={message} compact={messages[index - 1]?.senderId === message.senderId}
+              onRetry={canRetryLast && message.id === lastMessage?.id ? () => void sendAssistantMessage(message.text, message) : undefined} />)}
           <div ref={endRef} />
         </section>
 
@@ -730,16 +755,17 @@ function Avatar({ conversation, small = false }: { conversation: Conversation; s
   return <span className={`avatar ${small ? 'small' : ''}`} style={{ background: conversation.accent }}>{conversation.avatar}</span>
 }
 
-function MessageBubble({ message, compact }: { message: ChatMessage; compact: boolean }) {
+const MessageBubble = memo(function MessageBubble({ message, compact, onRetry }: { message: ChatMessage; compact: boolean; onRetry: (() => void) | undefined }) {
   if (message.type === 'system') return <div className="system-message">{message.text}</div>
   const own = message.role === 'self'
   return (
-    <article className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status}`}>
+    <article data-message-id={message.id} className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status}`}>
       {!own && <span className="message-avatar">{message.senderAvatar}</span>}
       <div className="message-content">
         {!compact && !own && <span className="sender-name">{message.senderName}</span>}
         <div className="bubble">
-          <p>{displayText(message)}</p>
+          {own ? <p>{displayText(message)}</p> : <MessageMarkdown text={displayText(message)} />}
+          {message.errorMessage && <p className="message-error">{message.errorMessage}</p>}
           {message.authorNotes && message.authorNotes.length > 0 && (
             <ul className="author-tool-notes">
               {message.authorNotes.map((note, index) => (
@@ -748,11 +774,13 @@ function MessageBubble({ message, compact }: { message: ChatMessage; compact: bo
             </ul>
           )}
           <span className="bubble-meta">{messageMeta(message)}</span>
+          {message.usage && <span className="message-usage" data-token-total={message.usage.totalTokens} title={`输入 ${message.usage.inputTokens} · 输出 ${message.usage.outputTokens} · ${message.usage.reportedRequests}/${message.usage.requestCount} 次请求返回用量`}>{message.usage.totalTokens.toLocaleString()} tokens{message.usage.reportedRequests < message.usage.requestCount ? '（部分）' : ''}</span>}
+          {onRetry && <button type="button" className="message-retry" onClick={onRetry}>重新生成</button>}
         </div>
       </div>
     </article>
   )
-}
+})
 
 function DetailsPanel({ conversation, transportName, modelLabel, onClose }: { conversation: Conversation; transportName: string; modelLabel?: string; onClose: () => void }) {
   return (
@@ -988,10 +1016,10 @@ function messageMeta(message: ChatMessage): string {
   const time = formatRelativeTime(message.createdAt)
   if (message.status === 'streaming') return `${time} · 生成中`
   if (message.status === 'cancelled') return `${time} · 已取消`
-  if (message.status === 'failed') return `${time} · 失败`
+  if (message.status === 'failed') return `${time} · 失败${message.supersededById ? ' · 已重试' : ''}`
   if (message.role === 'self' && message.status === 'sending') return `${time} · 发送中`
   if (message.role === 'self') return `${time} ✓`
-  return time
+  return message.retryOfId ? `${time} · 重试回复` : time
 }
 
 function errorText(error: unknown): string {
@@ -1012,9 +1040,9 @@ function toModelUpdate(event: ModelClientEvent): ModelChatUpdate {
     case 'delta':
       return { type: 'delta', ...identity, textDelta: event.textDelta }
     case 'completed':
-      return { type: 'completed', ...identity, text: event.text }
+      return { type: 'completed', ...identity, text: event.text, ...(event.usage ? { usage: event.usage } : {}) }
     case 'failed':
-      return { type: 'failed', ...identity, partialText: event.partialText }
+      return { type: 'failed', ...identity, partialText: event.partialText, errorMessage: event.errorMessage }
     case 'cancelled':
       return { type: 'cancelled', ...identity, partialText: event.partialText }
     case 'author-tool':
@@ -1048,8 +1076,8 @@ function drainModelEvents(state: ChatState, pending: ModelClientEvent[]): ChatSt
   return queued.reduce((current, event) => applyModelChatUpdate(current, toModelUpdate(event)), state)
 }
 
-function LoadingScreen() {
-  return <div className="loading-screen"><div className="loading-mark">M</div><p>正在恢复会话…</p></div>
+function LoadingScreen({ error = false }: { error?: boolean }) {
+  return <div className="loading-screen"><div className="loading-mark">M</div><p>{error ? '会话恢复失败，原数据已保留。请重新打开应用。' : '正在恢复会话…'}</p></div>
 }
 
 function hostStatusLabel(status: HostStatusSnapshot): string {
