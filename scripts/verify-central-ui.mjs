@@ -381,6 +381,16 @@ try {
   )
 } catch (e) {
   console.error(String(e.stack ?? e.message))
+  await mkdir(path.join(root, '.artifacts'), { recursive: true })
+  for (const [label, session] of [['a', a], ['b', b]]) {
+    if (!session) continue
+    try {
+      console.error('Failure client ' + label + ': ' + JSON.stringify(await evaluate(session.client, `window.moreThanChat.getServerState().then(s=>({status:s.status,error:s.error,plugins:s.directory?.plugins,widgets:[...document.querySelectorAll('[data-group-plugin]')].map(n=>({text:n.innerText,entry:n.querySelector('[data-chain-entry]')?.value})),toast:document.querySelector('.toast')?.innerText}))`)))
+      const capture = await session.client.send('Page.captureScreenshot', {format:'png',fromSurface:true})
+      await writeFile(path.join(root,'.artifacts',`central-${packaged ? 'packaged-' : ''}${label}-failure.png`),Buffer.from(capture.data,'base64'))
+    } catch (diagnosticError) { console.error('Failure capture: ' + String(diagnosticError)) }
+  }
+  console.error('Failure relay plugins: ' + JSON.stringify(relay.db.prepare('SELECT id,status,revision,state FROM plugins').all()))
   process.exitCode = 1
 } finally {
   await close(a).catch(() => undefined)
