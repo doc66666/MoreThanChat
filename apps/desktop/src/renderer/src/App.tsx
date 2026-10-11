@@ -104,7 +104,7 @@ export function App() {
     useState<UiSlotName>('chat.details')
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState('')
-  const [showDetails, setShowDetails] = useState(true)
+  const [showDetails, setShowDetails] = useState(() => window.innerWidth > 1080)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showNewChat, setShowNewChat] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -1124,6 +1124,8 @@ export function App() {
             <button
               className={`icon-button ${showDetails ? 'selected' : ''}`}
               title="会话详情"
+              aria-expanded={showDetails}
+              aria-controls="conversation-details"
               onClick={() => setShowDetails((value) => !value)}
             >
               <Info size={19} />
@@ -1277,7 +1279,7 @@ export function App() {
       </main>
 
       {showDetails && (
-        <div className="details-with-plugins">
+        <div className="details-with-plugins" id="conversation-details">
           <DetailsPanel
             conversation={active}
             transportName={

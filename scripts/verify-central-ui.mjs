@@ -72,7 +72,7 @@ async function poll(session, expression, ms = 15000) {
 async function click(session, selector) {
   await poll(
     session,
-    `Boolean(document.querySelector(${JSON.stringify(selector)}))&&!document.querySelector(${JSON.stringify(selector)}).disabled`,
+    `Boolean(document.querySelector(${JSON.stringify(selector)}))&&document.querySelector(${JSON.stringify(selector)}).checkVisibility()&&!document.querySelector(${JSON.stringify(selector)}).disabled`,
   )
   await evaluate(
     session.client,
@@ -123,6 +123,11 @@ async function openNetwork(session) {
     ))
   )
     await click(session, 'button[title="联系人"]')
+}
+async function openDetails(session) {
+  if (!(await evaluate(session.client, 'Boolean(document.querySelector(".details-with-plugins"))')))
+    await click(session, 'button[title="会话详情"]')
+  await poll(session, 'document.querySelector(".details-with-plugins")?.checkVisibility()')
 }
 async function approve(pluginId) {
   await openNetwork(a)
@@ -194,6 +199,8 @@ try {
   await click(a, `[data-group="${group.id}"]`)
   await openNetwork(b)
   await click(b, `[data-group="${group.id}"]`)
+  await openDetails(a)
+  await openDetails(b)
   await click(b, '[data-submit-plugin="chain"]')
   await poll(b, 'document.body.innerText.includes("等待管理员批准")')
   const chain = (await state(b)).directory.plugins.find(
@@ -286,6 +293,16 @@ try {
   await evaluate(a.client, `${card}.querySelector('.plugin-toggle').click()`)
   await poll(a, 'Boolean(document.querySelector("[data-plugin-slot-owner]"))')
   await click(a, '.plugin-drawer .drawer-header button')
+  // Exercise the real narrow-window details toggle, not hidden DOM controls.
+  await a.client.send('Emulation.setDeviceMetricsOverride', {width:1024,height:768,deviceScaleFactor:1,mobile:false})
+  await click(a, '.details-header button')
+  await poll(a, '!document.querySelector(".details-with-plugins")')
+  await openDetails(a)
+  await poll(a, `document.querySelector('[data-group-plugin="${chain.pack.id}"]')?.checkVisibility()`)
+  await click(a, '.details-header button')
+  // The drawer must not cover the microphone during a real pointer gesture.
+  if (await evaluate(b.client, 'innerWidth<=1080&&Boolean(document.querySelector(".details-with-plugins"))'))
+    await click(b, '.details-header button')
   const { AttachmentStore } = require(
       path.join(desktop, 'dist-main', 'attachments.js'),
     ),
@@ -343,6 +360,8 @@ try {
     '(()=>{const audio=document.querySelector(".message-attachment audio");return audio&&audio.readyState>=1&&!audio.error})()',
   )
   await mkdir(path.join(root, '.artifacts'), { recursive: true })
+  await openDetails(a)
+  await openDetails(b)
   for (const [label, session] of [
     ['a', a],
     ['b', b],
@@ -375,6 +394,7 @@ try {
       reviewedSidebarPlacement: true,
       customNetworkChannel: true,
       localGroupPluginToggle: true,
+      narrowWindowPluginAccess: true,
       fileRelay: true,
       holdVoiceRelay: true,
     }),
