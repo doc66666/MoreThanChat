@@ -5,7 +5,11 @@
   "packageManager": "pnpm@11.21.0",
   "scripts": {
     "dev": "pnpm build:host && pnpm --filter @more-than-chat/desktop dev",
-    "build:host": "pnpm --filter @more-than-chat/protocol build && pnpm --filter @more-than-chat/plugin-runtime build && pnpm --filter @more-than-chat/runtime-cordis build && pnpm --filter @more-than-chat/plugin-time-tool build && pnpm --filter @more-than-chat/pc-host build",
+    "build:host": "pnpm --filter @more-than-chat/central-protocol build && pnpm --filter @more-than-chat/protocol build && pnpm --filter @more-than-chat/plugin-runtime build && pnpm --filter @more-than-chat/runtime-cordis build && pnpm --filter @more-than-chat/plugin-time-tool build && pnpm --filter @more-than-chat/pc-host build",
+    "central:serve": "pnpm --filter @more-than-chat/central-protocol build && pnpm --filter @more-than-chat/central-server start",
+    "central:dev": "pnpm --filter @more-than-chat/central-protocol build && node scripts/run-central-dev.mjs",
+    "central:package": "pnpm --filter @more-than-chat/central-protocol build && node scripts/stage-central-release.mjs",
+    "demo:clients": "pnpm build && node scripts/start-test-clients.mjs",
     "build": "pnpm build:host && pnpm --filter @more-than-chat/desktop build && node scripts/stage-host-resources.mjs && node scripts/package-dir.mjs --if-ci",
     "stage:host": "node scripts/stage-host-resources.mjs",
     "package:dir": "pnpm build && node scripts/package-dir.mjs",
@@ -14,6 +18,7 @@
     "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",
     "verify:ai-ui": "pnpm build && node scripts/verify-ai-ui.mjs",
     "verify:chat-ui": "pnpm build && node scripts/verify-chat-core-ui.mjs",
+    "verify:central-ui": "pnpm build && node scripts/verify-central-ui.mjs",
     "test:live-ai": "pnpm build:host && node scripts/test-live-ai.mjs",
     "verify:protocol": "pnpm --filter @more-than-chat/protocol build && node scripts/verify-protocol-schema.mjs",
     "typecheck": "pnpm -r typecheck"

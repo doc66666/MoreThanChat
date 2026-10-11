@@ -408,6 +408,9 @@ export class ContributionRegistry<T extends { readonly id: string }> implements 
 }
 
 export const composerActionsServiceId = 'ui.composer-actions'
+export const uiSlotsServiceId = 'ui.slots'
+/** Renderer-specific hosts decide how to render this generic, platform-neutral contribution. */
+export interface UiSlotContribution { readonly id:string; readonly slot:string; readonly order?:number; render(context:unknown):unknown }
 export const hostToolsServiceId = 'host.tools'
 
 /** Trusted host tool contract. Only serializable results cross the IPC boundary. */

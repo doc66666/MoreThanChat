@@ -19,6 +19,9 @@ export interface Conversation {
   pinned: boolean
   updatedAt: number
   transportId: string
+  serverId?: string
+  targetId?: string
+  remoteId?: string
 }
 
 export interface AuthorToolNote {
@@ -53,6 +56,8 @@ export interface ChatMessage {
   retryOfId?: string
   supersededById?: string
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number; reportedRequests: number; requestCount: number }
+  serverId?: string
+  attachment?: { id: string; name: string; mime: string; size: number; durationMs?: number }
 }
 
 export interface ChatState {
@@ -68,6 +73,7 @@ export interface OutgoingMessage {
   conversationId: string
   text: string
   createdAt: number
+  attachmentId?: string
 }
 
 export interface IncomingMessageDraft {
@@ -113,6 +119,19 @@ export interface ChatTransportPlugin {
 
 export const chatTransportsServiceId = 'chat.transports'
 
+/** Server projections never overwrite in-flight AI/local UI state. */
+export function mergeCentralProjection(current: ChatState, projection: ChatState): ChatState {
+  const next:ChatState={...current,profile:projection.profile,conversations:current.conversations.slice(),messages:{...current.messages}}
+  for(const conversation of projection.conversations.filter(item=>item.serverId)) {
+    const index=next.conversations.findIndex(item=>item.id===conversation.id)
+    if(index<0)next.conversations.push(conversation)
+    else next.conversations[index]={...conversation,unread:current.activeConversationId===conversation.id?0:conversation.unread}
+    const incoming=projection.messages[conversation.id]??[],old=current.messages[conversation.id]??[]
+    next.messages[conversation.id]=[...old.filter(message=>!incoming.some(item=>item.id===message.id||(item.senderId===message.senderId&&item.clientMessageId===message.clientMessageId))),...incoming].sort((a,b)=>a.createdAt-b.createdAt)
+  }
+  return next
+}
+
 export class TransportRegistry {
   readonly #plugins = new Map<string, ChatTransportPlugin>()
 
@@ -136,48 +155,22 @@ export class TransportRegistry {
 }
 
 const seedConversationIds = {
-  product: 'conversation-product',
   assistant: 'conversation-assistant',
-  plugins: 'conversation-plugins',
 } as const
 
 export function createSeedState(now = Date.now()): ChatState {
   const profile: Profile = { id: 'local-user', displayName: '我', avatar: 'M' }
   const conversations: Conversation[] = [
     {
-      id: seedConversationIds.product,
-      title: '产品讨论',
-      subtitle: '3 位成员',
-      avatar: '产',
-      accent: '#7067f0',
-      kind: 'group',
-      unread: 2,
-      pinned: true,
-      updatedAt: now - 8 * 60_000,
-      transportId: 'builtin.local-demo',
-    },
-    {
       id: seedConversationIds.assistant,
       title: 'More AI',
-      subtitle: '本地演示助手',
+      subtitle: 'AI 助手',
       avatar: 'AI',
       accent: '#1f9d78',
       kind: 'assistant',
       unread: 0,
       pinned: true,
-      updatedAt: now - 32 * 60_000,
-      transportId: 'builtin.local-demo',
-    },
-    {
-      id: seedConversationIds.plugins,
-      title: '插件开发群',
-      subtitle: '5 位成员',
-      avatar: '插',
-      accent: '#e1834b',
-      kind: 'group',
-      unread: 0,
-      pinned: false,
-      updatedAt: now - 3 * 60 * 60_000,
+      updatedAt: now,
       transportId: 'builtin.local-demo',
     },
   ]
@@ -186,19 +179,10 @@ export function createSeedState(now = Date.now()): ChatState {
     version: 1,
     profile,
     conversations,
-    activeConversationId: seedConversationIds.product,
+    activeConversationId: seedConversationIds.assistant,
     messages: {
-      [seedConversationIds.product]: [
-        seedMessage(seedConversationIds.product, 'system', '今天 09:30', now - 30 * 60_000),
-        seedMessage(seedConversationIds.product, 'peer', '桌面端先把聊天主链路跑通，插件能力从接口进入。', now - 26 * 60_000, '林初', '林'),
-        seedMessage(seedConversationIds.product, 'self', '赞同。第一版要能真实发送、保存和恢复消息。', now - 21 * 60_000),
-        seedMessage(seedConversationIds.product, 'peer', '服务端 transport 后续接入，UI 不需要跟着重写。', now - 8 * 60_000, '许然', '许'),
-      ],
       [seedConversationIds.assistant]: [
-        seedMessage(seedConversationIds.assistant, 'peer', '你好，我是 More AI。本地演示模式下，我会确认收到的消息。', now - 32 * 60_000, 'More AI', 'AI'),
-      ],
-      [seedConversationIds.plugins]: [
-        seedMessage(seedConversationIds.plugins, 'peer', 'Transport、消息卡片和侧边栏都应该能由插件提供。', now - 3 * 60 * 60_000, 'Cordis Bot', 'C'),
+        seedMessage(seedConversationIds.assistant, 'peer', '你好，我是 More AI。设置里可接入 AI API；联系人里可连接中心服务器、添加好友和创建群聊。', now, 'More AI', 'AI'),
       ],
     },
   }

@@ -1,4 +1,5 @@
 export {}
+import type { AttachmentRef, WireAttachment, ServerSnapshot, RelayEvent } from '@more-than-chat/central-protocol'
 
 import type {
   HostPluginCatalog,
@@ -60,6 +61,20 @@ export interface ModelStreamRef {
 declare global {
   interface Window {
     moreThanChat: {
+      getServerState():Promise<ServerSnapshot>
+      copyGlobalUserId():Promise<void>
+      getPluginInbox(groupId:string,pluginId:string):Promise<Extract<RelayEvent,{kind:'plugin'}>[]>
+      connectServer(address:string,displayName:string):Promise<ServerSnapshot>
+      disconnectServer():Promise<void>
+      serverAction(route:string,data:unknown):Promise<ServerSnapshot>
+      sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string}):Promise<{eventId:string;acceptedAt:number}>
+      chooseAttachment():Promise<AttachmentRef|null>
+      recordVoice(input:{data:string;mime:string;durationMs:number}):Promise<AttachmentRef>
+      readAttachment(id:string):Promise<WireAttachment>
+      saveAttachment(id:string):Promise<void>
+      onServerState(listener:(state:ServerSnapshot)=>void):()=>void
+      onCentralChat(listener:(state:unknown)=>void):()=>void
+      onPluginEvent(listener:(event:Extract<RelayEvent,{kind:'plugin'}>)=>void):()=>void
       loadState(): Promise<unknown | null>
       saveState(value: unknown): Promise<void>
       onBeforeClose(listener: () => Promise<void>): () => void

@@ -15,8 +15,21 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0))
 
+  apps/central-server:
+    dependencies:
+      '@more-than-chat/central-protocol':
+        specifier: workspace:*
+        version: link:../../packages/central-protocol
+    devDependencies:
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0))
+
   apps/desktop:
     dependencies:
+      '@more-than-chat/central-protocol':
+        specifier: workspace:*
+        version: link:../../packages/central-protocol
       '@more-than-chat/chat-core':
         specifier: workspace:*
         version: link:../../packages/chat-core
@@ -100,6 +113,15 @@ importers:
       electron:
         specifier: 43.5.1
         version: 43.5.1(supports-color@10.2.2)
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0))
+
+  packages/central-protocol:
+    devDependencies:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -1984,8 +2006,8 @@ packages:
     resolution: {integrity: sha512-a2B9Y0KlNXl9u/vsW6sTIu9vGEpfKu2wRV6l1H3XEas/0gUIzGzBoP/IouTcUQbm9JWZLH3COxyn03TYlFax6w==}
     engines: {node: '>=10'}
 
-  source-map-js@1.2.1:
-    resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
+  source-map-js@1.2.2:
+    resolution: {integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==}
     engines: {node: '>=0.10.0'}
 
   source-map-support@0.5.21:
@@ -4257,7 +4279,7 @@ snapshots:
     dependencies:
       nanoid: 3.3.18
       picocolors: 1.1.1
-      source-map-js: 1.2.1
+      source-map-js: 1.2.2
 
   postject@1.0.0-alpha.6:
     dependencies:
@@ -4483,7 +4505,7 @@ snapshots:
     dependencies:
       semver: 7.8.5
 
-  source-map-js@1.2.1: {}
+  source-map-js@1.2.2: {}
 
   source-map-support@0.5.21:
     dependencies:

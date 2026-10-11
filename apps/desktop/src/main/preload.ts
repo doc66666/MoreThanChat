@@ -9,6 +9,20 @@ interface HostPingResult {
 }
 
 const api = {
+  getServerState:()=>ipcRenderer.invoke('central:state'),
+  copyGlobalUserId:()=>ipcRenderer.invoke('central:copy-id'),
+  getPluginInbox:(groupId:string,pluginId:string)=>ipcRenderer.invoke('central:plugin-inbox',{groupId,pluginId}),
+  connectServer:(address:string,displayName:string)=>ipcRenderer.invoke('central:connect',{address,displayName}),
+  disconnectServer:()=>ipcRenderer.invoke('central:disconnect'),
+  serverAction:(route:string,data:unknown)=>ipcRenderer.invoke('central:action',{route,data}),
+  sendCentralMessage:(input:unknown)=>ipcRenderer.invoke('central:send',input),
+  chooseAttachment:()=>ipcRenderer.invoke('attachment:choose'),
+  recordVoice:(input:unknown)=>ipcRenderer.invoke('attachment:voice',input),
+  readAttachment:(id:string)=>ipcRenderer.invoke('attachment:read',id),
+  saveAttachment:(id:string)=>ipcRenderer.invoke('attachment:save',id),
+  onServerState:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('central:changed',handler);return()=>ipcRenderer.removeListener('central:changed',handler)},
+  onCentralChat:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('central:chat',handler);return()=>ipcRenderer.removeListener('central:chat',handler)},
+  onPluginEvent:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('central:plugin',handler);return()=>ipcRenderer.removeListener('central:plugin',handler)},
   loadState: (): Promise<unknown | null> => ipcRenderer.invoke('chat:state:load') as Promise<unknown | null>,
   saveState: (value: unknown): Promise<void> => ipcRenderer.invoke('chat:state:save', value) as Promise<void>,
   onBeforeClose: (listener: () => Promise<void>): (() => void) => {

@@ -1,13 +1,15 @@
 # MoreThanChat
 一切皆插件的聊天应用，或许你的企鹅已经过时了！
 
-当前阶段：Windows AI 聊天与受限 AI 插件创作内测版。已用真实 DeepSeek `deepseek-flash` 验证生成大写转换插件、确认安装、修订为小写转换、更新和重启恢复；真实桌面聊天中的创建、确认与执行也已实测。
+当前阶段：Windows 聊天、中心服务与插件扩展内测版。已有全局签名身份、好友/群聊、离线暂存与收件确认清除、群插件审批及同步。默认开发服务为 `http://localhost:8787`，可在设置切换同一程序运行的私服。AI 聊天与受限草稿创作功能继续保留。
 
 用户在设置中配置 API、模型和 Key，在 More AI 会话中描述需要的插件，再到插件面板确认安装。当前支持固定文本、输入框文本追加，以及大写/小写/首尾空白转换。模型读取实际契约和样例，通过工具创建、校验与修订；用户掌握安装和更新决定。插件启停与版本会保存，失败更新可恢复旧版并继续提交修订。
 
 聊天内核已接入 SQLite 事务存储，自动迁移旧会话并保留备份；退出前确认保存。AI 回复支持 Markdown、代码块、表格、失败/取消后重新生成，以及接口报告的 Token 用量。重试保留原问题和失败记录，不重复发送问题到会话列表。
 
-Key 由 Electron Main 的系统加密服务保存，Host 通过私有 RPC 获取运行时凭据；不使用明文文件回退。任意 JS/TS 代码、文件/网络权限插件、真实联系人联网聊天、Android 与正式签名安装器仍属后续阶段。
+插件可以注册侧栏、导航、消息区域、详情、输入区或浮层，也预留了可信插件替换输入区的能力。群成员可申请接龙、井字棋和通用同步通道，管理员批准后向同服群成员分发。加号支持文件与表情，右侧按住说话，文件和语音在中心会话内发送。
+
+Key 由 Electron Main 的系统加密服务保存，Host 通过私有 RPC 获取运行时凭据；不使用明文文件回退。当前远程分发是受限声明式包，任意可执行第三方 JS/TS 的沙箱、Android、端到端加密与正式签名安装器仍属后续阶段。
 
 ## 当前可运行原型
 
@@ -15,7 +17,10 @@ Key 由 Electron Main 的系统加密服务保存，Host 通过私有 RPC 获取
 
 ```powershell
 pnpm install
-pnpm dev
+pnpm central:dev
+# 另一个终端打开两个独立用户端：
+pnpm demo:clients
+# 常规单客户端开发：pnpm dev
 ```
 
 验证：
@@ -29,6 +34,8 @@ pnpm verify:host
 pnpm verify:protocol
 pnpm verify:ai-ui
 pnpm verify:chat-ui
+pnpm verify:central-ui
+pnpm central:package
 pnpm package:dir
 ```
 
@@ -53,6 +60,7 @@ node scripts/verify-ai-ui.mjs --live
 - [AI 插件创作与加密凭据](docs/ai-plugin-mvp.md)
 - [Windows 内测阶段验收与使用](docs/stage-acceptance-2026-10-10.md)
 - [SQLite、Markdown、重试与 Token 阶段](docs/chat-core-stage-2026-10-10.md)
+- [中心服务、群插件和手动双端测试](docs/central-and-plugin-stage-2026-10-11.md)
 - [DeepSeek Harness / Cordis 调研记录](docs/upstream-study.md)
 
 更新本地参考源码：

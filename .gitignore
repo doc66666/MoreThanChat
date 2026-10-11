@@ -10,6 +10,7 @@ build/
 coverage/
 .turbo/
 .artifacts/
+.data/
 
 # electron-builder metadata. Unpacked output lives under .artifacts/.
 apps/desktop/builder-debug.yml

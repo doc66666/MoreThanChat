@@ -1,4 +1,12 @@
-import { memo, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react'
 import {
   Archive,
   Bot,
@@ -29,6 +37,7 @@ import {
   formatRelativeTime,
   interruptStreamingMessages,
   normalizeState,
+  mergeCentralProjection,
   planAssistantRetry,
   toModelTranscript,
   type AuthorToolNote,
@@ -42,7 +51,13 @@ import type {
   PluginSnapshot,
   RegisteredContribution,
 } from '@more-than-chat/plugin-runtime'
-import type { HostPluginSnapshot, HostStatusSnapshot, ModelProviderMode, ModelSettingsSnapshot, PluginDraftInspection } from '@more-than-chat/protocol'
+import type {
+  HostPluginSnapshot,
+  HostStatusSnapshot,
+  ModelProviderMode,
+  ModelSettingsSnapshot,
+  PluginDraftInspection,
+} from '@more-than-chat/protocol'
 import type { ModelClientEvent, ModelSettingsInput } from './global'
 import {
   composerActionRegistry,
@@ -50,6 +65,21 @@ import {
   startBundledPlugins,
   transportRegistry,
 } from './plugin-host'
+import { uiSlotRegistry } from './plugin-host'
+import type { UiSlotContribution } from '@more-than-chat/plugin-runtime'
+import type {
+  AttachmentRef,
+  GroupPlugin,
+  ServerSnapshot,
+} from '@more-than-chat/central-protocol'
+import {
+  UI_SLOTS,
+  type UiSlot as UiSlotName,
+} from '@more-than-chat/central-protocol'
+import { NetworkPanel, GroupPluginView } from './NetworkPanel'
+import { ChatComposer } from './ChatComposer'
+import { MessageAttachment } from './MessageAttachment'
+import { UiSlot } from './UiSlot'
 import { MessageMarkdown } from './MessageMarkdown'
 
 function uid(): string {
@@ -63,20 +93,40 @@ function initials(value: string): string {
 export function App() {
   const [state, setState] = useState<ChatState | null>(null)
   const [loadError, setLoadError] = useState(false)
+  const [serverState, setServerState] = useState<ServerSnapshot | null>(null)
+  const [showServer, setShowServer] = useState(false)
+  const [pendingAttachment, setPendingAttachment] =
+    useState<AttachmentRef | null>(null)
+  const [slotEntries, setSlotEntries] = useState<
+    RegisteredContribution<UiSlotContribution>[]
+  >(() => uiSlotRegistry.list())
+  const [groupPluginSlot, setGroupPluginSlot] =
+    useState<UiSlotName>('chat.details')
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState('')
   const [showDetails, setShowDetails] = useState(true)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showNewChat, setShowNewChat] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
-  const [plugins, setPlugins] = useState<PluginSnapshot[]>(() => pluginRuntime.list())
-  const [composerActions, setComposerActions] = useState<RegisteredContribution<ComposerAction>[]>(() => composerActionRegistry.list())
-  const [hostStatus, setHostStatus] = useState<HostStatusSnapshot>({ state: 'starting', generation: 0 })
+  const [plugins, setPlugins] = useState<PluginSnapshot[]>(() =>
+    pluginRuntime.list(),
+  )
+  const [composerActions, setComposerActions] = useState<
+    RegisteredContribution<ComposerAction>[]
+  >(() => composerActionRegistry.list())
+  const [hostStatus, setHostStatus] = useState<HostStatusSnapshot>({
+    state: 'starting',
+    generation: 0,
+  })
   const [hostPlugins, setHostPlugins] = useState<HostPluginSnapshot[]>([])
   const [hostPluginBusy, setHostPluginBusy] = useState(false)
-  const [pluginDrafts, setPluginDrafts] = useState<PluginDraftInspection | null>(null)
-  const [pluginDraftReport, setPluginDraftReport] = useState<string | null>(null)
-  const [modelSettings, setModelSettings] = useState<ModelSettingsSnapshot | null>(null)
+  const [pluginDrafts, setPluginDrafts] =
+    useState<PluginDraftInspection | null>(null)
+  const [pluginDraftReport, setPluginDraftReport] = useState<string | null>(
+    null,
+  )
+  const [modelSettings, setModelSettings] =
+    useState<ModelSettingsSnapshot | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const streamIdsRef = useRef(new Map<string, string>())
   const startingConversationsRef = useRef(new Set<string>())
@@ -89,13 +139,50 @@ export function App() {
   const saveTimerRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
+    const dispose = uiSlotRegistry.subscribe(() =>
+      setSlotEntries(uiSlotRegistry.list()),
+    )
+    setSlotEntries(uiSlotRegistry.list())
+    return () => {
+      void dispose()
+    }
+  }, [])
+
+  useEffect(() => {
+    let changed = false
+    if (typeof window.moreThanChat.onServerState !== 'function') {
+      setToast('中心服务功能需要完整重启客户端')
+      return
+    }
+    const dispose = window.moreThanChat.onServerState((snapshot) => {
+      changed = true
+      setServerState(snapshot)
+    })
+    const chatDispose = window.moreThanChat.onCentralChat((value) =>
+      setState((current) =>
+        current ? mergeCentralProjection(current, value as ChatState) : current,
+      ),
+    )
+    void window.moreThanChat
+      .getServerState()
+      .then((snapshot) => {
+        if (!changed) setServerState(snapshot)
+      })
+      .catch(() => undefined)
+    return () => {
+      dispose()
+      chatDispose()
+    }
+  }, [])
+
+  useEffect(() => {
     const syncPlugins = () => setPlugins(pluginRuntime.list())
     const syncActions = () => setComposerActions(composerActionRegistry.list())
     const unsubscribePlugins = pluginRuntime.subscribe(syncPlugins)
     const unsubscribeActions = composerActionRegistry.subscribe(syncActions)
     syncPlugins()
     syncActions()
-    void startBundledPlugins().catch(error => {
+    void startBundledPlugins().catch((error) => {
       console.error(error)
       setToast('插件启动失败，请打开插件面板查看诊断')
     })
@@ -108,20 +195,28 @@ export function App() {
   useEffect(() => {
     let active = true
     let receivedEvent = false
-    const unsubscribe = window.moreThanChat.onHostStatusChanged(status => {
+    const unsubscribe = window.moreThanChat.onHostStatusChanged((status) => {
       receivedEvent = true
       if (active) setHostStatus(status)
     })
-    void window.moreThanChat.getHostStatus().then(status => {
-      if (active && !receivedEvent) setHostStatus(status)
-    }).catch(error => {
-      console.error(error)
-      if (active) setHostStatus({
-        state: 'failed',
-        generation: 0,
-        error: { code: 'HOST_UNAVAILABLE', message: '无法读取 PC Host 状态。', retryable: true },
+    void window.moreThanChat
+      .getHostStatus()
+      .then((status) => {
+        if (active && !receivedEvent) setHostStatus(status)
       })
-    })
+      .catch((error) => {
+        console.error(error)
+        if (active)
+          setHostStatus({
+            state: 'failed',
+            generation: 0,
+            error: {
+              code: 'HOST_UNAVAILABLE',
+              message: '无法读取 PC Host 状态。',
+              retryable: true,
+            },
+          })
+      })
     return () => {
       active = false
       unsubscribe()
@@ -129,60 +224,111 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (hostStatus.state !== 'ready') { setHostPlugins([]); return }
+    if (hostStatus.state !== 'ready') {
+      setHostPlugins([])
+      return
+    }
     let active = true
-    void window.moreThanChat.getHostPlugins().then(catalog => {
-      if (active && catalog.generation === hostStatus.generation) setHostPlugins(catalog.plugins)
-    }).catch(error => {
-      if (active) { console.error(error); setToast('无法读取后台插件，请稍后重试') }
-    })
-    return () => { active = false }
+    void window.moreThanChat
+      .getHostPlugins()
+      .then((catalog) => {
+        if (active && catalog.generation === hostStatus.generation)
+          setHostPlugins(catalog.plugins)
+      })
+      .catch((error) => {
+        if (active) {
+          console.error(error)
+          setToast('无法读取后台插件，请稍后重试')
+        }
+      })
+    return () => {
+      active = false
+    }
   }, [hostStatus.state, hostStatus.generation])
 
   useEffect(() => {
     if (!showPlugins || hostStatus.state !== 'ready') return
     let active = true
-    void window.moreThanChat.inspectPluginDrafts().then(inspection => {
-      if (active) setPluginDrafts(inspection)
-    }).catch(error => {
-      if (active) { console.error(error instanceof Error ? error.message : 'plugin drafts'); setToast('无法读取插件草稿') }
-    })
-    return () => { active = false }
+    void window.moreThanChat
+      .inspectPluginDrafts()
+      .then((inspection) => {
+        if (active) setPluginDrafts(inspection)
+      })
+      .catch((error) => {
+        if (active) {
+          console.error(
+            error instanceof Error ? error.message : 'plugin drafts',
+          )
+          setToast('无法读取插件草稿')
+        }
+      })
+    return () => {
+      active = false
+    }
   }, [showPlugins, hostStatus.state, hostStatus.generation])
 
   useEffect(() => {
     if (hostStatus.state === 'ready') return
-    setState(current => current ? interruptStreamingMessages(current) : current)
+    setState((current) =>
+      current ? interruptStreamingMessages(current) : current,
+    )
   }, [hostStatus.state, hostStatus.generation])
 
   useEffect(() => {
     if (hostStatus.state !== 'ready') return
     let alive = true
-    void window.moreThanChat.getModelSettings().then(snapshot => {
-      if (alive) setModelSettings(snapshot)
-    }).catch(error => {
-      console.error(error instanceof Error ? error.message : 'model settings')
-      if (alive) setToast('无法读取模型设置')
-    })
-    return () => { alive = false }
+    void window.moreThanChat
+      .getModelSettings()
+      .then((snapshot) => {
+        if (alive) setModelSettings(snapshot)
+      })
+      .catch((error) => {
+        console.error(error instanceof Error ? error.message : 'model settings')
+        if (alive) setToast('无法读取模型设置')
+      })
+    return () => {
+      alive = false
+    }
   }, [hostStatus.state, hostStatus.generation])
 
   useEffect(() => {
-    return window.moreThanChat.onModelChatEvent(event => {
+    return window.moreThanChat.onModelChatEvent((event) => {
       if (event.generation !== hostStatusRef.current.generation) return
-      if (event.type === 'author-tool' && event.phase === 'finished' && event.draft) {
-        void window.moreThanChat.inspectPluginDrafts().then(inspection => {
-          if (event.generation === hostStatusRef.current.generation) setPluginDrafts(inspection)
-        }).catch(() => undefined)
+      if (
+        event.type === 'author-tool' &&
+        event.phase === 'finished' &&
+        event.draft
+      ) {
+        void window.moreThanChat
+          .inspectPluginDrafts()
+          .then((inspection) => {
+            if (event.generation === hostStatusRef.current.generation)
+              setPluginDrafts(inspection)
+          })
+          .catch(() => undefined)
       }
-      setState(current => current ? applyIncomingModelEvent(current, event, pendingModelEventsRef.current) : current)
+      setState((current) =>
+        current
+          ? applyIncomingModelEvent(
+              current,
+              event,
+              pendingModelEventsRef.current,
+            )
+          : current,
+      )
       if (event.type === 'failed') setToast(event.errorMessage)
-      if (event.type !== 'delta' && event.type !== 'author-tool') streamIdsRef.current.delete(event.assistantMessageId)
+      if (event.type !== 'delta' && event.type !== 'author-tool')
+        streamIdsRef.current.delete(event.assistantMessageId)
     })
   }, [])
 
   useEffect(() => {
-    void window.moreThanChat.loadState().then(value => setState(value ? normalizeState(value) : createSeedState())).catch(() => setLoadError(true))
+    void window.moreThanChat
+      .loadState()
+      .then((value) =>
+        setState(value ? normalizeState(value) : createSeedState()),
+      )
+      .catch(() => setLoadError(true))
   }, [])
 
   useEffect(() => {
@@ -196,11 +342,17 @@ export function App() {
     }, 180)
   }, [state])
 
-  useEffect(() => window.moreThanChat.onBeforeClose(async () => {
-    if (saveTimerRef.current !== undefined) window.clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = undefined
-    if (stateRef.current) await window.moreThanChat.saveState(stateRef.current)
-  }), [])
+  useEffect(
+    () =>
+      window.moreThanChat.onBeforeClose(async () => {
+        if (saveTimerRef.current !== undefined)
+          window.clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = undefined
+        if (stateRef.current)
+          await window.moreThanChat.saveState(stateRef.current)
+      }),
+    [],
+  )
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -212,34 +364,99 @@ export function App() {
     return () => window.clearTimeout(timer)
   }, [toast])
 
-  const active = state?.conversations.find(item => item.id === state.activeConversationId)
+  const active = state?.conversations.find(
+    (item) => item.id === state.activeConversationId,
+  )
   const messages = active && state ? (state.messages[active.id] ?? []) : []
   const filtered = useMemo(() => {
     if (!state) return []
     const needle = query.trim().toLocaleLowerCase()
     return [...state.conversations]
-      .filter(item => !needle || item.title.toLocaleLowerCase().includes(needle))
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt)
+      .filter(
+        (item) => !needle || item.title.toLocaleLowerCase().includes(needle),
+      )
+      .sort(
+        (a, b) =>
+          Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt,
+      )
   }, [query, state])
 
   if (!state || !active) return <LoadingScreen error={loadError} />
   const readyState = state
   const lastMessage = messages.at(-1)
-  const canRetryLast = active.kind === 'assistant' && lastMessage && hostStatus.state === 'ready' && planAssistantRetry(messages, lastMessage.id)
+  const canRetryLast =
+    active.kind === 'assistant' &&
+    lastMessage &&
+    hostStatus.state === 'ready' &&
+    planAssistantRetry(messages, lastMessage.id)
+  const groupPlugins = (serverState?.directory?.plugins ?? [])
+    .filter(
+      (plugin) =>
+        plugin.status === 'approved' &&
+        plugin.groupId === active.targetId &&
+        active.serverId === serverState?.serverId,
+    )
+    .filter(
+      (plugin, _index, all) =>
+        !all.some(
+          (other) =>
+            other.pack.id === plugin.pack.id &&
+            other.pack.version > plugin.pack.version,
+        ),
+    )
+  const slotContext = {
+    conversation: active,
+    profile: readyState.profile,
+    draft,
+    setDraft,
+    send: () => void sendMessage(),
+    server: serverState,
+  }
+  const renderSlot = (name: string, message?: ChatMessage) => (
+    <div className="slot-surface" data-ui-slot-surface={name}>
+      <UiSlot
+        name={name}
+        entries={slotEntries}
+        context={message ? { ...slotContext, message } : slotContext}
+      />
+      {groupPlugins
+        .filter((plugin) => plugin.pack.slot === name)
+        .map((plugin) => (
+          <GroupPluginView
+            key={plugin.pack.id}
+            plugin={plugin}
+            userId={serverState?.userId ?? ''}
+            onError={setToast}
+          />
+        ))}
+    </div>
+  )
 
   function selectConversation(id: string) {
-    setState(current => current ? {
-      ...current,
-      activeConversationId: id,
-      conversations: current.conversations.map(item => item.id === id ? { ...item, unread: 0 } : item),
-    } : current)
+    setPendingAttachment(null)
+    setState((current) =>
+      current
+        ? {
+            ...current,
+            activeConversationId: id,
+            conversations: current.conversations.map((item) =>
+              item.id === id ? { ...item, unread: 0 } : item,
+            ),
+          }
+        : current,
+    )
     setDraft('')
   }
 
-  async function sendMessage() {
+  async function sendMessage(voiceAttachment?: AttachmentRef) {
     const text = draft.trim()
-    if (!text || !active) return
-    if (messages.some(message => message.status === 'streaming')) {
+    const attachment = voiceAttachment ?? pendingAttachment
+    if ((!text && !attachment) || !active) return
+    if (attachment && active.transportId !== 'builtin.central') {
+      setToast('文件和语音需要中心服务器会话')
+      return
+    }
+    if (messages.some((message) => message.status === 'streaming')) {
       setToast('请等待当前回复结束，或先停止生成')
       return
     }
@@ -261,13 +478,22 @@ export function App() {
       text,
       createdAt: now,
       status: 'sending',
+      ...(active.serverId ? { serverId: active.serverId } : {}),
+      ...(attachment ? { attachment } : {}),
     }
     setDraft('')
-    setState(current => current ? appendMessage(current, outgoing) : current)
+    setPendingAttachment(null)
+    setState((current) =>
+      current ? appendMessage(current, outgoing) : current,
+    )
 
     const plugin = transportRegistry.get(active.transportId)
     if (!plugin) {
-      setState(current => current ? updateMessageStatus(current, active.id, clientMessageId, 'failed') : current)
+      setState((current) =>
+        current
+          ? updateMessageStatus(current, active.id, clientMessageId, 'failed')
+          : current,
+      )
       setToast('当前会话的传输插件不可用')
       return
     }
@@ -275,8 +501,36 @@ export function App() {
     const transport = plugin.create()
     try {
       await transport.connect()
-      const receipt = await transport.send({ clientMessageId, conversationId: active.id, text, createdAt: now })
-      setState(current => current ? updateMessageStatus(current, active.id, clientMessageId, 'sent') : current)
+      const receipt = await transport.send({
+        clientMessageId,
+        conversationId: active.id,
+        text,
+        createdAt: now,
+        ...(attachment ? { attachmentId: attachment.id } : {}),
+      })
+      setState((current) =>
+        current
+          ? active.transportId === 'builtin.central'
+            ? {
+                ...current,
+                messages: {
+                  ...current.messages,
+                  [active.id]: (current.messages[active.id] ?? []).map(
+                    (item) =>
+                      item.id === clientMessageId
+                        ? {
+                            ...item,
+                            id: receipt.eventId,
+                            status: 'sent',
+                            createdAt: receipt.acceptedAt,
+                          }
+                        : item,
+                  ),
+                },
+              }
+            : updateMessageStatus(current, active.id, clientMessageId, 'sent')
+          : current,
+      )
       if (receipt.reply) {
         const reply: ChatMessage = {
           id: receipt.eventId,
@@ -291,19 +545,26 @@ export function App() {
           createdAt: receipt.acceptedAt,
           status: 'sent',
         }
-        window.setTimeout(() => setState(current => current ? appendMessage(current, reply) : current), 260)
+        window.setTimeout(
+          () =>
+            setState((current) =>
+              current ? appendMessage(current, reply) : current,
+            ),
+          260,
+        )
       }
-    }
-    catch (error) {
+    } catch (error) {
       console.error(error)
-      setState(current => current ? updateMessageStatus(current, active.id, clientMessageId, 'failed') : current)
+      setState((current) =>
+        current
+          ? updateMessageStatus(current, active.id, clientMessageId, 'failed')
+          : current,
+      )
       setToast('消息发送失败')
-    }
-    finally {
+    } finally {
       try {
         await transport.disconnect()
-      }
-      catch (error) {
+      } catch (error) {
         console.error('[transport] disconnect failed', error)
       }
     }
@@ -318,7 +579,10 @@ export function App() {
     }
     const now = Date.now()
     const retryPlan = retry ? planAssistantRetry(messages, retry.id) : null
-    if (retry && !retryPlan) { setToast('只能重试最近一次未完成的回复'); return }
+    if (retry && !retryPlan) {
+      setToast('只能重试最近一次未完成的回复')
+      return
+    }
     const userId = retryPlan?.user.id ?? uid()
     const assistantId = uid()
     const streamId = uid()
@@ -352,12 +616,26 @@ export function App() {
       replyToId: userId,
       ...(retry ? { retryOfId: retry.id } : {}),
     }
-    const transcript = retryPlan?.transcript ?? toModelTranscript(messages, text)
+    const transcript =
+      retryPlan?.transcript ?? toModelTranscript(messages, text)
     if (!retry) setDraft('')
     streamIdsRef.current.set(assistantId, streamId)
-    setState(current => {
+    setState((current) => {
       if (!current) return current
-      const base = retry ? { ...current, messages: { ...current.messages, [conversationId]: (current.messages[conversationId] ?? []).map(message => message.id === retry.id ? { ...message, supersededById: assistantId } : message) } } : appendMessage(current, userMessage)
+      const base = retry
+        ? {
+            ...current,
+            messages: {
+              ...current.messages,
+              [conversationId]: (current.messages[conversationId] ?? []).map(
+                (message) =>
+                  message.id === retry.id
+                    ? { ...message, supersededById: assistantId }
+                    : message,
+              ),
+            },
+          }
+        : appendMessage(current, userMessage)
       return drainModelEvents(
         appendMessage(base, assistantMessage),
         pendingModelEventsRef.current,
@@ -371,17 +649,29 @@ export function App() {
         messages: transcript,
       })
       if (ref.generation !== hostStatusRef.current.generation) {
-        setState(current => current ? interruptStreamingMessages(current) : current)
-        void window.moreThanChat.cancelModelChat(streamId).catch(() => undefined)
+        setState((current) =>
+          current ? interruptStreamingMessages(current) : current,
+        )
+        void window.moreThanChat
+          .cancelModelChat(streamId)
+          .catch(() => undefined)
         return
       }
-      setState(current => current ? updateMessageStatus(current, conversationId, userId, 'sent') : current)
-    }
-    catch (error) {
+      setState((current) =>
+        current
+          ? updateMessageStatus(current, conversationId, userId, 'sent')
+          : current,
+      )
+    } catch (error) {
       streamIdsRef.current.delete(assistantId)
-      setState(current => {
+      setState((current) => {
         if (!current) return current
-        const failedUser = updateMessageStatus(current, conversationId, userId, 'failed')
+        const failedUser = updateMessageStatus(
+          current,
+          conversationId,
+          userId,
+          'failed',
+        )
         return applyModelChatUpdate(failedUser, {
           type: 'failed',
           conversationId,
@@ -391,22 +681,26 @@ export function App() {
         })
       })
       setToast(errorText(error))
+    } finally {
+      startingConversationsRef.current.delete(conversationId)
     }
-    finally { startingConversationsRef.current.delete(conversationId) }
   }
 
   async function cancelGeneration() {
     if (!active) return
-    const streaming = (state?.messages[active.id] ?? []).find(message => message.status === 'streaming')
+    const streaming = (state?.messages[active.id] ?? []).find(
+      (message) => message.status === 'streaming',
+    )
     if (!streaming) return
     const streamId = streamIdsRef.current.get(streaming.id)
     streamIdsRef.current.delete(streaming.id)
-    setState(current => current ? interruptStreamingMessages(current, active.id) : current)
+    setState((current) =>
+      current ? interruptStreamingMessages(current, active.id) : current,
+    )
     if (!streamId || hostStatusRef.current.state !== 'ready') return
     try {
       await window.moreThanChat.cancelModelChat(streamId)
-    }
-    catch (error) {
+    } catch (error) {
       console.error(error instanceof Error ? error.message : 'cancel failed')
     }
   }
@@ -414,11 +708,17 @@ export function App() {
   async function saveModelSettings(input: ModelSettingsInput) {
     const snapshot = await window.moreThanChat.setModelSettings(input)
     setModelSettings(snapshot)
-    setToast(snapshot.hasApiKey ? '模型设置已保存，密钥只留在本机 Host' : '模型设置已保存')
+    setToast(
+      snapshot.hasApiKey
+        ? '模型设置已保存，密钥只留在本机 Host'
+        : '模型设置已保存',
+    )
   }
 
   async function clearModelKey() {
-    const snapshot = await window.moreThanChat.setModelSettings({ clearApiKey: true })
+    const snapshot = await window.moreThanChat.setModelSettings({
+      clearApiKey: true,
+    })
     setModelSettings(snapshot)
     setToast('API Key 已从本机凭据中删除')
   }
@@ -434,8 +734,7 @@ export function App() {
       })
       setDraft(result.draft)
       if (result.notice) setToast(result.notice)
-    }
-    catch (error) {
+    } catch (error) {
       console.error(error)
       setToast(`插件动作“${action.label}”执行失败`)
     }
@@ -447,8 +746,7 @@ export function App() {
       if (enable) await pluginRuntime.activate(plugin.manifest.id)
       else await pluginRuntime.deactivate(plugin.manifest.id)
       setToast(`${plugin.manifest.displayName}已${enable ? '启用' : '停用'}`)
-    }
-    catch (error) {
+    } catch (error) {
       console.error(error)
       setToast(`${plugin.manifest.displayName}${enable ? '启用' : '停用'}失败`)
     }
@@ -461,9 +759,10 @@ export function App() {
     }
     try {
       const result = await window.moreThanChat.pingHost()
-      setToast(`PC Host G${result.generation} 响应正常 · ${result.roundTripMs} ms`)
-    }
-    catch (error) {
+      setToast(
+        `PC Host G${result.generation} 响应正常 · ${result.roundTripMs} ms`,
+      )
+    } catch (error) {
       console.error(error)
       setToast('PC Host ping 失败，Supervisor 将尝试恢复')
     }
@@ -473,11 +772,21 @@ export function App() {
     if (hostPluginBusy || hostStatus.state !== 'ready') return
     setHostPluginBusy(true)
     try {
-      const catalog = await window.moreThanChat.setHostPluginEnabled(plugin.id, plugin.status !== 'active')
-      if (hostStatusRef.current.state === 'ready' && hostStatusRef.current.generation === catalog.generation) setHostPlugins(catalog.plugins)
+      const catalog = await window.moreThanChat.setHostPluginEnabled(
+        plugin.id,
+        plugin.status !== 'active',
+      )
+      if (
+        hostStatusRef.current.state === 'ready' &&
+        hostStatusRef.current.generation === catalog.generation
+      )
+        setHostPlugins(catalog.plugins)
+    } catch (error) {
+      console.error(error)
+      setToast('后台插件操作失败，请稍后重试')
+    } finally {
+      setHostPluginBusy(false)
     }
-    catch (error) { console.error(error); setToast('后台插件操作失败，请稍后重试') }
-    finally { setHostPluginBusy(false) }
   }
 
   async function refreshPluginDrafts() {
@@ -489,13 +798,19 @@ export function App() {
     if (hostPluginBusy || hostStatusRef.current.state !== 'ready') return
     setHostPluginBusy(true)
     try {
-      const result = await window.moreThanChat.createPluginDraft({ manifestJson, source })
+      const result = await window.moreThanChat.createPluginDraft({
+        manifestJson,
+        source,
+      })
       setPluginDraftReport(result.summary)
       await refreshPluginDrafts()
       setToast(result.persisted ? '草稿已保存，尚未安装' : '草稿未保存')
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : 'draft')
+      setToast(errorText(error))
+    } finally {
+      setHostPluginBusy(false)
     }
-    catch (error) { console.error(error instanceof Error ? error.message : 'draft'); setToast(errorText(error)) }
-    finally { setHostPluginBusy(false) }
   }
 
   async function diagnosePluginDraft(draftId: string) {
@@ -505,45 +820,88 @@ export function App() {
       const report = await window.moreThanChat.diagnosePluginDraft(draftId)
       setPluginDraftReport(report.summary)
       await refreshPluginDrafts()
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : 'diagnose')
+      setToast(errorText(error))
+    } finally {
+      setHostPluginBusy(false)
     }
-    catch (error) { console.error(error instanceof Error ? error.message : 'diagnose'); setToast(errorText(error)) }
-    finally { setHostPluginBusy(false) }
   }
 
   async function installPluginDraft(draftId: string) {
     if (hostPluginBusy || hostStatusRef.current.state !== 'ready') return
     setHostPluginBusy(true)
     try {
-      const alreadyInstalled = hostPlugins.some(plugin => plugin.id === draftId)
-      const result = await window.moreThanChat.installPluginDraft({ draftId, confirmed: true })
+      const alreadyInstalled = hostPlugins.some(
+        (plugin) => plugin.id === draftId,
+      )
+      const result = await window.moreThanChat.installPluginDraft({
+        draftId,
+        confirmed: true,
+      })
       setPluginDraftReport(result.summary)
-      if (hostStatusRef.current.state === 'ready' && hostStatusRef.current.generation === result.catalog.generation) {
+      if (
+        hostStatusRef.current.state === 'ready' &&
+        hostStatusRef.current.generation === result.catalog.generation
+      ) {
         setHostPlugins(result.catalog.plugins)
       }
       await refreshPluginDrafts()
-      const installedPlugin = result.catalog.plugins.find(plugin => plugin.id === draftId)
-      const composerInstalled = result.summary.includes('输入框动作') || (installedPlugin?.composerActions.length ?? 0) > 0
-      setToast(result.installed
-        ? (alreadyInstalled
-          ? (composerInstalled ? '输入框动作已更新' : '文本工具已更新')
-          : (composerInstalled ? '输入框动作已安装，可以在输入框使用' : '文本工具已安装，可以在输入框使用'))
-        : (alreadyInstalled ? result.summary : '草稿没有安装'))
+      const installedPlugin = result.catalog.plugins.find(
+        (plugin) => plugin.id === draftId,
+      )
+      const composerInstalled =
+        result.summary.includes('输入框动作') ||
+        (installedPlugin?.composerActions.length ?? 0) > 0
+      setToast(
+        result.installed
+          ? alreadyInstalled
+            ? composerInstalled
+              ? '输入框动作已更新'
+              : '文本工具已更新'
+            : composerInstalled
+              ? '输入框动作已安装，可以在输入框使用'
+              : '文本工具已安装，可以在输入框使用'
+          : alreadyInstalled
+            ? result.summary
+            : '草稿没有安装',
+      )
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : 'install')
+      setToast(errorText(error))
+    } finally {
+      setHostPluginBusy(false)
     }
-    catch (error) { console.error(error instanceof Error ? error.message : 'install'); setToast(errorText(error)) }
-    finally { setHostPluginBusy(false) }
   }
 
   async function runHostTool(pluginId: string, toolId: string, label: string) {
     if (hostPluginBusy || hostStatus.state !== 'ready') return
     setHostPluginBusy(true)
     try {
-      const result = await window.moreThanChat.invokeHostTool(pluginId, toolId, draft)
-      if (hostStatusRef.current.state !== 'ready' || hostStatusRef.current.generation !== result.generation) return
-      setDraft(draft => result.replaceDraft ? result.text : draft.trim() ? `${draft}\n${result.text}` : result.text)
+      const result = await window.moreThanChat.invokeHostTool(
+        pluginId,
+        toolId,
+        draft,
+      )
+      if (
+        hostStatusRef.current.state !== 'ready' ||
+        hostStatusRef.current.generation !== result.generation
+      )
+        return
+      setDraft((draft) =>
+        result.replaceDraft
+          ? result.text
+          : draft.trim()
+            ? `${draft}\n${result.text}`
+            : result.text,
+      )
       setToast(`${label}已写入输入框`)
+    } catch (error) {
+      console.error(error)
+      setToast('工具暂时不可用，请稍后重试')
+    } finally {
+      setHostPluginBusy(false)
     }
-    catch (error) { console.error(error); setToast('工具暂时不可用，请稍后重试') }
-    finally { setHostPluginBusy(false) }
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -554,34 +912,48 @@ export function App() {
   }
 
   function createConversation(title: string, kind: Conversation['kind']) {
+    if (kind !== 'assistant') {
+      setShowNewChat(false)
+      setShowServer(true)
+      setToast('请在中心服务器添加好友或创建群聊')
+      return
+    }
     const clean = title.trim()
     if (!clean) return
     const id = uid()
     const next: Conversation = {
       id,
       title: clean,
-      subtitle: kind === 'group' ? '新群聊' : kind === 'assistant' ? 'AI 助手' : '本地联系人',
+      subtitle: 'AI 助手',
       avatar: initials(clean),
-      accent: ['#6671e5', '#1e9c76', '#dc7d4c', '#a361c2'][readyState.conversations.length % 4]!,
+      accent: ['#6671e5', '#1e9c76', '#dc7d4c', '#a361c2'][
+        readyState.conversations.length % 4
+      ]!,
       kind,
       unread: 0,
       pinned: false,
       updatedAt: Date.now(),
       transportId: 'builtin.local-demo',
     }
-    setState(current => current ? {
-      ...current,
-      conversations: [next, ...current.conversations],
-      messages: { ...current.messages, [id]: [] },
-      activeConversationId: id,
-    } : current)
+    setState((current) =>
+      current
+        ? {
+            ...current,
+            conversations: [next, ...current.conversations],
+            messages: { ...current.messages, [id]: [] },
+            activeConversationId: id,
+          }
+        : current,
+    )
     setShowNewChat(false)
   }
 
   return (
     <div className="app-shell">
       <div className="window-drag-region">
-        <span className="window-title"><Sparkles size={14} /> MoreThanChat</span>
+        <span className="window-title">
+          <Sparkles size={14} /> MoreThanChat
+        </span>
         <button
           className={`host-status host-${hostStatus.state}`}
           data-host-state={hostStatus.state}
@@ -593,44 +965,104 @@ export function App() {
           <span>{hostStatusLabel(hostStatus)}</span>
           {hostStatus.generation > 0 && <small>G{hostStatus.generation}</small>}
         </button>
+        <button
+          className="server-status"
+          data-central-state={serverState?.status ?? 'disconnected'}
+          title={serverState?.error ?? serverState?.address}
+          onClick={() => setShowServer(true)}
+        >
+          {serverState?.status === 'connected'
+            ? '中心已连接'
+            : serverState?.status === 'connecting'
+              ? '中心连接中'
+              : serverState?.status === 'error'
+                ? '中心连接异常'
+                : '中心未连接'}
+        </button>
       </div>
 
       <nav className="app-rail" aria-label="主导航">
-        <button className="brand-mark" aria-label="MoreThanChat"><span>M</span></button>
+        <button className="brand-mark" aria-label="MoreThanChat">
+          <span>M</span>
+        </button>
         <div className="rail-actions">
           <RailButton active icon={<MessageCircleMore />} label="聊天" />
-          <RailButton icon={<Users />} label="联系人" onClick={() => setToast('联系人将在下一阶段开放')} />
-          <RailButton icon={<PlugZap />} label="插件" onClick={() => setShowPlugins(true)} />
-          <RailButton icon={<Archive />} label="归档" onClick={() => setToast('暂无已归档会话')} />
+          <RailButton
+            icon={<Users />}
+            label="联系人"
+            onClick={() => setShowServer(true)}
+          />
+          <RailButton
+            icon={<PlugZap />}
+            label="插件"
+            onClick={() => setShowPlugins(true)}
+          />
+          <RailButton
+            icon={<Archive />}
+            label="归档"
+            onClick={() => setToast('暂无已归档会话')}
+          />
         </div>
         <div className="rail-bottom">
-          <RailButton icon={<CircleHelp />} label="帮助" onClick={() => setToast('MoreThanChat 0.1 · AI 回复由 PC Host 生成')} />
-          <RailButton icon={<Settings />} label="设置" active={showSettings} onClick={() => setShowSettings(true)} />
-          <div className="profile-avatar">M<span className="online-dot" /></div>
+          <RailButton
+            icon={<CircleHelp />}
+            label="帮助"
+            onClick={() =>
+              setToast('MoreThanChat 0.1 · AI 回复由 PC Host 生成')
+            }
+          />
+          <RailButton
+            icon={<Settings />}
+            label="设置"
+            active={showSettings}
+            onClick={() => setShowSettings(true)}
+          />
+          <div className="profile-avatar" title={serverState?.userId}>
+            {readyState.profile.avatar}
+            <span className="online-dot" />
+          </div>
         </div>
+        {renderSlot('app.rail')}
       </nav>
 
       <aside className="conversation-sidebar">
         <div className="sidebar-heading">
           <div>
             <p className="eyebrow">工作区</p>
-            <button className="workspace-name">我的空间 <ChevronDown size={15} /></button>
+            <button className="workspace-name">
+              我的空间 <ChevronDown size={15} />
+            </button>
           </div>
-          <button className="icon-button prominent" title="新建会话" onClick={() => setShowNewChat(true)}><PencilLine size={18} /></button>
+          <button
+            className="icon-button prominent"
+            title="新建会话"
+            onClick={() => setShowNewChat(true)}
+          >
+            <PencilLine size={18} />
+          </button>
         </div>
         <label className="search-box">
           <Search size={17} />
-          <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索会话" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索会话"
+          />
           <kbd>⌘K</kbd>
         </label>
         <div className="conversation-section-label">
-          <span>最近消息</span><span>{filtered.length}</span>
+          <span>最近消息</span>
+          <span>{filtered.length}</span>
         </div>
         <div className="conversation-list">
-          {filtered.map(item => {
+          {filtered.map((item) => {
             const last = state.messages[item.id]?.at(-1)
             return (
-              <button key={item.id} className={`conversation-item ${item.id === active.id ? 'active' : ''}`} onClick={() => selectConversation(item.id)}>
+              <button
+                key={item.id}
+                className={`conversation-item ${item.id === active.id ? 'active' : ''}`}
+                onClick={() => selectConversation(item.id)}
+              >
                 <Avatar conversation={item} />
                 <span className="conversation-copy">
                   <span className="conversation-title-row">
@@ -645,86 +1077,340 @@ export function App() {
               </button>
             )
           })}
-          {filtered.length === 0 && <div className="empty-search">没有找到相关会话</div>}
+          {filtered.length === 0 && (
+            <div className="empty-search">没有找到相关会话</div>
+          )}
         </div>
+        {renderSlot('app.sidebar')}
       </aside>
 
       <main className="chat-panel">
         <header className="chat-header">
-          <div className="chat-identity" data-model-mode={active.kind === 'assistant' ? (modelSettings?.providerMode ?? 'unknown') : 'chat'}>
+          <div
+            className="chat-identity"
+            data-model-mode={
+              active.kind === 'assistant'
+                ? (modelSettings?.providerMode ?? 'unknown')
+                : 'chat'
+            }
+          >
             <Avatar conversation={active} small />
-            <div><h1>{active.title}</h1><p><span className="status-dot" /> {active.kind === 'assistant' ? modelSubtitle(modelSettings) : active.subtitle}</p></div>
+            <div>
+              <h1>{active.title}</h1>
+              <p>
+                <span className="status-dot" />{' '}
+                {active.kind === 'assistant'
+                  ? modelSubtitle(modelSettings)
+                  : active.subtitle}
+              </p>
+            </div>
           </div>
           <div className="header-actions">
-            <button className="icon-button" title="语音通话" onClick={() => setToast('通话将由 WebRTC 插件提供')}><Phone size={18} /></button>
-            <button className="icon-button" title="视频通话" onClick={() => setToast('视频将由 WebRTC 插件提供')}><Video size={19} /></button>
+            <button
+              className="icon-button"
+              title="语音通话"
+              onClick={() => setToast('通话将由 WebRTC 插件提供')}
+            >
+              <Phone size={18} />
+            </button>
+            <button
+              className="icon-button"
+              title="视频通话"
+              onClick={() => setToast('视频将由 WebRTC 插件提供')}
+            >
+              <Video size={19} />
+            </button>
             <span className="header-divider" />
-            <button className={`icon-button ${showDetails ? 'selected' : ''}`} title="会话详情" onClick={() => setShowDetails(value => !value)}><Info size={19} /></button>
+            <button
+              className={`icon-button ${showDetails ? 'selected' : ''}`}
+              title="会话详情"
+              onClick={() => setShowDetails((value) => !value)}
+            >
+              <Info size={19} />
+            </button>
           </div>
         </header>
+        <div className="chat-header-plugins">{renderSlot('chat.header')}</div>
 
         <section className="message-scroll" aria-live="polite">
-          <div className="message-day"><span>今天</span></div>
-          {messages.length === 0
-            ? <div className="empty-conversation"><div className="empty-icon"><MessageCircleMore /></div><h2>开始一段新对话</h2><p>消息暂存在本机，接入服务器 transport 后可自动同步。</p></div>
-            : messages.map((message, index) => <MessageBubble key={message.id} message={message} compact={messages[index - 1]?.senderId === message.senderId}
-              onRetry={canRetryLast && message.id === lastMessage?.id ? () => void sendAssistantMessage(message.text, message) : undefined} />)}
+          <div className="message-day">
+            <span>今天</span>
+          </div>
+          {messages.length === 0 ? (
+            <div className="empty-conversation">
+              <div className="empty-icon">
+                <MessageCircleMore />
+              </div>
+              <h2>开始一段新对话</h2>
+              <p>消息暂存在本机，接入服务器 transport 后可自动同步。</p>
+            </div>
+          ) : (
+            messages.map((message, index) => (
+              <div key={message.id}>
+                {renderSlot('chat.message.before', message)}
+                <MessageBubble
+                  message={message}
+                  compact={messages[index - 1]?.senderId === message.senderId}
+                  onRetry={
+                    canRetryLast && message.id === lastMessage?.id
+                      ? () => void sendAssistantMessage(message.text, message)
+                      : undefined
+                  }
+                />
+                {renderSlot('chat.message.after', message)}
+              </div>
+            ))
+          )}
           <div ref={endRef} />
         </section>
 
-        <footer className="composer-wrap" data-generating={messages.some(message => message.status === 'streaming') ? 'true' : 'false'}>
-          <div className="composer">
-            <textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={`发消息给 ${active.title}`} rows={1} />
-            <div className="composer-toolbar">
-              <div>
-                <button title="添加附件" onClick={() => setToast('附件上传将在对象存储接入后开放')}><Paperclip size={19} /></button>
-                <button title="表情" onClick={() => setDraft(value => `${value} 🙂`)}><Smile size={19} /></button>
-                {composerActions.map(({ ownerId, contribution }) => (
-                  <button
-                    key={`${ownerId}:${contribution.id}`}
-                    className="plugin-composer-action"
-                    title={contribution.description}
-                    onClick={() => void runComposerAction(contribution)}
-                  >
-                    <Sparkles size={16} /><span>{contribution.label}</span>
-                  </button>
-                ))}
-                {hostPlugins.filter(plugin => plugin.status === 'active').flatMap(plugin => plugin.composerActions.map(action => (
-                  <button key={`${plugin.id}:${action.id}`} className="plugin-composer-action declarative-composer-action"
-                    data-plugin-id={plugin.id} data-action-id={action.id} disabled={hostPluginBusy}
-                    title={plugin.description} onClick={() => void runHostTool(plugin.id, action.id, action.label)}>
-                    <Sparkles size={16} /><span>{action.label}</span>
-                  </button>
-                )))}
-                {hostPlugins.filter(plugin => plugin.status === 'active').flatMap(plugin => plugin.tools.map(tool => (
-                  <button key={`${plugin.id}:${tool.id}`} className="plugin-composer-action host-tool-action"
-                    data-plugin-id={plugin.id} data-tool-id={tool.id} disabled={hostPluginBusy}
-                    title={plugin.description} onClick={() => void runHostTool(plugin.id, tool.id, tool.label)}>
-                    <Server size={16} /><span>{tool.label}</span>
-                  </button>
-                )))}
-              </div>
-              <div className="send-area">
-                <span>{messages.some(message => message.status === 'streaming') ? '正在生成' : 'Enter 发送 · Shift+Enter 换行'}</span>
-                {messages.some(message => message.status === 'streaming')
-                  ? <button className="send-button stop" onClick={() => void cancelGeneration()}>停止</button>
-                  : <button className="send-button" disabled={!draft.trim()} onClick={() => void sendMessage()}><SendHorizontal size={18} /></button>}
-              </div>
-            </div>
+        <footer
+          className="composer-wrap"
+          data-generating={
+            messages.some((message) => message.status === 'streaming')
+              ? 'true'
+              : 'false'
+          }
+        >
+          {renderSlot('chat.composer.before')}
+          <div
+            style={{
+              display: slotEntries.some(
+                (entry) => entry.contribution.slot === 'chat.composer',
+              )
+                ? 'none'
+                : undefined,
+            }}
+          >
+            <ChatComposer
+              draft={draft}
+              setDraft={setDraft}
+              onSend={() => void sendMessage()}
+              onVoice={(ref) => void sendMessage(ref)}
+              onError={setToast}
+              canAttach={
+                active.transportId === 'builtin.central' &&
+                serverState?.status === 'connected' &&
+                active.serverId === serverState.serverId
+              }
+              generating={messages.some(
+                (message) => message.status === 'streaming',
+              )}
+              onCancel={() => void cancelGeneration()}
+              title={active.title}
+              attachment={pendingAttachment}
+              onAttachment={setPendingAttachment}
+              clearAttachment={() => setPendingAttachment(null)}
+            >
+              {composerActions.map(({ ownerId, contribution }) => (
+                <button
+                  key={`${ownerId}:${contribution.id}`}
+                  className="plugin-composer-action"
+                  title={contribution.description}
+                  onClick={() => void runComposerAction(contribution)}
+                >
+                  <Sparkles size={16} />
+                  <span>{contribution.label}</span>
+                </button>
+              ))}
+              {hostPlugins
+                .filter((plugin) => plugin.status === 'active')
+                .flatMap((plugin) =>
+                  plugin.composerActions.map((action) => (
+                    <button
+                      key={`${plugin.id}:${action.id}`}
+                      className="plugin-composer-action declarative-composer-action"
+                      data-plugin-id={plugin.id}
+                      data-action-id={action.id}
+                      disabled={hostPluginBusy}
+                      title={plugin.description}
+                      onClick={() =>
+                        void runHostTool(plugin.id, action.id, action.label)
+                      }
+                    >
+                      <Sparkles size={16} />
+                      <span>{action.label}</span>
+                    </button>
+                  )),
+                )}
+              {hostPlugins
+                .filter((plugin) => plugin.status === 'active')
+                .flatMap((plugin) =>
+                  plugin.tools.map((tool) => (
+                    <button
+                      key={`${plugin.id}:${tool.id}`}
+                      className="plugin-composer-action host-tool-action"
+                      data-plugin-id={plugin.id}
+                      data-tool-id={tool.id}
+                      disabled={hostPluginBusy}
+                      title={plugin.description}
+                      onClick={() =>
+                        void runHostTool(plugin.id, tool.id, tool.label)
+                      }
+                    >
+                      <Server size={16} />
+                      <span>{tool.label}</span>
+                    </button>
+                  )),
+                )}
+            </ChatComposer>
           </div>
+          <UiSlot
+            name="chat.composer"
+            entries={slotEntries}
+            context={slotContext}
+            fallback={
+              <div>
+                <p className="settings-error">
+                  自定义输入区加载失败，可停用插件恢复默认输入区。
+                </p>
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                />
+                <button onClick={() => void sendMessage()}>发送</button>
+              </div>
+            }
+          />
+          {renderSlot('chat.composer.after')}
         </footer>
       </main>
 
-      {showDetails && <DetailsPanel conversation={active} transportName={active.kind === 'assistant' ? 'PC Host 模型' : (transportRegistry.get(active.transportId)?.displayName ?? '插件不可用')} {...(active.kind === 'assistant' ? { modelLabel: modelSubtitle(modelSettings) } : {})} onClose={() => setShowDetails(false)} />}
-      {showPlugins && <PluginPanel plugins={plugins} hostPlugins={hostPlugins} hostBusy={hostPluginBusy}
-        drafts={pluginDrafts} draftReport={pluginDraftReport}
-        onCreateDraft={(manifestJson, source) => void createPluginDraft(manifestJson, source)}
-        onDiagnoseDraft={draftId => void diagnosePluginDraft(draftId)}
-        onInstallDraft={draftId => void installPluginDraft(draftId)}
-        onHostToggle={plugin => void toggleHostPlugin(plugin)} onToggle={plugin => void togglePlugin(plugin)} onClose={() => setShowPlugins(false)} />}
-      {showNewChat && <NewChatDialog onClose={() => setShowNewChat(false)} onCreate={createConversation} />}
-      {showSettings && <ModelSettingsPanel snapshot={modelSettings} onClose={() => setShowSettings(false)} onSave={saveModelSettings} onClearKey={clearModelKey} />}
-      {toast && <div className="toast"><Check size={17} />{toast}</div>}
+      {showDetails && (
+        <div className="details-with-plugins">
+          <DetailsPanel
+            conversation={active}
+            transportName={
+              active.kind === 'assistant'
+                ? 'PC Host 模型'
+                : (transportRegistry.get(active.transportId)?.displayName ??
+                  '插件不可用')
+            }
+            {...(active.kind === 'assistant'
+              ? { modelLabel: modelSubtitle(modelSettings) }
+              : {})}
+            onClose={() => setShowDetails(false)}
+          />
+          {renderSlot('chat.details')}
+          {active.kind === 'group' &&
+            active.serverId &&
+            serverState?.serverId === active.serverId && (
+              <div className="group-plugin-controls">
+                <h3>本群插件</h3>
+                <p>提交申请后由群管理员批准并分发。</p>
+                <label>
+                  插件显示位置{' '}
+                  <select
+                    data-group-plugin-slot
+                    value={groupPluginSlot}
+                    onChange={(event) =>
+                      setGroupPluginSlot(event.target.value as UiSlotName)
+                    }
+                  >
+                    {UI_SLOTS.map((slot) => (
+                      <option key={slot} value={slot}>
+                        {slot}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {(['chain', 'tic-tac-toe', 'channel'] as const).map((kind) => (
+                  <button
+                    data-submit-plugin={kind}
+                    key={kind}
+                    onClick={() =>
+                      void window.moreThanChat
+                        .serverAction('plugins/submit', {
+                          groupId: active.targetId,
+                          pack: {
+                            id: 'gplugin_' + crypto.randomUUID(),
+                            version: 1,
+                            displayName:
+                              kind === 'chain'
+                                ? '群接龙'
+                                : kind === 'tic-tac-toe'
+                                  ? '联机井字棋'
+                                  : '群同步通道',
+                            kind,
+                            slot: groupPluginSlot,
+                          },
+                        })
+                        .then(() => setToast('申请已提交，等待管理员批准'))
+                        .catch((e) => setToast(e.message))
+                    }
+                  >
+                    {kind === 'chain'
+                      ? '申请接龙'
+                      : kind === 'tic-tac-toe'
+                        ? '申请小游戏'
+                        : '申请同步通道'}
+                  </button>
+                ))}
+                <button onClick={() => setShowServer(true)}>
+                  打开群管理与审批
+                </button>
+              </div>
+            )}
+        </div>
+      )}
+      {showPlugins && (
+        <PluginPanel
+          plugins={plugins}
+          hostPlugins={hostPlugins}
+          hostBusy={hostPluginBusy}
+          drafts={pluginDrafts}
+          draftReport={pluginDraftReport}
+          onCreateDraft={(manifestJson, source) =>
+            void createPluginDraft(manifestJson, source)
+          }
+          onDiagnoseDraft={(draftId) => void diagnosePluginDraft(draftId)}
+          onInstallDraft={(draftId) => void installPluginDraft(draftId)}
+          onHostToggle={(plugin) => void toggleHostPlugin(plugin)}
+          onToggle={(plugin) => void togglePlugin(plugin)}
+          onClose={() => setShowPlugins(false)}
+        />
+      )}
+      {showNewChat && (
+        <NewChatDialog
+          onClose={() => setShowNewChat(false)}
+          onCreate={createConversation}
+        />
+      )}
+      {showSettings && (
+        <>
+          <ModelSettingsPanel
+            snapshot={modelSettings}
+            onClose={() => setShowSettings(false)}
+            onSave={saveModelSettings}
+            onClearKey={clearModelKey}
+            onServerSettings={() => {
+              setShowSettings(false)
+              setShowServer(true)
+            }}
+          />
+        </>
+      )}
+      {showServer && (
+        <NetworkPanel
+          snapshot={serverState}
+          onClose={() => setShowServer(false)}
+          onOpenChat={(targetId) => {
+            const conversation = stateRef.current?.conversations.find(
+              (item) =>
+                item.serverId === serverState?.serverId &&
+                item.targetId === targetId,
+            )
+            if (conversation) selectConversation(conversation.id)
+          }}
+        />
+      )}
+      {renderSlot('app.overlay')}
+      {toast && (
+        <div className="toast">
+          <Check size={17} />
+          {toast}
+        </div>
+      )}
     </div>
   )
 }
@@ -732,163 +1418,471 @@ export function App() {
 function appendMessage(state: ChatState, message: ChatMessage): ChatState {
   return {
     ...state,
-    conversations: state.conversations.map(item => item.id === message.conversationId ? { ...item, updatedAt: message.createdAt } : item),
-    messages: { ...state.messages, [message.conversationId]: [...(state.messages[message.conversationId] ?? []), message] },
-  }
-}
-
-function updateMessageStatus(state: ChatState, conversationId: string, messageId: string, status: ChatMessage['status']): ChatState {
-  return {
-    ...state,
+    conversations: state.conversations.map((item) =>
+      item.id === message.conversationId
+        ? { ...item, updatedAt: message.createdAt }
+        : item,
+    ),
     messages: {
       ...state.messages,
-      [conversationId]: (state.messages[conversationId] ?? []).map(item => item.id === messageId ? { ...item, status } : item),
+      [message.conversationId]: [
+        ...(state.messages[message.conversationId] ?? []),
+        message,
+      ],
     },
   }
 }
 
-function RailButton({ icon, label, active = false, onClick }: { icon: React.ReactNode; label: string; active?: boolean; onClick?: () => void }) {
-  return <button className={`rail-button ${active ? 'active' : ''}`} title={label} onClick={onClick}>{icon}<span>{label}</span></button>
+function updateMessageStatus(
+  state: ChatState,
+  conversationId: string,
+  messageId: string,
+  status: ChatMessage['status'],
+): ChatState {
+  return {
+    ...state,
+    messages: {
+      ...state.messages,
+      [conversationId]: (state.messages[conversationId] ?? []).map((item) =>
+        item.id === messageId ? { ...item, status } : item,
+      ),
+    },
+  }
 }
 
-function Avatar({ conversation, small = false }: { conversation: Conversation; small?: boolean }) {
-  return <span className={`avatar ${small ? 'small' : ''}`} style={{ background: conversation.accent }}>{conversation.avatar}</span>
+function RailButton({
+  icon,
+  label,
+  active = false,
+  onClick,
+}: {
+  icon: React.ReactNode
+  label: string
+  active?: boolean
+  onClick?: () => void
+}) {
+  return (
+    <button
+      className={`rail-button ${active ? 'active' : ''}`}
+      title={label}
+      onClick={onClick}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  )
 }
 
-const MessageBubble = memo(function MessageBubble({ message, compact, onRetry }: { message: ChatMessage; compact: boolean; onRetry: (() => void) | undefined }) {
-  if (message.type === 'system') return <div className="system-message">{message.text}</div>
+function Avatar({
+  conversation,
+  small = false,
+}: {
+  conversation: Conversation
+  small?: boolean
+}) {
+  return (
+    <span
+      className={`avatar ${small ? 'small' : ''}`}
+      style={{ background: conversation.accent }}
+    >
+      {conversation.avatar}
+    </span>
+  )
+}
+
+const MessageBubble = memo(function MessageBubble({
+  message,
+  compact,
+  onRetry,
+}: {
+  message: ChatMessage
+  compact: boolean
+  onRetry: (() => void) | undefined
+}) {
+  if (message.type === 'system')
+    return <div className="system-message">{message.text}</div>
   const own = message.role === 'self'
   return (
-    <article data-message-id={message.id} className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status}`}>
+    <article
+      data-message-id={message.id}
+      className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status}`}
+    >
       {!own && <span className="message-avatar">{message.senderAvatar}</span>}
       <div className="message-content">
-        {!compact && !own && <span className="sender-name">{message.senderName}</span>}
+        {!compact && !own && (
+          <span className="sender-name">{message.senderName}</span>
+        )}
         <div className="bubble">
-          {own ? <p>{displayText(message)}</p> : <MessageMarkdown text={displayText(message)} />}
-          {message.errorMessage && <p className="message-error">{message.errorMessage}</p>}
+          {own ? (
+            <p>{displayText(message)}</p>
+          ) : (
+            <MessageMarkdown text={displayText(message)} />
+          )}
+          {message.attachment && (
+            <MessageAttachment attachment={message.attachment} />
+          )}
+          {message.errorMessage && (
+            <p className="message-error">{message.errorMessage}</p>
+          )}
           {message.authorNotes && message.authorNotes.length > 0 && (
             <ul className="author-tool-notes">
               {message.authorNotes.map((note, index) => (
-                <li key={`${note.phase}-${note.tool}-${index}`} className={authorToolClass(note)}>{authorToolLabel(note)}</li>
+                <li
+                  key={`${note.phase}-${note.tool}-${index}`}
+                  className={authorToolClass(note)}
+                >
+                  {authorToolLabel(note)}
+                </li>
               ))}
             </ul>
           )}
           <span className="bubble-meta">{messageMeta(message)}</span>
-          {message.usage && <span className="message-usage" data-token-total={message.usage.totalTokens} title={`输入 ${message.usage.inputTokens} · 输出 ${message.usage.outputTokens} · ${message.usage.reportedRequests}/${message.usage.requestCount} 次请求返回用量`}>{message.usage.totalTokens.toLocaleString()} tokens{message.usage.reportedRequests < message.usage.requestCount ? '（部分）' : ''}</span>}
-          {onRetry && <button type="button" className="message-retry" onClick={onRetry}>重新生成</button>}
+          {message.usage && (
+            <span
+              className="message-usage"
+              data-token-total={message.usage.totalTokens}
+              title={`输入 ${message.usage.inputTokens} · 输出 ${message.usage.outputTokens} · ${message.usage.reportedRequests}/${message.usage.requestCount} 次请求返回用量`}
+            >
+              {message.usage.totalTokens.toLocaleString()} tokens
+              {message.usage.reportedRequests < message.usage.requestCount
+                ? '（部分）'
+                : ''}
+            </span>
+          )}
+          {onRetry && (
+            <button type="button" className="message-retry" onClick={onRetry}>
+              重新生成
+            </button>
+          )}
         </div>
       </div>
     </article>
   )
 })
 
-function DetailsPanel({ conversation, transportName, modelLabel, onClose }: { conversation: Conversation; transportName: string; modelLabel?: string; onClose: () => void }) {
+function DetailsPanel({
+  conversation,
+  transportName,
+  modelLabel,
+  onClose,
+}: {
+  conversation: Conversation
+  transportName: string
+  modelLabel?: string
+  onClose: () => void
+}) {
   return (
     <aside className="details-panel">
-      <div className="details-header"><strong>会话详情</strong><button className="icon-button" onClick={onClose}><X size={18} /></button></div>
-      <div className="details-profile"><Avatar conversation={conversation} /><h2>{conversation.title}</h2><p>{conversation.subtitle}</p></div>
-      <div className="details-actions"><button><Search size={18} /><span>搜索</span></button><button><Bot size={18} /><span>AI 总结</span></button><button><MoreHorizontal size={18} /><span>更多</span></button></div>
-      <div className="details-card"><div><span>传输插件</span><strong>{transportName}</strong></div>{modelLabel && <div><span>模型</span><strong>{modelLabel}</strong></div>}<div><span>消息存储</span><strong>此设备</strong></div><div><span>端到端加密</span><strong className="muted">尚未启用</strong></div></div>
-      <div className="details-note"><PlugZap size={17} /><p>这块区域也是 UI Slot。未来插件可以添加成员面板、任务或知识库。</p></div>
+      <div className="details-header">
+        <strong>会话详情</strong>
+        <button className="icon-button" onClick={onClose}>
+          <X size={18} />
+        </button>
+      </div>
+      <div className="details-profile">
+        <Avatar conversation={conversation} />
+        <h2>{conversation.title}</h2>
+        <p>{conversation.subtitle}</p>
+      </div>
+      <div className="details-actions">
+        <button>
+          <Search size={18} />
+          <span>搜索</span>
+        </button>
+        <button>
+          <Bot size={18} />
+          <span>AI 总结</span>
+        </button>
+        <button>
+          <MoreHorizontal size={18} />
+          <span>更多</span>
+        </button>
+      </div>
+      <div className="details-card">
+        <div>
+          <span>传输插件</span>
+          <strong>{transportName}</strong>
+        </div>
+        {modelLabel && (
+          <div>
+            <span>模型</span>
+            <strong>{modelLabel}</strong>
+          </div>
+        )}
+        <div>
+          <span>消息存储</span>
+          <strong>此设备</strong>
+        </div>
+        <div>
+          <span>端到端加密</span>
+          <strong className="muted">尚未启用</strong>
+        </div>
+      </div>
+      <div className="details-note">
+        <PlugZap size={17} />
+        <p>这块区域也是 UI Slot。未来插件可以添加成员面板、任务或知识库。</p>
+      </div>
     </aside>
   )
 }
 
-function PluginPanel({ plugins, hostPlugins, hostBusy, drafts, draftReport, onCreateDraft, onDiagnoseDraft, onInstallDraft, onHostToggle, onToggle, onClose }: {
-  plugins: readonly PluginSnapshot[]; hostPlugins: readonly HostPluginSnapshot[]; hostBusy: boolean;
-  drafts: PluginDraftInspection | null; draftReport: string | null;
-  onCreateDraft: (manifestJson: string, source: string) => void; onDiagnoseDraft: (draftId: string) => void;
-  onInstallDraft: (draftId: string) => void;
-  onHostToggle: (plugin: HostPluginSnapshot) => void; onToggle: (plugin: PluginSnapshot) => void; onClose: () => void;
+function PluginPanel({
+  plugins,
+  hostPlugins,
+  hostBusy,
+  drafts,
+  draftReport,
+  onCreateDraft,
+  onDiagnoseDraft,
+  onInstallDraft,
+  onHostToggle,
+  onToggle,
+  onClose,
+}: {
+  plugins: readonly PluginSnapshot[]
+  hostPlugins: readonly HostPluginSnapshot[]
+  hostBusy: boolean
+  drafts: PluginDraftInspection | null
+  draftReport: string | null
+  onCreateDraft: (manifestJson: string, source: string) => void
+  onDiagnoseDraft: (draftId: string) => void
+  onInstallDraft: (draftId: string) => void
+  onHostToggle: (plugin: HostPluginSnapshot) => void
+  onToggle: (plugin: PluginSnapshot) => void
+  onClose: () => void
 }) {
   const [manifestJson, setManifestJson] = useState('')
   const [source, setSource] = useState('')
   const [confirmId, setConfirmId] = useState<string | null>(null)
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
-      <aside className="plugin-drawer" onMouseDown={event => event.stopPropagation()}>
-        <div className="drawer-header"><div><p className="eyebrow">运行时</p><h2>插件</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+      <aside
+        className="plugin-drawer"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="drawer-header">
+          <div>
+            <p className="eyebrow">运行时</p>
+            <h2>插件</h2>
+          </div>
+          <button className="icon-button" onClick={onClose}>
+            <X />
+          </button>
+        </div>
         <div className="plugin-list">
-          {plugins.map(plugin => {
-            const busy = plugin.status === 'activating' || plugin.status === 'deactivating'
+          {plugins.map((plugin) => {
+            const busy =
+              plugin.status === 'activating' || plugin.status === 'deactivating'
             const active = plugin.status === 'active'
             return (
-              <div className={`plugin-card ${plugin.status === 'failed' ? 'failed' : ''}`} key={plugin.manifest.id}>
-                <span className="plugin-icon">{plugin.manifest.id === 'builtin.local-demo' ? <MessageCircleMore /> : <Sparkles />}</span>
+              <div
+                className={`plugin-card ${plugin.status === 'failed' ? 'failed' : ''}`}
+                key={plugin.manifest.id}
+              >
+                <span className="plugin-icon">
+                  {plugin.manifest.id === 'builtin.local-demo' ? (
+                    <MessageCircleMore />
+                  ) : (
+                    <Sparkles />
+                  )}
+                </span>
                 <div className="plugin-copy">
                   <strong>{plugin.manifest.displayName}</strong>
                   <p>{plugin.manifest.description}</p>
-                  <small>{plugin.manifest.id} · {plugin.manifest.version} · {plugin.manifest.targets.join(', ')}</small>
-                  {plugin.error && <span className="plugin-error">{plugin.error}</span>}
+                  <small>
+                    {plugin.manifest.id} · {plugin.manifest.version} ·{' '}
+                    {plugin.manifest.targets.join(', ')}
+                  </small>
+                  {plugin.error && (
+                    <span className="plugin-error">{plugin.error}</span>
+                  )}
                 </div>
-                <button className={`plugin-toggle ${active ? 'active' : ''}`} disabled={busy} onClick={() => onToggle(plugin)}>
+                <button
+                  className={`plugin-toggle ${active ? 'active' : ''}`}
+                  disabled={busy}
+                  onClick={() => onToggle(plugin)}
+                >
                   {busy ? '处理中' : active ? '停用' : '启用'}
                 </button>
               </div>
             )
           })}
-          {hostPlugins.map(plugin => (
-            <div className={`plugin-card host-plugin-card ${plugin.status === 'failed' ? 'failed' : ''}`} key={plugin.id} data-plugin-id={plugin.id}>
-              <span className="plugin-icon"><Server /></span>
+          {hostPlugins.map((plugin) => (
+            <div
+              className={`plugin-card host-plugin-card ${plugin.status === 'failed' ? 'failed' : ''}`}
+              key={plugin.id}
+              data-plugin-id={plugin.id}
+            >
+              <span className="plugin-icon">
+                <Server />
+              </span>
               <div className="plugin-copy">
-                <strong>{plugin.displayName}</strong><p>{plugin.description}</p>
-                <small>{plugin.id} · {plugin.version} · 独立后台进程</small>
-                {plugin.error && <span className="plugin-error">{plugin.error}</span>}
+                <strong>{plugin.displayName}</strong>
+                <p>{plugin.description}</p>
+                <small>
+                  {plugin.id} · {plugin.version} · 独立后台进程
+                </small>
+                {plugin.error && (
+                  <span className="plugin-error">{plugin.error}</span>
+                )}
               </div>
-              <button className={`plugin-toggle ${plugin.status === 'active' ? 'active' : ''}`}
-                disabled={hostBusy || plugin.status === 'activating' || plugin.status === 'deactivating'} onClick={() => onHostToggle(plugin)}>
-                {hostBusy ? '处理中' : plugin.status === 'active' ? '停用' : '启用'}
+              <button
+                className={`plugin-toggle ${plugin.status === 'active' ? 'active' : ''}`}
+                disabled={
+                  hostBusy ||
+                  plugin.status === 'activating' ||
+                  plugin.status === 'deactivating'
+                }
+                onClick={() => onHostToggle(plugin)}
+              >
+                {hostBusy
+                  ? '处理中'
+                  : plugin.status === 'active'
+                    ? '停用'
+                    : '启用'}
               </button>
             </div>
           ))}
         </div>
         <section className="draft-section">
-          <div><p className="eyebrow">未安装</p><h3>插件草稿</h3></div>
-          <p className="settings-note">让 More AI 为你创建快捷文本或文本处理动作。确认后即可使用和停用，重启后仍保留；更新失败会恢复原版。这些插件只操作输入框，不访问网络或文件。</p>
-          {(drafts?.drafts ?? []).map(item => {
-            const installed = hostPlugins.some(plugin => plugin.id === item.id)
+          <div>
+            <p className="eyebrow">未安装</p>
+            <h3>插件草稿</h3>
+          </div>
+          <p className="settings-note">
+            让 More AI
+            为你创建快捷文本或文本处理动作。确认后即可使用和停用，重启后仍保留；更新失败会恢复原版。这些插件只操作输入框，不访问网络或文件。
+          </p>
+          {(drafts?.drafts ?? []).map((item) => {
+            const installed = hostPlugins.some(
+              (plugin) => plugin.id === item.id,
+            )
             return (
-            <div className="draft-card" key={item.id} data-draft-id={item.id} data-draft-installed={installed ? 'true' : 'false'} data-draft-ok={item.ok ? 'true' : 'false'}>
-              <strong>{item.displayName}</strong>
-              <small>{item.id} · r{item.revision} · {installed ? '已安装' : '未安装'} · {item.ok ? '校验通过' : '校验未通过'}</small>
-              <div className="draft-actions">
-                <button type="button" className="secondary-button" data-draft-diagnose disabled={hostBusy} onClick={() => onDiagnoseDraft(item.id)}>诊断</button>
-                {confirmId === item.id ? (
-                  <div className="draft-confirm" data-draft-confirm={item.id}>
-                    <p>{installed
-                      ? '确认用这份草稿更新？失败会保留当前版本。源码不会被执行。'
-                      : '确认安装这个声明式文本工具或输入框动作？源码不会被执行。'}</p>
-                    <div className="draft-actions">
-                      <button type="button" className="secondary-button" data-draft-confirm-cancel disabled={hostBusy} onClick={() => setConfirmId(null)}>取消</button>
-                      <button type="button" className="secondary-button" data-draft-confirm-ok disabled={hostBusy} onClick={() => { setConfirmId(null); onInstallDraft(item.id) }}>{installed ? '确认更新' : '确认安装'}</button>
+              <div
+                className="draft-card"
+                key={item.id}
+                data-draft-id={item.id}
+                data-draft-installed={installed ? 'true' : 'false'}
+                data-draft-ok={item.ok ? 'true' : 'false'}
+              >
+                <strong>{item.displayName}</strong>
+                <small>
+                  {item.id} · r{item.revision} ·{' '}
+                  {installed ? '已安装' : '未安装'} ·{' '}
+                  {item.ok ? '校验通过' : '校验未通过'}
+                </small>
+                <div className="draft-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    data-draft-diagnose
+                    disabled={hostBusy}
+                    onClick={() => onDiagnoseDraft(item.id)}
+                  >
+                    诊断
+                  </button>
+                  {confirmId === item.id ? (
+                    <div className="draft-confirm" data-draft-confirm={item.id}>
+                      <p>
+                        {installed
+                          ? '确认用这份草稿更新？失败会保留当前版本。源码不会被执行。'
+                          : '确认安装这个声明式文本工具或输入框动作？源码不会被执行。'}
+                      </p>
+                      <div className="draft-actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          data-draft-confirm-cancel
+                          disabled={hostBusy}
+                          onClick={() => setConfirmId(null)}
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          data-draft-confirm-ok
+                          disabled={hostBusy}
+                          onClick={() => {
+                            setConfirmId(null)
+                            onInstallDraft(item.id)
+                          }}
+                        >
+                          {installed ? '确认更新' : '确认安装'}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <button type="button" className="secondary-button" {...(installed ? { 'data-draft-update': 'true' } : { 'data-draft-install': 'true' })} disabled={hostBusy} onClick={() => setConfirmId(item.id)}>{installed ? '更新' : '安装'}</button>
-                )}
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      {...(installed
+                        ? { 'data-draft-update': 'true' }
+                        : { 'data-draft-install': 'true' })}
+                      disabled={hostBusy}
+                      onClick={() => setConfirmId(item.id)}
+                    >
+                      {installed ? '更新' : '安装'}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
             )
           })}
-          {drafts && drafts.drafts.length === 0 && <p className="settings-note">还没有草稿。</p>}
-          <details className="plugin-advanced-editor"><summary>开发者：手动创建插件</summary>
-          <label className="settings-field"><span>Manifest JSON</span>
-            <textarea data-draft-field="manifest" value={manifestJson} onChange={event => setManifestJson(event.target.value)} spellCheck={false} />
-          </label>
-          <label className="settings-field"><span>插件定义（JSON）</span>
-            <textarea data-draft-field="source" value={source} onChange={event => setSource(event.target.value)} spellCheck={false} />
-          </label>
-          <button type="button" className="primary-button" disabled={hostBusy || !manifestJson.trim()} onClick={() => onCreateDraft(manifestJson, source)}>创建草稿</button>
+          {drafts && drafts.drafts.length === 0 && (
+            <p className="settings-note">还没有草稿。</p>
+          )}
+          <details className="plugin-advanced-editor">
+            <summary>开发者：手动创建插件</summary>
+            <label className="settings-field">
+              <span>Manifest JSON</span>
+              <textarea
+                data-draft-field="manifest"
+                value={manifestJson}
+                onChange={(event) => setManifestJson(event.target.value)}
+                spellCheck={false}
+              />
+            </label>
+            <label className="settings-field">
+              <span>插件定义（JSON）</span>
+              <textarea
+                data-draft-field="source"
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+                spellCheck={false}
+              />
+            </label>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={hostBusy || !manifestJson.trim()}
+              onClick={() => onCreateDraft(manifestJson, source)}
+            >
+              创建草稿
+            </button>
           </details>
           {draftReport && <p className="draft-report">{draftReport}</p>}
         </section>
-        <div className="plugin-empty"><PlugZap /><h3>可信插件模式</h3><p>示例插件经过版本化 manifest 和生命周期运行时接入。任意磁盘代码将在独立进程与权限代理完成后开放。</p></div>
+        <div className="plugin-empty">
+          <PlugZap />
+          <h3>可信插件模式</h3>
+          <p>
+            示例插件经过版本化 manifest
+            和生命周期运行时接入。任意磁盘代码将在独立进程与权限代理完成后开放。
+          </p>
+        </div>
       </aside>
     </div>
   )
 }
 
-function NewChatDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (title: string, kind: Conversation['kind']) => void }) {
+function NewChatDialog({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void
+  onCreate: (title: string, kind: Conversation['kind']) => void
+}) {
   const [title, setTitle] = useState('')
   const [kind, setKind] = useState<Conversation['kind']>('direct')
   function submit(event: FormEvent) {
@@ -897,29 +1891,84 @@ function NewChatDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (
   }
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <form className="new-chat-dialog" onSubmit={submit} onMouseDown={event => event.stopPropagation()}>
-        <div className="dialog-icon"><PencilLine /></div><h2>新建会话</h2><p>先创建一个本地会话，接入中心服务器后将由 transport 自动同步。</p>
-        <label><span>会话名称</span><input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="例如：周末计划" /></label>
-        <div className="kind-picker">
-          <button type="button" className={kind === 'direct' ? 'active' : ''} onClick={() => setKind('direct')}><MessageCircleMore />单聊</button>
-          <button type="button" className={kind === 'group' ? 'active' : ''} onClick={() => setKind('group')}><Users />群聊</button>
-          <button type="button" className={kind === 'assistant' ? 'active' : ''} onClick={() => setKind('assistant')}><Bot />AI</button>
+      <form
+        className="new-chat-dialog"
+        onSubmit={submit}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="dialog-icon">
+          <PencilLine />
         </div>
-        <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!title.trim()}>创建会话</button></div>
+        <h2>新建会话</h2>
+        <p>AI 会话可直接创建；单聊和群聊请在当前中心服务器添加好友或创建群。</p>
+        <label>
+          <span>会话名称</span>
+          <input
+            autoFocus
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="例如：周末计划"
+          />
+        </label>
+        <div className="kind-picker">
+          <button
+            type="button"
+            className={kind === 'direct' ? 'active' : ''}
+            onClick={() => setKind('direct')}
+          >
+            <MessageCircleMore />
+            单聊
+          </button>
+          <button
+            type="button"
+            className={kind === 'group' ? 'active' : ''}
+            onClick={() => setKind('group')}
+          >
+            <Users />
+            群聊
+          </button>
+          <button
+            type="button"
+            className={kind === 'assistant' ? 'active' : ''}
+            onClick={() => setKind('assistant')}
+          >
+            <Bot />
+            AI
+          </button>
+        </div>
+        <div className="dialog-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            取消
+          </button>
+          <button className="primary-button" disabled={!title.trim()}>
+            创建会话
+          </button>
+        </div>
       </form>
     </div>
   )
 }
 
-function ModelSettingsPanel({ snapshot, onClose, onSave, onClearKey }: {
+function ModelSettingsPanel({
+  snapshot,
+  onClose,
+  onSave,
+  onClearKey,
+  onServerSettings,
+}: {
   snapshot: ModelSettingsSnapshot | null
   onClose: () => void
   onSave: (input: ModelSettingsInput) => Promise<void>
   onClearKey: () => Promise<void>
+  onServerSettings: () => void
 }) {
-  const [baseUrl, setBaseUrl] = useState(snapshot?.baseUrl ?? 'https://api.deepseek.com')
+  const [baseUrl, setBaseUrl] = useState(
+    snapshot?.baseUrl ?? 'https://api.deepseek.com',
+  )
   const [model, setModel] = useState(snapshot?.model ?? 'deepseek-flash')
-  const [providerMode, setProviderMode] = useState<ModelProviderMode>(snapshot?.providerMode ?? 'mock')
+  const [providerMode, setProviderMode] = useState<ModelProviderMode>(
+    snapshot?.providerMode ?? 'mock',
+  )
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -944,11 +1993,9 @@ function ModelSettingsPanel({ snapshot, onClose, onSave, onClearKey }: {
         ...(apiKey.trim() ? { apiKey } : {}),
       })
       setApiKey('')
-    }
-    catch (caught) {
+    } catch (caught) {
       setError(errorText(caught))
-    }
-    finally {
+    } finally {
       setBusy(false)
     }
   }
@@ -959,39 +2006,106 @@ function ModelSettingsPanel({ snapshot, onClose, onSave, onClearKey }: {
     try {
       await onClearKey()
       setApiKey('')
-    }
-    catch (caught) {
+    } catch (caught) {
       setError(errorText(caught))
-    }
-    finally {
+    } finally {
       setBusy(false)
     }
   }
 
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
-      <form className="plugin-drawer settings-drawer" onSubmit={event => void submit(event)} onMouseDown={event => event.stopPropagation()} data-provider-mode={providerMode} data-has-api-key={snapshot?.hasApiKey ? 'true' : 'false'}>
-        <div className="drawer-header"><h2>模型设置</h2><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div>
-        <p className="settings-note">API Key 由主进程使用系统加密保存，仅供模型服务调用。界面只显示是否已保存，不回传密钥。</p>
-        <label className="settings-field"><span>提供方</span>
-          <select data-model-field="provider" value={providerMode} onChange={event => setProviderMode(event.target.value as ModelProviderMode)}>
+      <form
+        className="plugin-drawer settings-drawer"
+        onSubmit={(event) => void submit(event)}
+        onMouseDown={(event) => event.stopPropagation()}
+        data-provider-mode={providerMode}
+        data-has-api-key={snapshot?.hasApiKey ? 'true' : 'false'}
+      >
+        <div className="drawer-header">
+          <h2>模型设置</h2>
+          <button type="button" className="icon-button" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={onServerSettings}
+        >
+          中心服务器 / 身份 / 联系人
+        </button>
+        <p className="settings-note">
+          API Key
+          由主进程使用系统加密保存，仅供模型服务调用。界面只显示是否已保存，不回传密钥。
+        </p>
+        <label className="settings-field">
+          <span>提供方</span>
+          <select
+            data-model-field="provider"
+            value={providerMode}
+            onChange={(event) =>
+              setProviderMode(event.target.value as ModelProviderMode)
+            }
+          >
             <option value="mock">模拟（不访问网络）</option>
             <option value="openai-compatible">OpenAI 兼容 / DeepSeek</option>
           </select>
         </label>
-        <label className="settings-field"><span>Base URL</span>
-          <input data-model-field="base-url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com" autoComplete="off" spellCheck={false} />
+        <label className="settings-field">
+          <span>Base URL</span>
+          <input
+            data-model-field="base-url"
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="https://api.deepseek.com"
+            autoComplete="off"
+            spellCheck={false}
+          />
         </label>
-        <label className="settings-field"><span>模型</span>
-          <input data-model-field="model" value={model} onChange={event => setModel(event.target.value)} placeholder="deepseek-flash" autoComplete="off" spellCheck={false} />
+        <label className="settings-field">
+          <span>模型</span>
+          <input
+            data-model-field="model"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            placeholder="deepseek-flash"
+            autoComplete="off"
+            spellCheck={false}
+          />
         </label>
-        <label className="settings-field"><span>API Key</span>
-          <input data-model-field="key" type="password" value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder={snapshot?.hasApiKey ? '已保存，留空则不修改' : '未设置'} autoComplete="off" spellCheck={false} />
+        <label className="settings-field">
+          <span>API Key</span>
+          <input
+            data-model-field="key"
+            type="password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={
+              snapshot?.hasApiKey ? '已保存，留空则不修改' : '未设置'
+            }
+            autoComplete="off"
+            spellCheck={false}
+          />
         </label>
         {error && <p className="settings-error">{error}</p>}
         <div className="dialog-actions">
-          {snapshot?.hasApiKey && <button type="button" className="secondary-button" disabled={busy} onClick={() => void clearKey()}>删除密钥</button>}
-          <button className="primary-button" disabled={busy || !snapshot || !baseUrl.trim() || !model.trim()}>{busy ? '保存中' : '保存'}</button>
+          {snapshot?.hasApiKey && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => void clearKey()}
+            >
+              删除密钥
+            </button>
+          )}
+          <button
+            className="primary-button"
+            disabled={busy || !snapshot || !baseUrl.trim() || !model.trim()}
+          >
+            {busy ? '保存中' : '保存'}
+          </button>
         </div>
       </form>
     </div>
@@ -1016,14 +2130,20 @@ function messageMeta(message: ChatMessage): string {
   const time = formatRelativeTime(message.createdAt)
   if (message.status === 'streaming') return `${time} · 生成中`
   if (message.status === 'cancelled') return `${time} · 已取消`
-  if (message.status === 'failed') return `${time} · 失败${message.supersededById ? ' · 已重试' : ''}`
-  if (message.role === 'self' && message.status === 'sending') return `${time} · 发送中`
-  if (message.role === 'self') return `${time} ✓`
+  if (message.status === 'failed')
+    return `${time} · 失败${message.supersededById ? ' · 已重试' : ''}`
+  if (message.role === 'self' && message.status === 'sending')
+    return `${time} · 发送中`
+  if (message.role === 'self')
+    return message.serverId ? `${time} · 已提交中心` : `${time} ✓`
   return message.retryOfId ? `${time} · 重试回复` : time
 }
 
 function errorText(error: unknown): string {
-  const message = error instanceof Error && error.message.trim() ? error.message : '模型请求失败'
+  const message =
+    error instanceof Error && error.message.trim()
+      ? error.message
+      : '模型请求失败'
   return message.replace(/bearer\s+\S+/gi, 'Bearer [redacted]').slice(0, 240)
 }
 
@@ -1035,14 +2155,27 @@ function authorToolClass(note: AuthorToolNote): string {
 }
 
 function toModelUpdate(event: ModelClientEvent): ModelChatUpdate {
-  const identity = { conversationId: event.conversationId, assistantMessageId: event.assistantMessageId }
+  const identity = {
+    conversationId: event.conversationId,
+    assistantMessageId: event.assistantMessageId,
+  }
   switch (event.type) {
     case 'delta':
       return { type: 'delta', ...identity, textDelta: event.textDelta }
     case 'completed':
-      return { type: 'completed', ...identity, text: event.text, ...(event.usage ? { usage: event.usage } : {}) }
+      return {
+        type: 'completed',
+        ...identity,
+        text: event.text,
+        ...(event.usage ? { usage: event.usage } : {}),
+      }
     case 'failed':
-      return { type: 'failed', ...identity, partialText: event.partialText, errorMessage: event.errorMessage }
+      return {
+        type: 'failed',
+        ...identity,
+        partialText: event.partialText,
+        errorMessage: event.errorMessage,
+      }
     case 'cancelled':
       return { type: 'cancelled', ...identity, partialText: event.partialText }
     case 'author-tool':
@@ -1061,31 +2194,55 @@ function toModelUpdate(event: ModelClientEvent): ModelChatUpdate {
   }
 }
 
-function applyIncomingModelEvent(state: ChatState, event: ModelClientEvent, pending: ModelClientEvent[]): ChatState {
+function applyIncomingModelEvent(
+  state: ChatState,
+  event: ModelClientEvent,
+  pending: ModelClientEvent[],
+): ChatState {
   const list = state.messages[event.conversationId] ?? []
-  if (!list.some(message => message.id === event.assistantMessageId)) {
+  if (!list.some((message) => message.id === event.assistantMessageId)) {
     pending.push(event)
     return state
   }
   return applyModelChatUpdate(state, toModelUpdate(event))
 }
 
-function drainModelEvents(state: ChatState, pending: ModelClientEvent[]): ChatState {
+function drainModelEvents(
+  state: ChatState,
+  pending: ModelClientEvent[],
+): ChatState {
   if (pending.length === 0) return state
   const queued = pending.splice(0, pending.length)
-  return queued.reduce((current, event) => applyModelChatUpdate(current, toModelUpdate(event)), state)
+  return queued.reduce(
+    (current, event) => applyModelChatUpdate(current, toModelUpdate(event)),
+    state,
+  )
 }
 
 function LoadingScreen({ error = false }: { error?: boolean }) {
-  return <div className="loading-screen"><div className="loading-mark">M</div><p>{error ? '会话恢复失败，原数据已保留。请重新打开应用。' : '正在恢复会话…'}</p></div>
+  return (
+    <div className="loading-screen">
+      <div className="loading-mark">M</div>
+      <p>
+        {error
+          ? '会话恢复失败，原数据已保留。请重新打开应用。'
+          : '正在恢复会话…'}
+      </p>
+    </div>
+  )
 }
 
 function hostStatusLabel(status: HostStatusSnapshot): string {
   switch (status.state) {
-    case 'starting': return 'Host 连接中'
-    case 'ready': return 'Host 已连接'
-    case 'restarting': return 'Host 重连中'
-    case 'failed': return 'Host 不可用'
-    case 'stopped': return 'Host 已停止'
+    case 'starting':
+      return 'Host 连接中'
+    case 'ready':
+      return 'Host 已连接'
+    case 'restarting':
+      return 'Host 重连中'
+    case 'failed':
+      return 'Host 不可用'
+    case 'stopped':
+      return 'Host 已停止'
   }
 }

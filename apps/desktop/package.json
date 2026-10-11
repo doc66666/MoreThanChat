@@ -39,6 +39,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.renderer.json && tsc --noEmit -p tsconfig.main.json"
   },
   "dependencies": {
+    "@more-than-chat/central-protocol": "workspace:*",
     "@more-than-chat/chat-core": "workspace:*",
     "@more-than-chat/plugin-hello-world": "workspace:*",
     "@more-than-chat/plugin-runtime": "workspace:*",
