@@ -21,7 +21,7 @@
     "verify:central-ui": "pnpm build && node scripts/verify-central-ui.mjs",
     "test:live-ai": "pnpm build:host && node scripts/test-live-ai.mjs",
     "verify:protocol": "pnpm --filter @more-than-chat/protocol build && node scripts/verify-protocol-schema.mjs",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm --filter @more-than-chat/central-protocol build && pnpm -r typecheck"
   },
   "devDependencies": {
     "typescript": "5.9.3",
