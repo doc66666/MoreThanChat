@@ -137,6 +137,46 @@ async function approve(pluginId) {
   )
   await click(a, '.network-drawer .drawer-header button')
 }
+async function verifyMessageActions(aid,bid,group) {
+  const agroup=(await evaluate(a.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===group.id).id
+  const bgroup=(await evaluate(b.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===group.id).id
+  const adirect=(await evaluate(a.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===bid&&c.kind==='direct').id
+  const bdirect=(await evaluate(b.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===aid&&c.kind==='direct').id
+  await send(a,'action-source-private-body')
+  await poll(b,'document.querySelector(".message-scroll").innerText.includes("action-source-private-body")')
+  const source=(await evaluate(b.client,`window.moreThanChat.loadState().then(s=>s.messages[${JSON.stringify(bgroup)}].find(m=>m.text==='action-source-private-body'))`)).id
+  await click(b,`[data-quote-message="${source}"]`)
+  await poll(b,`Boolean(document.querySelector('[data-composer-quote="${source}"]'))`)
+  await input(b,'.composer textarea','action-quoted-reply')
+  await click(b,'[data-conversation-id="conversation-assistant"]');await click(b,`[data-conversation-id="${bgroup}"]`)
+  await poll(b,`Boolean(document.querySelector('[data-composer-quote="${source}"]')) && document.querySelector('.composer textarea').value==='action-quoted-reply'`)
+  await close(b);b=undefined;b=await launch(profiles.b)
+  await poll(b,`Boolean(document.querySelector('[data-composer-quote="${source}"]')) && document.querySelector('.composer textarea').value==='action-quoted-reply'`)
+  await poll(b,'window.moreThanChat.getServerState().then(s=>s.status==="connected")')
+  await send(b,'action-quoted-reply')
+  await poll(a,`document.querySelector('[data-quote-source="${source}"]')?.textContent.includes('action-source-private-body')`)
+  await click(a,`[data-quote-source="${source}"]`)
+  await poll(a,`document.querySelector('.message-highlight')?.dataset.messageId===${JSON.stringify(source)}`)
+  await click(a,'[data-history-latest]')
+  await click(a,`[data-forward-message="${source}"]`)
+  await click(a,`[data-forward-target="${adirect}"]`)
+  await poll(b,`window.moreThanChat.loadState().then(s=>s.messages[${JSON.stringify(bdirect)}].some(m=>m.forwarded?.messageId===${JSON.stringify(source)}))`)
+  const forwarded=(await evaluate(b.client,`window.moreThanChat.loadState().then(s=>s.messages[${JSON.stringify(bdirect)}].find(m=>m.forwarded?.messageId===${JSON.stringify(source)}))`)).id
+  // Offline recipients must see a tombstone on restart, not a replay of the original body.
+  await close(b);b=undefined
+  await click(a,`[data-retract-message="${source}"]`)
+  await click(a,'[data-confirm-retract]')
+  await poll(a,`Boolean(document.querySelector('[data-message-id="${source}"][data-retracted-message]'))`)
+  b=await launch(profiles.b)
+  await poll(b,`Boolean(document.querySelector('[data-message-id="${source}"][data-retracted-message]'))`)
+  await poll(b,`document.querySelector('[data-quote-source="${source}"]')?.textContent.includes('引用的消息已撤回')`)
+  assert.equal((await evaluate(b.client,`window.moreThanChat.searchChatMessages('action-source-private-body',${JSON.stringify(bgroup)})`)).length,0)
+  assert.equal((await evaluate(b.client,`window.moreThanChat.getChatMessage(${JSON.stringify(forwarded)})`)).text,'action-source-private-body')
+  for(const [label,session] of [['a',a],['b',b]]) {
+    const capture=await session.client.send('Page.captureScreenshot',{format:'png',fromSurface:true})
+    await writeFile(path.join(root,'.artifacts',`message-actions-${packaged?'packaged-':''}${label}.png`),Buffer.from(capture.data,'base64'))
+  }
+}
 async function verifyHumanWorkflow(aid,bid,group) {
   await openNetwork(a)
   await click(a,'[data-disconnect-server]')
@@ -480,6 +520,7 @@ try {
       Buffer.from(capture.data, 'base64'),
     )
   }
+  await verifyMessageActions(aid,bid,group)
   await verifyHumanWorkflow(aid,bid,group)
   console.log(
     JSON.stringify({
@@ -499,7 +540,7 @@ try {
       narrowWindowPluginAccess: true,
       fileRelay: true,
       holdVoiceRelay: true,
-      durableOfflineOutbox:true,deliveryAndReadReceipts:true,unreadReadingPosition:true,fixedEntriesAndMute:true,draftPersistence:true,localHistorySearch:true,sqliteHistoryWhileReceiving:true,messageCopy:true,groupAdministration:true,friendRequestManagement:true,
+      durableOfflineOutbox:true,deliveryAndReadReceipts:true,unreadReadingPosition:true,fixedEntriesAndMute:true,draftPersistence:true,localHistorySearch:true,sqliteHistoryWhileReceiving:true,messageCopy:true,quotedReply:true,quoteDraftRestored:true,quotedMessageLocation:true,verifiedForward:true,offlineRetraction:true,groupAdministration:true,friendRequestManagement:true,
     }),
   )
 } catch (e) {

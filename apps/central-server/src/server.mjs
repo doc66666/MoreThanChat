@@ -15,6 +15,10 @@ import {
   parseGroupPluginPack,
   validUid,
   validateWireAttachment,
+  parseMessageReference,
+  createMessageReference,
+  messageContentDescriptor,
+  RETRACTION_WINDOW_MS,
 } from '@more-than-chat/central-protocol'
 
 class ApiError extends Error {
@@ -76,6 +80,8 @@ export function createCentralServer({
     CREATE TABLE IF NOT EXISTS queue(id TEXT NOT NULL,recipient TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(id,recipient));
     CREATE TABLE IF NOT EXISTS receipts(sender TEXT NOT NULL,client_id TEXT NOT NULL,fingerprint TEXT NOT NULL,message_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(sender,client_id));
     CREATE TABLE IF NOT EXISTS message_delivery(message_id TEXT NOT NULL,recipient TEXT NOT NULL,delivered_at INTEGER,read_at INTEGER,PRIMARY KEY(message_id,recipient));
+    CREATE TABLE IF NOT EXISTS message_routes(message_id TEXT PRIMARY KEY,client_id TEXT NOT NULL,conversation_id TEXT NOT NULL,sender TEXT NOT NULL,sender_name TEXT NOT NULL,target_kind TEXT NOT NULL,target_id TEXT NOT NULL,target_name TEXT NOT NULL,created_at INTEGER NOT NULL,reference_digest TEXT NOT NULL,content_digest TEXT NOT NULL,fingerprint TEXT NOT NULL,retracted_at INTEGER,retraction_id TEXT,UNIQUE(sender,client_id));
+    CREATE TABLE IF NOT EXISTS route_recipients(message_id TEXT NOT NULL,recipient TEXT NOT NULL,PRIMARY KEY(message_id,recipient));
     CREATE TABLE IF NOT EXISTS plugins(group_id TEXT NOT NULL,id TEXT NOT NULL,version INTEGER NOT NULL,pack TEXT NOT NULL,digest TEXT NOT NULL,submitter TEXT NOT NULL,status TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(group_id,id,version));`)
   const oldMode = db
     .prepare("SELECT value FROM meta WHERE key='mode'")
@@ -155,6 +161,20 @@ export function createCentralServer({
       : null
   }
   const pair = (a, b) => [a, b].sort()
+  const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+  const rememberMessage = (message, recipients, fingerprint) => {
+    db.prepare('INSERT OR IGNORE INTO message_routes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL)').run(message.id,message.clientMessageId,message.conversationId,message.senderId,message.senderName,message.targetKind,message.targetId,message.targetName??'',message.createdAt,digest(createMessageReference(message)),digest(messageContentDescriptor(message)),fingerprint)
+    for(const recipient of recipients)db.prepare('INSERT OR IGNORE INTO route_recipients VALUES (?,?)').run(message.id,recipient)
+  }
+  // Only still-pending legacy bodies can be upgraded with trustworthy source hashes.
+  transaction(()=>{
+    for(const row of db.prepare("SELECT id,payload FROM queue WHERE json_extract(payload,'$.kind')='message'").all()){
+      const message=JSON.parse(row.payload).message
+      const fingerprint=db.prepare('SELECT fingerprint FROM receipts WHERE message_id=?').get(row.id)?.fingerprint
+      if(fingerprint)rememberMessage(message,db.prepare('SELECT recipient FROM message_delivery WHERE message_id=?').all(row.id).map(r=>r.recipient),fingerprint)
+    }
+    db.exec("UPDATE queue SET payload=json_set(payload,'$.message.actionsSupported',json('true')) WHERE json_extract(payload,'$.kind')='message'")
+  })
   const isFriend = (a, b) =>
     db
       .prepare("SELECT 1 FROM friends WHERE a=? AND b=? AND status='accepted'")
@@ -171,7 +191,7 @@ export function createCentralServer({
   const wake = (uid) => {
     for (const callback of waiting.get(uid) ?? []) callback()
   }
-  const enqueue = (recipients, event) => {
+  const enqueue = (recipients, event, includeDenied = false) => {
     const payload = JSON.stringify(event)
     if (
       Number(
@@ -186,7 +206,7 @@ export function createCentralServer({
     )
       fail(507, '服务器暂存空间已满')
     for (const uid of new Set(recipients)) {
-      if (!allowed(uid)) continue
+      if (!includeDenied&&!allowed(uid)) continue
       db.prepare('INSERT OR IGNORE INTO queue VALUES (?,?,?,?)').run(
         event.id,
         uid,
@@ -230,7 +250,8 @@ export function createCentralServer({
     const row = db.prepare('SELECT * FROM receipts WHERE message_id=?').get(messageId)
     if (!row) return null
     const counts = db.prepare('SELECT COUNT(*) AS total,COUNT(delivered_at) AS delivered,COUNT(read_at) AS read FROM message_delivery WHERE message_id=?').get(messageId)
-    return { messageId,clientMessageId:row.client_id,acceptedAt:row.created_at,recipientCount:counts.total,deliveredCount:counts.delivered,readCount:counts.read }
+    const route=db.prepare('SELECT sender_name FROM message_routes WHERE message_id=?').get(messageId)
+    return { messageId,clientMessageId:row.client_id,acceptedAt:row.created_at,recipientCount:counts.total,deliveredCount:counts.delivered,readCount:counts.read,actionsSupported:Boolean(route),...(route?{senderName:route.sender_name}:{}) }
   }
   const queueReceipt = (messageId) => {
     const sender = db.prepare('SELECT sender FROM receipts WHERE message_id=?').get(messageId)?.sender
@@ -335,7 +356,7 @@ export function createCentralServer({
       const url = new URL(request.url, 'http://localhost'),
         route = url.pathname
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1'] })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1'] })
       if (route === '/v1/admin/access' && request.method === 'POST') {
         const received = Buffer.from(
             (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -381,12 +402,15 @@ export function createCentralServer({
             userId: uid,
             nonce: randomBytes(32).toString('base64url'),
           })
+        const features=data.features??[]
+        if(!Array.isArray(features)||features.length>20||features.some(v=>typeof v!=='string'||v.length>80))fail(400,'无效客户端能力')
         challenges.set(challengeId, {
           challenge,
           publicKey,
           uid,
           name: text(data.displayName, 80),
           expires: Date.now() + 60000,
+          features,
         })
         return json(response, 200, { challengeId, challenge, userId: uid })
       }
@@ -420,6 +444,7 @@ export function createCentralServer({
         sessions.set(token, {
           uid: challenge.uid,
           expires: Date.now() + 30 * 60 * 1000,
+          features:challenge.features,
         })
         activity.set(challenge.uid, Date.now())
         return json(response, 200, {
@@ -430,6 +455,7 @@ export function createCentralServer({
         })
       }
       const uid = auth(request)
+      const supportsActions=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('message-actions-v1')??false
       if (route === '/v1/logout' && request.method === 'POST') {
         sessions.delete(
           (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -661,6 +687,8 @@ export function createCentralServer({
           )
             fail(400, '附件校验失败')
         }
+        const quote=data.quote===undefined?undefined:parseMessageReference(data.quote)
+        const forwarded=data.forwarded===undefined?undefined:parseMessageReference(data.forwarded)
         const fingerprint = createHash('sha256')
           .update(
             JSON.stringify([
@@ -668,12 +696,13 @@ export function createCentralServer({
               kind,
               data.text,
               data.attachment ?? null,
+              ...(quote||forwarded?[quote?{messageId:quote.messageId,senderId:quote.senderId}:null,forwarded?{messageId:forwarded.messageId,senderId:forwarded.senderId}:null]:[]),
             ]),
           )
           .digest('hex')
         const old = db
           .prepare('SELECT * FROM receipts WHERE sender=? AND client_id=?')
-          .get(uid, clientId)
+          .get(uid, clientId) ?? db.prepare('SELECT * FROM message_routes WHERE sender=? AND client_id=?').get(uid,clientId)
         if (old) {
           if (old.fingerprint !== fingerprint)
             fail(409, '同一消息 ID 不可替换内容')
@@ -683,6 +712,15 @@ export function createCentralServer({
             acceptedAt: old.created_at,
             receipt: receiptFor(old.message_id),
           })
+        }
+        for(const reference of [quote,forwarded])if(reference){
+          const origin=db.prepare('SELECT * FROM message_routes WHERE message_id=?').get(reference.messageId)
+          if(!origin)fail(409,'这条旧消息缺少来源校验元数据，请复制正文发送')
+          if(origin.retracted_at!==null)fail(409,'原消息已撤回，不能引用或转发')
+          if(origin.sender!==uid&&!db.prepare('SELECT 1 FROM route_recipients WHERE message_id=? AND recipient=?').get(reference.messageId,uid))fail(403,'不能使用未收到的消息作为来源')
+          if(reference.senderId!==origin.sender||digest(reference)!==origin.reference_digest)fail(403,'消息来源摘要不匹配')
+          if(reference===quote&&origin.conversation_id!==conversationId)fail(403,'只能引用当前会话的消息')
+          if(reference===forwarded&&digest(messageContentDescriptor(data))!==origin.content_digest)fail(403,'转发内容不可冒充原文')
         }
         const now = Date.now(),
           messageId = randomUUID(),
@@ -698,6 +736,7 @@ export function createCentralServer({
             createdAt: now,
             targetName: kind==='group'?db.prepare('SELECT name FROM groups WHERE id=?').get(targetId).name:user(targetId).displayName,
             ...(data.attachment ? { attachment: data.attachment } : {}),
+            ...(quote?{quote}:{}),...(forwarded?{forwarded}:{}),actionsSupported:true,
           }
         transaction(() => {
           enqueue(recipients, { id: messageId, kind: 'message', message })
@@ -709,6 +748,7 @@ export function createCentralServer({
             now,
           )
           for (const recipient of recipients) db.prepare('INSERT INTO message_delivery(message_id,recipient) VALUES (?,?)').run(messageId,recipient)
+          rememberMessage(message,recipients,fingerprint)
         })
         for (const recipient of recipients) wake(recipient)
         return json(response, 200, {
@@ -717,6 +757,30 @@ export function createCentralServer({
           acceptedAt: now,
           receipt: receiptFor(messageId),
         })
+      }
+      if(route==='/v1/messages/retract'&&request.method==='POST'){
+        const data=await body(request),id=text(data.messageId,80)
+        const row=db.prepare('SELECT * FROM message_routes WHERE message_id=?').get(id)
+        if(!row)fail(404,'消息不存在或旧消息不支持撤回')
+        if(row.sender!==uid)fail(403,'只能撤回自己的消息')
+        if(row.retracted_at===null&&Date.now()-row.created_at>RETRACTION_WINDOW_MS)fail(409,'只能撤回两分钟内的消息')
+        const now=row.retracted_at??Date.now(),eventId=row.retraction_id??randomUUID()
+        const retraction={messageId:id,clientMessageId:row.client_id,conversationId:row.conversation_id,senderId:uid,senderName:row.sender_name,createdAt:row.created_at,retractedAt:now,targetKind:row.target_kind,targetId:row.target_id,targetName:row.target_name}
+        const recipients=[uid,...db.prepare('SELECT recipient FROM route_recipients WHERE message_id=?').all(id).map(r=>r.recipient)]
+        if(row.retracted_at===null){
+          transaction(()=>{
+            db.prepare('UPDATE message_routes SET retracted_at=?,retraction_id=? WHERE message_id=?').run(now,eventId,id)
+            // Replace unacknowledged bodies with a body-free, durable tombstone event.
+            db.prepare('DELETE FROM queue WHERE id=?').run(id)
+            db.prepare("UPDATE queue SET payload=json_remove(json_set(payload,'$.message.quote.text','引用的消息已撤回','$.message.quote.retracted',json('true')),'$.message.quote.attachmentName') WHERE json_extract(payload,'$.kind')='message' AND json_extract(payload,'$.message.quote.messageId')=?").run(id)
+            // A banned original recipient cannot fetch this event until re-authorized,
+            // but must not permanently miss the withdrawal when access is restored.
+            enqueue(recipients,{id:eventId,kind:'directory',retraction},true)
+          })
+          for(const recipient of recipients)wake(recipient)
+          db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+        }
+        return json(response,200,{retraction})
       }
       if (route === '/v1/plugins/submit' && request.method === 'POST') {
         const data = await body(request)
@@ -892,9 +956,9 @@ export function createCentralServer({
           let bytes = 0
           for (const row of db
             .prepare(
-              'SELECT payload FROM queue WHERE recipient=? ORDER BY created_at,rowid LIMIT 20',
+              "SELECT payload FROM queue WHERE recipient=? AND (? OR json_extract(payload,'$.retraction') IS NULL) ORDER BY created_at,rowid LIMIT 20",
             )
-            .iterate(uid)) {
+            .iterate(uid,supportsActions?1:0)) {
             const payloadBytes = Buffer.byteLength(row.payload)
             if (result.length && bytes + payloadBytes > 12 * 1024 * 1024) break
             bytes += payloadBytes
@@ -953,9 +1017,10 @@ export function createCentralServer({
           for (const id of data.ids) {
             const changed = db.prepare('UPDATE message_delivery SET delivered_at=? WHERE message_id=? AND recipient=? AND delivered_at IS NULL').run(Date.now(),id,uid)
             if (changed.changes) delivered.push(id)
-            db.prepare('DELETE FROM queue WHERE id=? AND recipient=?').run(
+            db.prepare("DELETE FROM queue WHERE id=? AND recipient=? AND (? OR json_extract(payload,'$.retraction') IS NULL)").run(
               id,
               uid,
+              supportsActions?1:0,
             )
           }
           for(const id of delivered){const sender=queueReceipt(id);if(sender)senders.add(sender)}

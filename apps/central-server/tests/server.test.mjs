@@ -4,6 +4,7 @@ import path from 'node:path'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCentralServer, publicUserId } from '../src/server.mjs'
+import { createMessageReference } from '@more-than-chat/central-protocol'
 const fixtures = []
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
@@ -38,10 +39,11 @@ async function request(f, route, token, body) {
   })
   return { status: r.status, data: await r.json() }
 }
-async function login(f, id, name) {
+async function login(f, id, name,features=['message-actions-v1']) {
   const challenge = await request(f, 'challenge', null, {
     publicKey: id.publicKey,
     displayName: name,
+    features,
   })
   expect(challenge.status).toBe(200)
   const result = await request(f, 'session', null, {
@@ -71,6 +73,96 @@ async function befriend(f, a, b) {
 }
 
 describe('central relay contracts', () => {
+  it('retains withdrawal notices for temporarily banned original recipients until access is restored',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B')
+    await befriend(f,a,b)
+    const sent=await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'body-before-ban'})
+    await request(f,'ack',b.token,{ids:[sent.data.messageId]})
+    await request(f,'admin/access',f.adminToken,{userId:b.userId,allowed:false})
+    await request(f,'messages/retract',a.token,{messageId:sent.data.messageId})
+    expect(f.app.db.prepare("SELECT 1 FROM queue WHERE recipient=? AND json_extract(payload,'$.retraction.messageId')=?").get(b.userId,sent.data.messageId)).toBeDefined()
+    await request(f,'admin/access',f.adminToken,{userId:b.userId,allowed:true})
+    const restored=await login(f,b,'B'),events=await request(f,'events',restored.token)
+    expect(events.data.events.some(e=>e.retraction?.messageId===sent.data.messageId)).toBe(true)
+  })
+  it('does not let a legacy client consume or acknowledge an unapplied withdrawal',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B',[])
+    await befriend(f,a,b)
+    const sent=await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'legacy-visible-body'})
+    await request(f,'ack',b.token,{ids:[sent.data.messageId]})
+    await request(f,'messages/retract',a.token,{messageId:sent.data.messageId})
+    const row=f.app.db.prepare("SELECT id FROM queue WHERE recipient=? AND json_extract(payload,'$.retraction.messageId')=?").get(b.userId,sent.data.messageId)
+    await request(f,'ack',b.token,{ids:[row.id]})
+    expect(f.app.db.prepare('SELECT 1 FROM queue WHERE id=? AND recipient=?').get(row.id,b.userId)).toBeDefined()
+    // An ordinary event ensures legacy long-poll returns promptly, but not the withdrawal.
+    await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'new-normal-body'})
+    expect((await request(f,'events',b.token)).data.events.some(e=>e.retraction)).toBe(false)
+    const upgraded=await login(f,b,'B')
+    const events=await request(f,'events',upgraded.token)
+    expect(events.data.events.some(e=>e.id===row.id&&e.retraction.messageId===sent.data.messageId)).toBe(true)
+    await request(f,'ack',upgraded.token,{ids:[row.id]})
+    expect(f.app.db.prepare('SELECT 1 FROM queue WHERE id=? AND recipient=?').get(row.id,b.userId)).toBeUndefined()
+  })
+  it('verifies reply and forward origins after delivered bodies have been purged',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B'),c=await login(f,identity(),'C')
+    await befriend(f,a,b);await befriend(f,b,c);await befriend(f,a,c)
+    const original={clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'verified-private-origin-8721'}
+    const sent=await request(f,'messages',a.token,original),id=sent.data.messageId
+    expect(sent.data.receipt.actionsSupported).toBe(true)
+    await request(f,'ack',b.token,{ids:[id]})
+    expect(JSON.stringify(f.app.db.prepare('SELECT * FROM queue').all())).not.toContain(original.text)
+    expect(JSON.stringify(f.app.db.prepare('SELECT * FROM message_routes').all())).not.toContain(original.text)
+    const reference=createMessageReference({id,senderId:a.userId,senderName:'A',text:original.text})
+    const reply={clientMessageId:randomUUID(),targetKind:'direct',targetId:a.userId,text:'reply-body',quote:reference}
+    const replied=await request(f,'messages',b.token,reply)
+    expect(replied.status).toBe(200)
+    expect((await request(f,'messages',b.token,{...reply,clientMessageId:randomUUID(),quote:{...reference,text:'forged'}})).status).toBe(403)
+    expect((await request(f,'messages',c.token,{...reply,clientMessageId:randomUUID()})).status).toBe(403)
+    const forwarded={clientMessageId:randomUUID(),targetKind:'direct',targetId:c.userId,text:original.text,forwarded:reference}
+    const forwardedResult=await request(f,'messages',b.token,forwarded)
+    expect(forwardedResult.status).toBe(200)
+    expect((await request(f,'messages',b.token,{...forwarded,clientMessageId:randomUUID(),text:'not-the-original'})).status).toBe(403)
+    const retracted=await request(f,'messages/retract',a.token,{messageId:id})
+    expect(retracted.status).toBe(200)
+    const quotedQueue=f.app.db.prepare('SELECT payload FROM queue WHERE id=?').get(replied.data.messageId)
+    expect(JSON.parse(quotedQueue.payload).message.quote).toMatchObject({text:'引用的消息已撤回',retracted:true})
+    expect(JSON.parse(f.app.db.prepare('SELECT payload FROM queue WHERE id=?').get(forwardedResult.data.messageId).payload).message.text).toBe(original.text)
+    // A request already accepted before withdrawal remains idempotent even if its source changed.
+    expect((await request(f,'messages',b.token,reply)).data.messageId).toBe(replied.data.messageId)
+    expect((await request(f,'messages',a.token,original)).data.messageId).toBe(id)
+    expect((await request(f,'messages',b.token,{...reply,clientMessageId:randomUUID()})).status).toBe(409)
+    expect((await request(f,'messages',b.token,{...forwarded,clientMessageId:randomUUID()})).status).toBe(409)
+  })
+  it('withdraws a partly delivered group durably without sending the original body to offline members',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B'),c=await login(f,identity(),'C')
+    await befriend(f,a,b);await befriend(f,a,c)
+    const group=(await request(f,'groups',a.token,{name:'Recall group',memberIds:[b.userId,c.userId]})).data.groupId
+    const sent=await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'group',targetId:group,text:'must-not-arrive-after-withdrawal'})
+    await request(f,'ack',b.token,{ids:[sent.data.messageId]})
+    expect((await request(f,'messages/retract',b.token,{messageId:sent.data.messageId})).status).toBe(403)
+    await request(f,'groups/transfer',a.token,{groupId:group,userId:b.userId});await request(f,'groups/leave',a.token,{groupId:group})
+    const result=await request(f,'messages/retract',a.token,{messageId:sent.data.messageId})
+    expect(result.status).toBe(200)
+    expect((await request(f,'messages/retract',a.token,{messageId:sent.data.messageId})).data.retraction).toEqual(result.data.retraction)
+    expect(JSON.stringify(f.app.db.prepare('SELECT * FROM queue').all())).not.toContain('must-not-arrive-after-withdrawal')
+    expect(f.app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE json_extract(payload,'$.retraction.messageId')=?").get(sent.data.messageId).n).toBe(3)
+    const serverId=f.app.serverId
+    await f.app.close();f.app=createCentralServer({directory:f.dir,mode:'public',adminToken:f.adminToken});f.url='http://127.0.0.1:'+(await f.app.listen(0)).port
+    expect(f.app.serverId).toBe(serverId)
+    const restored=await login(f,c,'C'),events=await request(f,'events',restored.token)
+    expect(events.data.events.some(e=>e.retraction?.messageId===sent.data.messageId)).toBe(true)
+    expect(events.data.events.some(e=>e.kind==='message'&&e.message.id===sent.data.messageId)).toBe(false)
+    await request(f,'ack',restored.token,{ids:events.data.events.map(e=>e.id)})
+    expect(f.app.db.prepare("SELECT 1 FROM queue WHERE recipient=? AND json_extract(payload,'$.retraction.messageId')=?").get(c.userId,sent.data.messageId)).toBeUndefined()
+  })
+  it('enforces the server-side two-minute window and keeps failed withdrawals unchanged',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B')
+    await befriend(f,a,b)
+    const sent=await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'expired-but-still-deliverable'})
+    f.app.db.prepare('UPDATE message_routes SET created_at=? WHERE message_id=?').run(Date.now()-120001,sent.data.messageId)
+    expect((await request(f,'messages/retract',a.token,{messageId:sent.data.messageId})).status).toBe(409)
+    expect(JSON.stringify(f.app.db.prepare('SELECT payload FROM queue WHERE id=?').get(sent.data.messageId))).toContain('expired-but-still-deliverable')
+  })
   it('reports durable delivery and explicit reading without retaining message contents or trusting unrelated users',async()=>{
     const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B'),c=await login(f,identity(),'C')
     await befriend(f,a,b)

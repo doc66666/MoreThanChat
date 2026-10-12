@@ -22,6 +22,7 @@ export const centralTransport: ChatTransportPlugin = {
         clientMessageId: input.clientMessageId,
         text: input.text,
         ...(input.attachmentId ? { attachmentId: input.attachmentId } : {}),
+        ...(input.quoteMessageId?{quoteMessageId:input.quoteMessageId}:{}),
       })
     },
   }),

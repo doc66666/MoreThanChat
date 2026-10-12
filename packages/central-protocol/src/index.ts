@@ -27,6 +27,34 @@ export interface AttachmentRef {
 export interface WireAttachment extends AttachmentRef {
   data: string
 }
+export interface MessageReference {
+  messageId: string
+  senderId: string
+  senderName: string
+  text: string
+  attachmentName?: string
+  retracted?: boolean
+}
+export interface MessageRetraction {
+  messageId: string
+  clientMessageId: string
+  conversationId: string
+  senderId: string
+  senderName: string
+  createdAt: number
+  retractedAt: number
+  targetKind: 'direct' | 'group'
+  targetId: string
+  targetName: string
+}
+export const RETRACTION_WINDOW_MS = 120000
+export function createMessageReference(message: {id:string;senderId:string;senderName:string;text:string;attachment?:{name:string}}): MessageReference {
+  return parseMessageReference({messageId:message.id,senderId:message.senderId,senderName:message.senderName,text:message.text.slice(0,280),...(message.attachment?{attachmentName:message.attachment.name}:{})})
+}
+export function messageContentDescriptor(message:{text:string;attachment?:AttachmentRef}):unknown {
+  const a=message.attachment
+  return {text:message.text,...(a?{attachment:{id:a.id,name:a.name,mime:a.mime,size:a.size,...(a.durationMs===undefined?{}:{durationMs:a.durationMs})}}:{})}
+}
 export interface RelayMessage {
   id: string
   clientMessageId: string
@@ -39,6 +67,10 @@ export interface RelayMessage {
   createdAt: number
   attachment?: WireAttachment
   targetName?: string
+  quote?: MessageReference
+  forwarded?: MessageReference
+  actionsSupported?: boolean
+  retractedAt?: number
 }
 export interface Group {
   id: string
@@ -80,6 +112,8 @@ export interface MessageReceipt {
   recipientCount: number
   deliveredCount: number
   readCount: number
+  actionsSupported?: boolean
+  senderName?:string
 }
 export interface ServerSnapshot {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -93,7 +127,7 @@ export interface ServerSnapshot {
 }
 export type RelayEvent =
   | { id: string; kind: 'message'; message: RelayMessage }
-  | { id: string; kind: 'directory'; receipt?: MessageReceipt }
+  | { id: string; kind: 'directory'; receipt?: MessageReceipt; retraction?: MessageRetraction }
   | {
       id: string
       kind: 'plugin'
@@ -287,7 +321,7 @@ export function parseRelayEvent(value: unknown): RelayEvent {
   const e = record(value),
     id = boundedText(e.id, 80)
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Invalid event id')
-  if (e.kind === 'directory') return { id, kind: 'directory', ...(e.receipt === undefined ? {} : { receipt: parseMessageReceipt(e.receipt) }) }
+  if (e.kind === 'directory') return { id, kind: 'directory', ...(e.receipt === undefined ? {} : { receipt: parseMessageReceipt(e.receipt) }),...(e.retraction===undefined?{}:{retraction:parseMessageRetraction(e.retraction)}) }
   if (e.kind === 'plugin') {
     if (
       !validGroupId(e.groupId) ||
@@ -336,6 +370,10 @@ export function parseRelayEvent(value: unknown): RelayEvent {
       ...(m.attachment === undefined
         ? {}
         : { attachment: m.attachment as WireAttachment }),
+      ...(m.quote===undefined?{}:{quote:parseMessageReference(m.quote)}),
+      ...(m.forwarded===undefined?{}:{forwarded:parseMessageReference(m.forwarded)}),
+      ...(m.actionsSupported===undefined?{}:{actionsSupported:parseBoolean(m.actionsSupported)}),
+      ...(m.retractedAt===undefined?{}:{retractedAt:parseRevision(m.retractedAt)}),
     },
   }
 }
@@ -351,5 +389,19 @@ export function parseMessageReceipt(value: unknown): MessageReceipt {
     || !Number.isSafeInteger(r.acceptedAt) || Number(r.acceptedAt) < 0
     || ![r.recipientCount, r.deliveredCount, r.readCount].every(n => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= 19)
     || Number(r.readCount) > Number(r.deliveredCount) || Number(r.deliveredCount) > Number(r.recipientCount)) throw new Error('Invalid message receipt')
-  return { messageId: r.messageId, clientMessageId: r.clientMessageId, acceptedAt: Number(r.acceptedAt), recipientCount: Number(r.recipientCount), deliveredCount: Number(r.deliveredCount), readCount: Number(r.readCount) }
+  return { messageId: r.messageId, clientMessageId: r.clientMessageId, acceptedAt: Number(r.acceptedAt), recipientCount: Number(r.recipientCount), deliveredCount: Number(r.deliveredCount), readCount: Number(r.readCount),...(r.actionsSupported===undefined?{}:{actionsSupported:parseBoolean(r.actionsSupported)}),...(r.senderName===undefined?{}:{senderName:boundedText(r.senderName,80)}) }
+}
+
+function parseBoolean(value:unknown):boolean {if(typeof value!=='boolean')throw new Error('Invalid boolean');return value}
+export function parseMessageReference(value:unknown):MessageReference {
+  const v=record(value)
+  if(typeof v.messageId!=='string'||!/^[a-f0-9-]{36}$/.test(v.messageId)||!validUid(v.senderId))throw new Error('Invalid message reference')
+  return {messageId:v.messageId,senderId:v.senderId,senderName:boundedText(v.senderName,80),text:boundedText(v.text,280),...(v.attachmentName===undefined?{}:{attachmentName:boundedText(v.attachmentName,200)}),...(v.retracted===undefined?{}:{retracted:parseBoolean(v.retracted)})}
+}
+export function parseMessageRetraction(value:unknown):MessageRetraction {
+  const v=record(value)
+  if(typeof v.messageId!=='string'||!/^[a-f0-9-]{36}$/.test(v.messageId)||!validUid(v.senderId)||!['direct','group'].includes(String(v.targetKind))||(v.targetKind==='group'?!validGroupId(v.targetId):!validUid(v.targetId)))throw new Error('Invalid retraction')
+  const createdAt=parseRevision(v.createdAt),retractedAt=parseRevision(v.retractedAt)
+  if(retractedAt<createdAt)throw new Error('Invalid retraction time')
+  return {messageId:v.messageId,clientMessageId:boundedText(v.clientMessageId,80),conversationId:boundedText(v.conversationId,120),senderId:v.senderId,senderName:boundedText(v.senderName,80),createdAt,retractedAt,targetKind:v.targetKind as 'direct'|'group',targetId:String(v.targetId),targetName:boundedText(v.targetName,80)}
 }

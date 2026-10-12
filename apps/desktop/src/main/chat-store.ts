@@ -5,6 +5,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { redactSecretFields } from './secret-redaction'
 import { parseModelTokenUsage } from '@more-than-chat/protocol'
+import { parseMessageReference, parseMessageRetraction, type MessageRetraction } from '@more-than-chat/central-protocol'
 
 type RecordValue = Record<string, unknown>
 interface Snapshot {
@@ -30,6 +31,7 @@ interface MainCommit {
   outboxPut?: OutboxEntry
   outboxRemove?: string | string[]
   readMessages?: { serverId: string; messageId: string }[]
+  retraction?: {serverId:string;notice:MessageRetraction}
 }
 
 /** Main owns SQLite. Bounded projections are upserts, never implicit history deletions. */
@@ -41,12 +43,12 @@ export class ChatStore {
     this.#db = new DatabaseSync(file)
     try {
       this.#db.exec(
-        'PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;',
+        'PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;',
       )
       const version = Number(
         this.#db.prepare('PRAGMA user_version').get()?.user_version,
       )
-      if (version > 4)
+      if (version > 5)
         throw new Error('Chat database belongs to a newer application version.')
       this.#db.exec(`
         BEGIN IMMEDIATE;
@@ -56,6 +58,9 @@ export class ChatStore {
         CREATE INDEX IF NOT EXISTS message_conversation ON messages(conversation_id, position);
         CREATE INDEX IF NOT EXISTS message_client ON messages(conversation_id,json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
         CREATE INDEX IF NOT EXISTS message_sender_client ON messages(json_extract(payload,'$.serverId'),json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
+        CREATE INDEX IF NOT EXISTS message_quote ON messages(json_extract(payload,'$.serverId'),json_extract(payload,'$.quote.messageId'));
+        CREATE TABLE IF NOT EXISTS message_retractions(server_id TEXT NOT NULL,message_id TEXT NOT NULL,sender_id TEXT NOT NULL,client_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(server_id,message_id));
+        CREATE INDEX IF NOT EXISTS retraction_client ON message_retractions(server_id,sender_id,client_id);
         CREATE INDEX IF NOT EXISTS message_unread ON messages(conversation_id,position) WHERE json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL;
         CREATE INDEX IF NOT EXISTS message_interrupted ON messages(json_extract(payload,'$.status')) WHERE json_extract(payload,'$.serverId') IS NULL AND json_extract(payload,'$.status') IN ('streaming','sending');
         CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(text,content='',tokenize='trigram');
@@ -71,7 +76,7 @@ export class ChatStore {
         CREATE TABLE IF NOT EXISTS read_outbox (server_id TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(server_id,message_id));
         ${version<4?"INSERT INTO message_search(rowid,text) SELECT rowid,json_extract(payload,'$.text') FROM messages;":''}
         UPDATE conversations SET payload=json_remove(payload,'$.archived') WHERE json_type(payload,'$.archived') IS NOT NULL;
-        PRAGMA user_version=4;
+        PRAGMA user_version=5;
         COMMIT;
       `)
     } catch (error) {
@@ -164,6 +169,10 @@ export class ChatStore {
     const row = this.#db.prepare("SELECT payload FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.senderId')=? AND json_extract(payload,'$.clientMessageId')=?").get(serverId,senderId,clientId)
     return row ? JSON.parse(String(row.payload)) as RecordValue : undefined
   }
+  retraction(serverId:string,messageId:string,senderId?:string,clientId?:string):MessageRetraction|undefined {
+    const row=this.#db.prepare('SELECT payload FROM message_retractions WHERE server_id=? AND message_id=?').get(serverId,messageId) ?? (senderId&&clientId?this.#db.prepare('SELECT payload FROM message_retractions WHERE server_id=? AND sender_id=? AND client_id=?').get(serverId,senderId,clientId):undefined)
+    return row?parseMessageRetraction(JSON.parse(String(row.payload))):undefined
+  }
 
   messagePage(conversationId: string, input: { before?: number; after?: number; around?: string; limit?: number } = {}): MessagePage {
     this.#assertOpen()
@@ -253,6 +262,12 @@ export class ChatStore {
       for (const [conversationId, list] of Object.entries(snapshot.messages)) {
         let nextPosition=Number(this.#db.prepare('SELECT COALESCE(MAX(position),-1)+1 AS n FROM messages WHERE conversation_id=?').get(conversationId)!.n)
         for (const message of list) {
+          const tombstone=typeof message.serverId==='string'?this.retraction(message.serverId,String(message.id),String(message.senderId),String(message.clientMessageId)):undefined
+          if(tombstone)redactRetractedMessage(message,tombstone)
+          if(message.quote&&typeof message.serverId==='string'){
+            const quote=message.quote as RecordValue
+            if(this.retraction(message.serverId,String(quote.messageId))){message.quote={...quote,text:'引用的消息已撤回',retracted:true};delete (message.quote as RecordValue).attachmentName}
+          }
           const id = String(message.id)
           const previous=byId.get(id)??byClient.get(conversationId,String(message.senderId),String(message.clientMessageId))
           if(previous&&previous.conversation_id!==conversationId)throw new Error('Message belongs to another conversation.')
@@ -303,15 +318,33 @@ export class ChatStore {
           )
       if (commit.outboxPut) {
         const row = commit.outboxPut
-        this.#db.prepare('INSERT OR IGNORE INTO central_outbox VALUES (?,?,?,?)').run(row.clientMessageId,row.serverId,row.conversationId,row.createdAt)
+        if(!this.#db.prepare("SELECT 1 FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.clientMessageId')=? AND json_extract(payload,'$.role')='self' AND json_extract(payload,'$.retractedAt') IS NOT NULL").get(row.serverId,row.clientMessageId))this.#db.prepare('INSERT OR IGNORE INTO central_outbox VALUES (?,?,?,?)').run(row.clientMessageId,row.serverId,row.conversationId,row.createdAt)
       }
       for (const id of typeof commit.outboxRemove==='string' ? [commit.outboxRemove] : commit.outboxRemove ?? []) this.#db.prepare('DELETE FROM central_outbox WHERE client_id=?').run(id)
-      for (const row of commit.readMessages ?? []) this.#db.prepare('INSERT OR IGNORE INTO read_outbox VALUES (?,?)').run(row.serverId,row.messageId)
+      for (const row of commit.readMessages ?? [])if(!this.retraction(row.serverId,row.messageId))this.#db.prepare('INSERT OR IGNORE INTO read_outbox VALUES (?,?)').run(row.serverId,row.messageId)
+      if(commit.retraction){
+        const {serverId,notice:raw}=commit.retraction,notice=parseMessageRetraction(raw)
+        this.#db.prepare('INSERT OR IGNORE INTO message_retractions VALUES (?,?,?,?,?)').run(serverId,notice.messageId,notice.senderId,notice.clientMessageId,JSON.stringify(notice))
+        const original=this.message(notice.messageId)??this.messageByClient(serverId,notice.senderId,notice.clientMessageId)
+        if(original&&original.serverId===serverId){
+          if(original.senderId!==notice.senderId)throw new Error('Retraction sender does not match message.')
+          const oldId=String(original.id);redactRetractedMessage(original,notice)
+          this.#db.prepare('UPDATE messages SET id=?,payload=? WHERE id=?').run(notice.messageId,JSON.stringify(original),oldId)
+          if(original.role==='self')this.#db.prepare('DELETE FROM central_outbox WHERE server_id=? AND client_id=?').run(serverId,notice.clientMessageId)
+        }
+        this.#db.prepare('DELETE FROM read_outbox WHERE server_id=? AND message_id=?').run(serverId,notice.messageId)
+        // Quotes lose their excerpt too. Already forwarded independent copies are not recalled.
+        this.#db.prepare("DELETE FROM chat_events WHERE ((entity_id=? OR entity_id=?) AND json_extract(payload,'$.serverId')=?) OR entity_id IN (SELECT id FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.quote.messageId')=?) OR entity_id IN (SELECT json_extract(payload,'$.clientMessageId') FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.quote.messageId')=?)").run(notice.messageId,notice.clientMessageId,serverId,serverId,notice.messageId,serverId,notice.messageId)
+        this.#db.prepare("UPDATE messages SET payload=json_remove(json_set(payload,'$.quote.text','引用的消息已撤回','$.quote.retracted',json('true')),'$.quote.attachmentName') WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.quote.messageId')=?").run(serverId,notice.messageId)
+        record('message.retracted',notice.messageId,{serverId,...notice})
+      }
       this.#db.exec('COMMIT')
     } catch (error) {
       this.#db.exec('ROLLBACK')
       throw error
     }
+    // Checkpoint maintenance must not turn an already committed edit into a failed save.
+    if(commit.retraction){try{this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)')}catch{}}
   }
 
   savePluginEvent(
@@ -354,7 +387,7 @@ export class ChatStore {
     if(typeof saved.serverId!=='string')return false
     this.#db.exec('BEGIN IMMEDIATE')
     try {
-      this.#db.prepare("INSERT OR IGNORE INTO read_outbox(server_id,message_id) SELECT json_extract(payload,'$.serverId'),id FROM messages WHERE conversation_id=? AND json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL AND length(id)=36 AND id NOT GLOB '*[^a-f0-9-]*' AND json_extract(payload,'$.serverId') IS NOT NULL").run(conversationId)
+      this.#db.prepare("INSERT OR IGNORE INTO read_outbox(server_id,message_id) SELECT json_extract(payload,'$.serverId'),id FROM messages WHERE conversation_id=? AND json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL AND json_extract(payload,'$.retractedAt') IS NULL AND length(id)=36 AND id NOT GLOB '*[^a-f0-9-]*' AND json_extract(payload,'$.serverId') IS NOT NULL").run(conversationId)
       const result=this.#db.prepare("UPDATE messages SET payload=json_set(payload,'$.readAt',?) WHERE conversation_id=? AND json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL").run(Date.now(),conversationId)
       if(saved.unread!==0)this.#db.prepare("UPDATE conversations SET payload=json_set(payload,'$.unread',0) WHERE id=?").run(conversationId)
       this.#db.exec('COMMIT')
@@ -399,6 +432,10 @@ function object(value: unknown): RecordValue {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid chat snapshot.')
   return value as RecordValue
+}
+function redactRetractedMessage(message:RecordValue,notice:MessageRetraction):void {
+  message.id=notice.messageId;message.createdAt=notice.createdAt;message.text='';message.status='sent';message.retractedAt=notice.retractedAt
+  for(const field of ['attachment','quote','forwarded','errorMessage'])delete message[field]
 }
 function stringFields(value: RecordValue, fields: string[]): void {
   if (fields.some((key) => typeof value[key] !== 'string'))
@@ -473,6 +510,9 @@ function validateSnapshot(value: unknown): Snapshot {
         if (![receipt.recipientCount,receipt.deliveredCount,receipt.readCount].every(n => Number.isSafeInteger(n) && Number(n)>=0 && Number(n)<=19) || Number(receipt.readCount)>Number(receipt.deliveredCount) || Number(receipt.deliveredCount)>Number(receipt.recipientCount)) throw new Error('Invalid receipt')
       }
       if (item.readAt !== undefined && (!Number.isSafeInteger(item.readAt) || Number(item.readAt)<0)) throw new Error('Invalid read timestamp')
+      if(item.retractedAt!==undefined&&(!Number.isSafeInteger(item.retractedAt)||Number(item.retractedAt)<0))throw new Error('Invalid retraction timestamp')
+      if(item.actionsSupported!==undefined&&typeof item.actionsSupported!=='boolean')throw new Error('Invalid message feature')
+      for(const field of ['quote','forwarded'])if(item[field]!==undefined)item[field]=parseMessageReference(item[field])
       if (item.authorNotes !== undefined && !Array.isArray(item.authorNotes))
         throw new Error('Invalid author notes.')
       if (Array.isArray(item.authorNotes))

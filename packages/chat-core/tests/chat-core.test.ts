@@ -8,6 +8,7 @@ import {
   interruptStreamingMessages,
   normalizeState,
   mergeCentralProjection,
+  redactMessageForRetraction,
   planAssistantRetry,
   toModelTranscript,
   type ChatMessage,
@@ -16,6 +17,17 @@ import {
 } from '../src/index.js'
 
 describe('model chat updates', () => {
+  it('redacts historical message windows and references without changing other servers or independent copies',()=>{
+    const seed=createSeedState(),template=seed.messages[seed.activeConversationId]![0]!,id='canonical',notice={serverId:'server',messageId:id,clientMessageId:'pending',senderId:'sender',retractedAt:21,createdAt:20}
+    const source={...template,id:'pending',clientMessageId:'pending',senderId:'sender',serverId:'server',text:'secret',attachment:{id:'a'.repeat(64),name:'file.txt',mime:'text/plain',size:2}}
+    expect(redactMessageForRetraction(source,notice)).toMatchObject({id,text:'',retractedAt:21})
+    expect(redactMessageForRetraction(source,notice)).not.toHaveProperty('attachment')
+    const other={...source,serverId:'other'};expect(redactMessageForRetraction(other,notice)).toBe(other)
+    const reference={messageId:id,senderId:'sender',senderName:'Sender',text:'secret',attachmentName:'file.txt'}
+    const quoted={...source,id:'reply',clientMessageId:'reply',text:'reply',quote:reference}
+    expect(redactMessageForRetraction(quoted,notice).quote).toEqual({messageId:id,senderId:'sender',senderName:'Sender',text:'引用的消息已撤回',retracted:true})
+    const forwarded={...source,id:'forward',clientMessageId:'forward',forwarded:reference};expect(redactMessageForRetraction(forwarded,notice)).toBe(forwarded)
+  })
   it('closes a removed relationship but still permits deliberate viewing of its local history',()=>{
     const state=createSeedState(),assistant=state.activeConversationId,id='server:friend'
     state.conversations.push({...state.conversations[0]!,id,kind:'direct',serverId:'server',transportId:'builtin.central'})

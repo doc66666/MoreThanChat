@@ -62,6 +62,20 @@ export interface ChatMessage {
   receipt?: { recipientCount: number; deliveredCount: number; readCount: number }
   readAt?: number
   attachment?: { id: string; name: string; mime: string; size: number; durationMs?: number }
+  quote?: MessageReference
+  forwarded?: MessageReference
+  actionsSupported?: boolean
+  retractedAt?: number
+}
+export interface MessageReference {messageId:string;senderId:string;senderName:string;text:string;attachmentName?:string;retracted?:boolean}
+export function redactMessageForRetraction(message:ChatMessage,notice:{serverId:string;messageId:string;clientMessageId:string;senderId:string;retractedAt:number;createdAt:number}):ChatMessage {
+  if(message.serverId!==notice.serverId)return message
+  if(message.id===notice.messageId||(message.clientMessageId===notice.clientMessageId&&message.senderId===notice.senderId)){
+    const {attachment:_attachment,quote:_quote,forwarded:_forwarded,errorMessage:_error,...rest}=message
+    return {...rest,id:notice.messageId,createdAt:notice.createdAt,text:'',status:'sent',retractedAt:notice.retractedAt}
+  }
+  if(message.quote?.messageId===notice.messageId){const {attachmentName:_attachment,...quote}=message.quote;return {...message,quote:{...quote,text:'引用的消息已撤回',retracted:true}}}
+  return message
 }
 
 export interface ChatState {
@@ -79,6 +93,7 @@ export interface OutgoingMessage {
   text: string
   createdAt: number
   attachmentId?: string
+  quoteMessageId?: string
 }
 
 export interface IncomingMessageDraft {

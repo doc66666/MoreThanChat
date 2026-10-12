@@ -68,6 +68,9 @@ declare global {
       retryChatMessage(id:string):Promise<void>
       searchChatMessages(query:string,conversationId?:string):Promise<{messageId:string;conversationId:string;text:string;senderName:string;createdAt:number}[]>
       copyChatMessage(id:string):Promise<void>
+      getChatMessage(id:string):Promise<import('@more-than-chat/chat-core').ChatMessage|null>
+      retractChatMessage(id:string):Promise<void>
+      forwardChatMessage(input:{messageId:string;conversationId:string;clientMessageId:string}):Promise<void>
       setConversationOptions(id:string,patch:{pinned?:boolean;muted?:boolean}):Promise<{pinned?:boolean;muted?:boolean}>
       getChatHistory(conversationId:string,input?:{before?:number;after?:number;around?:string;limit?:number}):Promise<{messages:import('@more-than-chat/chat-core').ChatMessage[];before:number|null;after:number|null;hasOlder:boolean;hasNewer:boolean}>
       setAppearance(theme:'light'|'dark'):Promise<void>

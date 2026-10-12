@@ -97,6 +97,9 @@ function registerIpc(): void {
     if(!message)throw new Error('消息不存在')
     clipboard.writeText(String(message.text || (message.attachment as {name?:string}|undefined)?.name || ''))
   })
+  ipcMain.handle('chat:message',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>256)throw new Error('无效消息');return chatStore?.message(id)??null})
+  ipcMain.handle('central:retract',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>80||!centralClient)throw new Error('无效撤回');return centralClient.retractMessage(id)})
+  ipcMain.handle('central:forward',(event,input:{messageId:string;conversationId:string;clientMessageId:string})=>{assertTrustedIpc(event);if(!centralClient||!input||[input.messageId,input.conversationId,input.clientMessageId].some(v=>typeof v!=='string'||!v||v.length>256))throw new Error('无效转发');return centralClient.forwardMessage(input.messageId,input.conversationId,input.clientMessageId)})
   ipcMain.handle('chat:conversation-options',(event,input:{id:string;patch:Record<string,unknown>})=>{
     assertTrustedIpc(event)
     if(!input||typeof input.id!=='string'||!input.patch||Object.keys(input.patch).some(key=>!['pinned','muted'].includes(key)||typeof input.patch[key]!=='boolean'))throw new Error('无效会话设置')
@@ -202,6 +205,7 @@ function registerIpc(): void {
         clientMessageId: string
         text: string
         attachmentId?: string
+        quoteMessageId?: string
       },
     ) => {
       assertTrustedIpc(event)
@@ -212,7 +216,7 @@ function registerIpc(): void {
         typeof input.clientMessageId !== 'string' ||
         typeof input.text !== 'string' ||
         (input.attachmentId !== undefined &&
-          typeof input.attachmentId !== 'string')
+          typeof input.attachmentId !== 'string') || (input.quoteMessageId!==undefined&&(typeof input.quoteMessageId!=='string'||input.quoteMessageId.length>256))
       )
         throw new Error('无效消息')
       return centralClient.send(input)

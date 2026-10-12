@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { parseDirectory, parseGroupPluginPack, parseRelayEvent } from '../src'
+import { parseDirectory, parseGroupPluginPack, parseRelayEvent,parseMessageReference,parseMessageRetraction } from '../src'
 const uid = 'usr_' + 'a'.repeat(64),
   groupId = 'grp_11111111-1111-4111-8111-111111111111',
   pluginId = 'gplugin_22222222-2222-4222-8222-222222222222'
 describe('central wire boundary', () => {
+  it('bounds and canonicalizes quote and withdrawal extensions without forwarding credentials',()=>{
+    const messageId='33333333-3333-4333-8333-333333333333'
+    const reference={messageId,senderId:uid,senderName:'A',text:'preview',apiKey:'not-an-application-field'}
+    expect(parseMessageReference(reference)).not.toHaveProperty('apiKey')
+    expect(()=>parseMessageReference({...reference,text:'x'.repeat(281)})).toThrow()
+    expect(()=>parseMessageReference({...reference,senderId:'someone'})).toThrow()
+    const retraction={messageId,clientMessageId:'client',conversationId:groupId,senderId:uid,senderName:'A',createdAt:10,retractedAt:20,targetKind:'group',targetId:groupId,targetName:'G',token:'must-not-forward'}
+    expect(parseMessageRetraction(retraction)).not.toHaveProperty('token')
+    expect(()=>parseMessageRetraction({...retraction,retractedAt:9})).toThrow()
+    expect(parseRelayEvent({id:messageId,kind:'directory',retraction})).toMatchObject({kind:'directory',retraction:{messageId,retractedAt:20}})
+  })
   it('rejects executable fields in a reviewed package and malformed peer directories', () => {
     const pack = {
       id: pluginId,

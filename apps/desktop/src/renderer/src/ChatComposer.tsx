@@ -15,6 +15,7 @@ export function ChatComposer({
   onAttachment,
   clearAttachment,
   children,
+  reference,
 }: {
   draft: string
   setDraft: (value: string) => void
@@ -29,6 +30,7 @@ export function ChatComposer({
   onAttachment: (ref: AttachmentRef) => void
   clearAttachment: () => void
   children: React.ReactNode
+  reference?:React.ReactNode
 }) {
   const [menu, setMenu] = useState(false),
     [recording, setRecording] = useState(false)
@@ -137,6 +139,7 @@ export function ChatComposer({
   },[recording])
   return (
     <div className="composer">
+      {reference}
       <div className="normal-composer-row">
         <div className="composer-plus-wrap" ref={menuRef}>
           <button
