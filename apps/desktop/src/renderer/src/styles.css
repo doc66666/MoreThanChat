@@ -403,6 +403,9 @@ svg { stroke-width: 1.7; }
 .conversation-item.active { background: var(--accent-soft); border-color: var(--accent-border); box-shadow: none; }
 .conversation-item.active :is(time, .conversation-preview-row > span) { color: var(--text-secondary); }
 .conversation-title-row strong { font-weight: 600; }
+.conversation-copy { grid-template-columns: minmax(0, 1fr); }
+.conversation-title-row strong { min-width: 0; flex: 1; }
+.conversation-preview-row > span { min-width: 0; flex: 1; }
 .conversation-preview-row > span { font-size: 12px; }
 .conversation-preview-row b { color: var(--on-accent); }
 .avatar { background: var(--hover); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 13px; box-shadow: none; font-weight: 600; }
