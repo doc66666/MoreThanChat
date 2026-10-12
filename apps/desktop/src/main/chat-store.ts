@@ -14,7 +14,16 @@ interface Snapshot {
   conversations: RecordValue[]
   messages: Record<string, RecordValue[]>
 }
-const MAX_STATE_BYTES = 8 * 1024 * 1024
+// This is a per-record safety limit, not a limit on a user's entire history.
+const MAX_RECORD_BYTES = 8 * 1024 * 1024
+const PAGE_BYTES = 512 * 1024
+export interface MessagePage {
+  messages: RecordValue[]
+  before: number | null
+  after: number | null
+  hasOlder: boolean
+  hasNewer: boolean
+}
 export interface OutboxEntry { serverId: string; clientMessageId: string; conversationId: string; createdAt: number }
 interface MainCommit {
   authoritative?: boolean
@@ -23,7 +32,7 @@ interface MainCommit {
   readMessages?: { serverId: string; messageId: string }[]
 }
 
-/** Main owns the connection. Each snapshot commits its projection and change log together. */
+/** Main owns SQLite. Bounded projections are upserts, never implicit history deletions. */
 export class ChatStore {
   readonly #db: DatabaseSync
   #closed = false
@@ -37,7 +46,7 @@ export class ChatStore {
       const version = Number(
         this.#db.prepare('PRAGMA user_version').get()?.user_version,
       )
-      if (version > 3)
+      if (version > 4)
         throw new Error('Chat database belongs to a newer application version.')
       this.#db.exec(`
         BEGIN IMMEDIATE;
@@ -45,6 +54,14 @@ export class ChatStore {
         CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, position INTEGER NOT NULL, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, position INTEGER NOT NULL, payload TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS message_conversation ON messages(conversation_id, position);
+        CREATE INDEX IF NOT EXISTS message_client ON messages(conversation_id,json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
+        CREATE INDEX IF NOT EXISTS message_sender_client ON messages(json_extract(payload,'$.serverId'),json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
+        CREATE INDEX IF NOT EXISTS message_unread ON messages(conversation_id,position) WHERE json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL;
+        CREATE INDEX IF NOT EXISTS message_interrupted ON messages(json_extract(payload,'$.status')) WHERE json_extract(payload,'$.serverId') IS NULL AND json_extract(payload,'$.status') IN ('streaming','sending');
+        CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(text,content='',tokenize='trigram');
+        CREATE TRIGGER IF NOT EXISTS message_search_insert AFTER INSERT ON messages BEGIN INSERT INTO message_search(rowid,text) VALUES(new.rowid,json_extract(new.payload,'$.text')); END;
+        CREATE TRIGGER IF NOT EXISTS message_search_delete AFTER DELETE ON messages BEGIN INSERT INTO message_search(message_search,rowid,text) VALUES('delete',old.rowid,json_extract(old.payload,'$.text')); END;
+        CREATE TRIGGER IF NOT EXISTS message_search_update AFTER UPDATE OF payload ON messages WHEN json_extract(old.payload,'$.text') IS NOT json_extract(new.payload,'$.text') BEGIN INSERT INTO message_search(message_search,rowid,text) VALUES('delete',old.rowid,json_extract(old.payload,'$.text')); INSERT INTO message_search(rowid,text) VALUES(new.rowid,json_extract(new.payload,'$.text')); END;
         CREATE TABLE IF NOT EXISTS chat_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS central_state (server_id TEXT PRIMARY KEY, directory TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS server_origins (server_id TEXT PRIMARY KEY,address TEXT NOT NULL);
@@ -52,7 +69,9 @@ export class ChatStore {
         CREATE TABLE IF NOT EXISTS central_outbox (client_id TEXT PRIMARY KEY, server_id TEXT NOT NULL, conversation_id TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS central_outbox_server_time ON central_outbox(server_id,created_at);
         CREATE TABLE IF NOT EXISTS read_outbox (server_id TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(server_id,message_id));
-        PRAGMA user_version=3;
+        ${version<4?"INSERT INTO message_search(rowid,text) SELECT rowid,json_extract(payload,'$.text') FROM messages;":''}
+        UPDATE conversations SET payload=json_remove(payload,'$.archived') WHERE json_type(payload,'$.archived') IS NOT NULL;
+        PRAGMA user_version=4;
         COMMIT;
       `)
     } catch (error) {
@@ -65,7 +84,7 @@ export class ChatStore {
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const store = new ChatStore(path.join(directory, 'chat.sqlite'))
     try {
-      if (store.load() === null) {
+      if (!store.#db.prepare("SELECT 1 FROM chat_meta WHERE key='state'").get()) {
         const legacy = path.join(directory, 'chat-state.json')
         let raw: string | undefined
         try {
@@ -74,9 +93,7 @@ export class ChatStore {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
         if (raw !== undefined) {
-          if (Buffer.byteLength(raw) > MAX_STATE_BYTES)
-            throw new Error('Legacy chat state exceeds the storage limit.')
-          store.save(JSON.parse(raw) as unknown)
+          store.save(JSON.parse(raw) as unknown,undefined,{authoritative:true})
           // Keep the original as a recoverable migration backup, only after COMMIT.
           const backup = path.join(directory, 'chat-state.json.migrated')
           try {
@@ -92,6 +109,9 @@ export class ChatStore {
           await unlink(legacy)
         }
       }
+      // Recover interrupted local/AI turns even if they fall outside the first page.
+      // Network queued messages are never converted to failures on restart.
+      store.#db.exec("UPDATE messages SET payload=json_set(payload,'$.status',CASE json_extract(payload,'$.status') WHEN 'streaming' THEN 'cancelled' ELSE 'failed' END) WHERE json_extract(payload,'$.serverId') IS NULL AND json_extract(payload,'$.status') IN ('streaming','sending')")
       return store
     } catch (error) {
       store.close()
@@ -100,6 +120,14 @@ export class ChatStore {
   }
 
   load(): Snapshot | null {
+    return this.#loadProjection(false)
+  }
+
+  loadView(): (Snapshot & { history: Record<string, Omit<MessagePage, 'messages'>> }) | null {
+    return this.#loadProjection(true) as ReturnType<ChatStore['loadView']>
+  }
+
+  #loadProjection(withHistory: boolean): (Snapshot & { history?: Record<string, Omit<MessagePage, 'messages'>> }) | null {
     this.#assertOpen()
     const row = this.#db
       .prepare("SELECT value FROM chat_meta WHERE key='state'")
@@ -116,18 +144,61 @@ export class ChatStore {
     const messages: Snapshot['messages'] = Object.create(
       null,
     ) as Snapshot['messages']
-    for (const conversation of conversations)
-      messages[String(conversation.id)] = []
-    for (const row of this.#db
-      .prepare(
-        'SELECT conversation_id, payload FROM messages ORDER BY position',
-      )
-      .all()) {
-      messages[String(row.conversation_id)]!.push(
-        JSON.parse(String(row.payload)) as RecordValue,
-      )
+    const history: Record<string, Omit<MessagePage, 'messages'>> = Object.create(null)
+    for (const conversation of conversations) {
+      const page = this.messagePage(String(conversation.id))
+      messages[String(conversation.id)] = page.messages
+      const { messages: _messages, ...cursor } = page
+      history[String(conversation.id)] = cursor
     }
-    return validateSnapshot({ ...header, conversations, messages })
+    const state=validateSnapshot({ ...header,conversations,messages })
+    return withHistory ? { ...state, history } : state
+  }
+
+  message(id: string): RecordValue | undefined {
+    const row = this.#db.prepare('SELECT payload FROM messages WHERE id=?').get(id)
+    return row ? JSON.parse(String(row.payload)) as RecordValue : undefined
+  }
+
+  messageByClient(serverId: string, senderId: string, clientId: string): RecordValue | undefined {
+    const row = this.#db.prepare("SELECT payload FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.senderId')=? AND json_extract(payload,'$.clientMessageId')=?").get(serverId,senderId,clientId)
+    return row ? JSON.parse(String(row.payload)) as RecordValue : undefined
+  }
+
+  messagePage(conversationId: string, input: { before?: number; after?: number; around?: string; limit?: number } = {}): MessagePage {
+    this.#assertOpen()
+    id(conversationId)
+    const limit = input.limit ?? 50
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 ||
+      [input.before,input.after].some(n=>n!==undefined&&(!Number.isSafeInteger(n)||n<0)) ||
+      [input.before,input.after,input.around].filter(v=>v!==undefined).length>1) throw new Error('Invalid history cursor.')
+    type Row = { position: number; payload: string }
+    let rows: Row[]
+    if (input.around !== undefined) {
+      const target=this.#db.prepare('SELECT position FROM messages WHERE conversation_id=? AND id=?').get(conversationId,id(input.around))
+      if(!target)throw new Error('消息不存在')
+      const newer=this.#db.prepare('SELECT position,payload FROM messages WHERE conversation_id=? AND position>=? ORDER BY position LIMIT ?').all(conversationId,Number(target.position),Math.ceil(limit/2)) as unknown as Row[]
+      const older=this.#db.prepare('SELECT position,payload FROM messages WHERE conversation_id=? AND position<? ORDER BY position DESC LIMIT ?').all(conversationId,Number(target.position),Math.floor(limit/2)) as unknown as Row[]
+      // Prefer the target and its closest neighbours within the page byte budget.
+      rows=[];let bytes=0
+      neighbourhood: for(let i=0;i<Math.max(newer.length,older.length);i++)for(const candidate of [newer[i],older[i]]) {
+        if(!candidate)continue
+        const size=Buffer.byteLength(candidate.payload)
+        if(rows.length&&bytes+size>PAGE_BYTES)break neighbourhood
+        rows.push(candidate);bytes+=size
+      }
+    } else {
+      const forward=input.after!==undefined
+      rows=this.#db.prepare(`SELECT position,payload FROM messages WHERE conversation_id=? ${input.before!==undefined?'AND position<?':forward?'AND position>?':''} ORDER BY position ${forward?'ASC':'DESC'} LIMIT ?`).all(...(input.before!==undefined||forward?[conversationId,input.before??input.after!,limit]:[conversationId,limit])) as unknown as Row[]
+      let bytes=0,count=0
+      for(const row of rows){const size=Buffer.byteLength(row.payload);if(count&&bytes+size>PAGE_BYTES)break;bytes+=size;count++}
+      rows=rows.slice(0,count)
+    }
+    rows.sort((a,b)=>a.position-b.position)
+    const before=rows[0]?.position??null,after=rows.at(-1)?.position??null
+    return { messages:rows.map(row=>JSON.parse(row.payload) as RecordValue),before,after,
+      hasOlder:before!==null&&Boolean(this.#db.prepare('SELECT 1 FROM messages WHERE conversation_id=? AND position<? LIMIT 1').get(conversationId,before)),
+      hasNewer:after!==null&&Boolean(this.#db.prepare('SELECT 1 FROM messages WHERE conversation_id=? AND position>? LIMIT 1').get(conversationId,after)) }
   }
 
   save(
@@ -137,45 +208,6 @@ export class ChatStore {
   ): void {
     this.#assertOpen()
     const snapshot = validateSnapshot(redactSecretFields(value,false))
-    // Renderer saves can race a durable incoming delivery. Never remove acknowledged central messages.
-    const previousState = this.load()
-    if (previousState)
-      for (const conversation of previousState.conversations.filter(
-        (item) => typeof item.serverId === 'string',
-      )) {
-        let current = snapshot.conversations.find(
-          (item) => item.id === conversation.id,
-        )
-        if (!current) {
-          current = conversation
-          snapshot.conversations.push(current)
-          snapshot.messages[String(current.id)] = []
-        } else if (!commit.authoritative) {
-          Object.assign(current, conversation)
-        }
-        const key = String(current.id),
-          list = snapshot.messages[key] ?? []
-        for (const message of previousState.messages[key] ?? []) {
-          const match = list.findIndex(
-            (item) =>
-              item.id === message.id ||
-              (item.clientMessageId === message.clientMessageId &&
-                item.senderId === message.senderId),
-          )
-          if (match < 0) list.push(message)
-          else if (!commit.authoritative && message.serverId)
-            list[match] = message
-        }
-        snapshot.messages[key] = list.sort(
-          (a, b) => Number(a.createdAt) - Number(b.createdAt),
-        )
-      }
-    if (previousState && !commit.authoritative) for (const conversation of previousState.conversations.filter(c=>!c.serverId)) {
-      const current=snapshot.conversations.find(c=>c.id===conversation.id)
-      if(current)for(const field of ['pinned','archived','muted'])current[field]=conversation[field]
-    }
-    if (Buffer.byteLength(JSON.stringify(snapshot)) > MAX_STATE_BYTES)
-      throw new Error('Chat state exceeds the storage limit.')
     const header = JSON.stringify({
       version: 1,
       profile: snapshot.profile,
@@ -187,20 +219,6 @@ export class ChatStore {
         .all()
         .map((row) => [String(row.id), row]),
     )
-    const previousMessages = new Map(
-      this.#db
-        .prepare('SELECT id, payload, position FROM messages')
-        .all()
-        .map((row) => [String(row.id), row]),
-    )
-    const conversationIds = new Set(
-      snapshot.conversations.map((item) => String(item.id)),
-    )
-    const messageIds = new Set(
-      Object.values(snapshot.messages)
-        .flat()
-        .map((item) => String(item.id)),
-    )
     const event = this.#db.prepare(
       'INSERT INTO chat_events(kind, entity_id, payload, created_at) VALUES (?, ?, ?, ?)',
     )
@@ -209,41 +227,45 @@ export class ChatStore {
     const putConversation = this.#db.prepare(
       'INSERT INTO conversations(id, position, payload) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET position=excluded.position, payload=excluded.payload',
     )
-    const putMessage = this.#db.prepare(
-      'INSERT INTO messages(id, conversation_id, position, payload) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET conversation_id=excluded.conversation_id, position=excluded.position, payload=excluded.payload',
-    )
+    const putMessage = this.#db.prepare('INSERT INTO messages(id, conversation_id, position, payload) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload')
+    const byId = this.#db.prepare('SELECT id,conversation_id,position,payload FROM messages WHERE id=?')
+    const byClient = this.#db.prepare("SELECT id,conversation_id,position,payload FROM messages WHERE conversation_id=? AND json_extract(payload,'$.senderId')=? AND json_extract(payload,'$.clientMessageId')=?")
     this.#db.exec('BEGIN IMMEDIATE')
     try {
-      for (const [id] of previousMessages)
-        if (!messageIds.has(id)) {
-          this.#db.prepare('DELETE FROM messages WHERE id=?').run(id)
-          record('message.deleted', id, {})
-        }
-      for (const [id] of previousConversations)
-        if (!conversationIds.has(id)) {
-          this.#db.prepare('DELETE FROM conversations WHERE id=?').run(id)
-          record('conversation.deleted', id, {})
-        }
-      snapshot.conversations.forEach((conversation, position) => {
+      // Missing rows in a paged renderer view are not deletions. Membership removal
+      // is represented explicitly by Main's unavailable flag, preserving history.
+      let nextConversationPosition=Number(this.#db.prepare('SELECT COALESCE(MAX(position),-1)+1 AS n FROM conversations').get()!.n)
+      snapshot.conversations.forEach((conversation) => {
         const id = String(conversation.id),
-          payload = JSON.stringify(conversation),
           previous = previousConversations.get(id)
+        if(previous&&!commit.authoritative){
+          const saved=JSON.parse(String(previous.payload)) as RecordValue
+          if(saved.serverId)Object.assign(conversation,saved)
+          else for(const field of ['pinned','muted'])conversation[field]=saved[field]
+        }
+        delete conversation.archived
+        const payload=JSON.stringify(conversation),position=previous?Number(previous.position):nextConversationPosition++
         if (previous?.payload === payload && previous.position === position)
           return
         putConversation.run(id, position, payload)
         record('conversation.saved', id, conversation)
       })
-      for (const [conversationId, list] of Object.entries(snapshot.messages))
-        list.forEach((message, position) => {
-          const id = String(message.id),
-            payload = JSON.stringify(message),
-            previous = previousMessages.get(id)
-          if (previous?.payload === payload && previous.position === position)
-            return
+      for (const [conversationId, list] of Object.entries(snapshot.messages)) {
+        let nextPosition=Number(this.#db.prepare('SELECT COALESCE(MAX(position),-1)+1 AS n FROM messages WHERE conversation_id=?').get(conversationId)!.n)
+        for (const message of list) {
+          const id = String(message.id)
+          const previous=byId.get(id)??byClient.get(conversationId,String(message.senderId),String(message.clientMessageId))
+          if(previous&&previous.conversation_id!==conversationId)throw new Error('Message belongs to another conversation.')
+          const old = previous ? JSON.parse(String(previous.payload)) as RecordValue : undefined
+          // Main owns all network message contents and delivery/read state.
+          if(old?.serverId&&!commit.authoritative)continue
+          if(message.serverId&&!commit.authoritative)continue
+          const payload=JSON.stringify(message)
+          if(Buffer.byteLength(payload)>MAX_RECORD_BYTES)throw new Error('Message exceeds the per-record storage limit.')
+          if(previous?.payload===payload)continue
+          const position=previous?Number(previous.position):nextPosition++
+          if(previous&&previous.id!==id)this.#db.prepare('DELETE FROM messages WHERE id=?').run(String(previous.id))
           putMessage.run(id, conversationId, position, payload)
-          const old = previous
-            ? (JSON.parse(String(previous.payload)) as RecordValue)
-            : undefined
           // Streaming saves append only new text to the journal, avoiding quadratic copies.
           if (
             old &&
@@ -256,7 +278,8 @@ export class ChatStore {
               status: message.status,
             })
           } else record('message.saved', id, message)
-        })
+        }
+      }
       if (
         this.#db.prepare("SELECT value FROM chat_meta WHERE key='state'").get()
           ?.value !== header
@@ -324,9 +347,28 @@ export class ChatStore {
       this.#db.exec('COMMIT')
     } catch (error) { this.#db.exec('ROLLBACK'); throw error }
   }
+  markConversationRead(conversationId: string): boolean {
+    const conversation=this.#db.prepare('SELECT payload FROM conversations WHERE id=?').get(conversationId)
+    if(!conversation)return false
+    const saved=JSON.parse(String(conversation.payload)) as RecordValue
+    if(typeof saved.serverId!=='string')return false
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      this.#db.prepare("INSERT OR IGNORE INTO read_outbox(server_id,message_id) SELECT json_extract(payload,'$.serverId'),id FROM messages WHERE conversation_id=? AND json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL AND length(id)=36 AND id NOT GLOB '*[^a-f0-9-]*' AND json_extract(payload,'$.serverId') IS NOT NULL").run(conversationId)
+      const result=this.#db.prepare("UPDATE messages SET payload=json_set(payload,'$.readAt',?) WHERE conversation_id=? AND json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL").run(Date.now(),conversationId)
+      if(saved.unread!==0)this.#db.prepare("UPDATE conversations SET payload=json_set(payload,'$.unread',0) WHERE id=?").run(conversationId)
+      this.#db.exec('COMMIT')
+      return Number(result.changes)>0||saved.unread!==0
+    }catch(error){this.#db.exec('ROLLBACK');throw error}
+  }
   searchMessages(query: string, conversationId?: string): { messageId: string; conversationId: string; text: string; senderName: string; createdAt: number }[] {
     if (!query.trim() || query.length > 200) return []
-    return this.#db.prepare(`SELECT id AS messageId,conversation_id AS conversationId,json_extract(payload,'$.text') AS text,json_extract(payload,'$.senderName') AS senderName,json_extract(payload,'$.createdAt') AS createdAt FROM messages WHERE (? IS NULL OR conversation_id=?) AND instr(lower(json_extract(payload,'$.text')),lower(?))>0 ORDER BY json_extract(payload,'$.createdAt') DESC LIMIT 50`).all(conversationId ?? null,conversationId ?? null,query.trim()) as unknown as { messageId:string;conversationId:string;text:string;senderName:string;createdAt:number }[]
+    const needle=query.trim(),indexed=[...needle].length>=3
+    const match='"'+needle.replaceAll('"','""')+'"'
+    // FTS narrows longer substring searches; exact matching keeps literal punctuation
+    // and short Chinese keywords consistent. Only bounded excerpts cross IPC.
+    const rows=this.#db.prepare(`SELECT id AS messageId,conversation_id AS conversationId,substr(json_extract(payload,'$.text'),max(1,instr(lower(json_extract(payload,'$.text')),lower(?))-80),360) AS text,json_extract(payload,'$.senderName') AS senderName,json_extract(payload,'$.createdAt') AS createdAt FROM messages WHERE ${indexed?'rowid IN (SELECT rowid FROM message_search WHERE message_search MATCH ?) AND ':''}(? IS NULL OR conversation_id=?) AND instr(lower(json_extract(payload,'$.text')),lower(?))>0 ORDER BY json_extract(payload,'$.createdAt') DESC LIMIT 50`).all(...[needle,...(indexed?[match]:[]),conversationId??null,conversationId??null,needle])
+    return rows as unknown as { messageId:string;conversationId:string;text:string;senderName:string;createdAt:number }[]
   }
   pluginInbox(serverId: string, groupId: string, pluginId: string): unknown[] {
     this.#assertOpen()
@@ -389,7 +431,7 @@ function validateSnapshot(value: unknown): Snapshot {
     if (
       !['direct', 'group', 'assistant'].includes(String(item.kind)) ||
       typeof item.pinned !== 'boolean' ||
-      ['archived','muted','unavailable'].some(field => item[field] !== undefined && typeof item[field] !== 'boolean') ||
+      ['muted','unavailable'].some(field => item[field] !== undefined && typeof item[field] !== 'boolean') ||
       !Number.isFinite(item.updatedAt) ||
       !Number.isSafeInteger(item.unread)
     )

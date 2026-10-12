@@ -29,13 +29,13 @@ export function useChatReading(conversationId: string | undefined, messages: rea
   const signature = last ? last.id + ':' + last.text + ':' + messages.length : ''
   useEffect(() => {
     const changed = previous.current.conversationId !== conversationId
-    if (changed) { stick.current = true; setAtBottom(true) }
+    if (changed) { stick.current = !searchOpen; setAtBottom(!searchOpen) }
     if (changed || previous.current.signature !== signature) {
-      if (stick.current || last?.role === 'self') endRef.current?.scrollIntoView({ behavior: changed ? 'instant' : 'smooth' })
+      if (!searchOpen && (stick.current || last?.role === 'self')) endRef.current?.scrollIntoView({ behavior: changed ? 'instant' : 'smooth' })
       previous.current = { conversationId, signature }
     }
     notify()
-  }, [conversationId, signature, last?.role, notify])
+  }, [conversationId, signature, last?.role, notify, searchOpen])
   const onScroll = () => {
     const node = scrollRef.current
     if (!node) return

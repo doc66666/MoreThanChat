@@ -22,7 +22,6 @@ export interface Conversation {
   serverId?: string
   targetId?: string
   remoteId?: string
-  archived?: boolean
   muted?: boolean
   unavailable?: boolean
 }
@@ -71,6 +70,7 @@ export interface ChatState {
   conversations: Conversation[]
   messages: Record<string, ChatMessage[]>
   activeConversationId: string
+  history?: Record<string, { before: number | null; after: number | null; hasOlder: boolean; hasNewer: boolean }>
 }
 
 export interface OutgoingMessage {
@@ -134,13 +134,19 @@ export function formatMessageDay(timestamp: number, now = Date.now()): string {
 
 /** Server projections never overwrite in-flight AI/local UI state. */
 export function mergeCentralProjection(current: ChatState, projection: ChatState): ChatState {
-  const next:ChatState={...current,profile:projection.profile,conversations:current.conversations.slice(),messages:{...current.messages}}
+  const next:ChatState={...current,profile:projection.profile,conversations:current.conversations.slice(),messages:{...current.messages},history:{...current.history,...projection.history}}
   for(const conversation of projection.conversations.filter(item=>item.serverId)) {
     const index=next.conversations.findIndex(item=>item.id===conversation.id)
     if(index<0)next.conversations.push(conversation)
     else next.conversations[index]={...conversation}
     const incoming=projection.messages[conversation.id]??[],old=current.messages[conversation.id]??[]
-    next.messages[conversation.id]=[...old.filter(message=>!incoming.some(item=>item.id===message.id||(item.senderId===message.senderId&&item.clientMessageId===message.clientMessageId))),...incoming].sort((a,b)=>a.createdAt-b.createdAt)
+    next.messages[conversation.id]=projection.history?.[conversation.id] ? incoming : [...old.filter(message=>!incoming.some(item=>item.id===message.id||(item.senderId===message.senderId&&item.clientMessageId===message.clientMessageId))),...incoming].sort((a,b)=>a.createdAt-b.createdAt)
+  }
+  const previousActive=current.conversations.find(c=>c.id===current.activeConversationId)
+  const active=next.conversations.find(c=>c.id===next.activeConversationId)
+  if(previousActive?.serverId&&!previousActive.unavailable&&active?.unavailable){
+    const fallback=next.conversations.find(c=>c.kind==='assistant'&&!c.unavailable)??next.conversations.find(c=>!c.unavailable)
+    if(fallback)next.activeConversationId=fallback.id
   }
   return next
 }

@@ -197,6 +197,35 @@ describe('central relay contracts', () => {
       ).status,
     ).toBe(403)
   })
+  it('restarts a partially delivered group without replaying acknowledged bodies or dropping offline recipients',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B'),c=await login(f,identity(),'C')
+    await befriend(f,a,b);await befriend(f,a,c)
+    const group=(await request(f,'groups',a.token,{name:'Durable group',memberIds:[b.userId,c.userId]})).data.groupId
+    for(const user of [a,b,c]){const events=await request(f,'events',user.token);await request(f,'ack',user.token,{ids:events.data.events.map(e=>e.id)})}
+    const body={clientMessageId:randomUUID(),targetKind:'group',targetId:group,text:'partial-group-private-body'}
+    const sent=await request(f,'messages',a.token,body),id=sent.data.messageId,serverId=f.app.serverId
+    expect(sent.data.receipt).toMatchObject({recipientCount:2,deliveredCount:0,readCount:0})
+    await request(f,'ack',b.token,{ids:[id]})
+    // B's durable ACK removes only B's body; C has not fetched or ACKed it.
+    expect(f.app.db.prepare('SELECT recipient FROM queue WHERE id=?').all(id)).toEqual([{recipient:c.userId}])
+    await f.app.close()
+    f.app=createCentralServer({directory:f.dir,mode:'public',adminToken:f.adminToken})
+    f.url='http://127.0.0.1:'+(await f.app.listen(0)).port
+    expect(f.app.serverId).toBe(serverId)
+    const restoredA=await login(f,a,'A'),restoredB=await login(f,b,'B'),restoredC=await login(f,c,'C')
+    const duplicate=await request(f,'messages',restoredA.token,body)
+    expect(duplicate.data.messageId).toBe(id)
+    expect(f.app.db.prepare('SELECT recipient FROM queue WHERE id=?').all(id)).toEqual([{recipient:c.userId}])
+    const events=await request(f,'events',restoredC.token)
+    expect(events.data.events.filter(e=>e.message?.id===id)).toHaveLength(1)
+    expect(events.data.events.find(e=>e.message?.id===id).message.text).toBe(body.text)
+    await request(f,'read',restoredB.token,{ids:[id]})
+    await request(f,'ack',restoredC.token,{ids:[id]})
+    expect(f.app.db.prepare('SELECT recipient FROM queue WHERE id=?').all(id)).toEqual([])
+    const receipt=(await request(f,'directory',restoredA.token)).data.receipts.find(r=>r.messageId===id)
+    expect(receipt).toMatchObject({recipientCount:2,deliveredCount:2,readCount:1})
+    expect(JSON.stringify(f.app.db.prepare('SELECT * FROM queue').all())+JSON.stringify(f.app.db.prepare('SELECT * FROM receipts').all())+JSON.stringify(f.app.db.prepare('SELECT * FROM message_delivery').all())).not.toContain(body.text)
+  })
   it('requires a signed identity and enforces a private whitelist before login', async () => {
     const a = identity(),
       f = await fixture('private')

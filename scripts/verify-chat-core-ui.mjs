@@ -15,6 +15,10 @@ const conversationId = 'legacy-assistant', credential = 'qa-chat-core-token'
 const migrated = { version: 1, profile: { id: 'qa-user', displayName: '验收用户', avatar: 'M' }, activeConversationId: conversationId,
   conversations: [{ id: conversationId, title: 'More AI', subtitle: '迁移验收', avatar: 'AI', accent: '#21855e', kind: 'assistant', unread: 0, pinned: true, updatedAt: 1700000000000, transportId: 'builtin.local-demo' }],
   messages: { [conversationId]: [{ id: 'legacy-note', clientMessageId: 'legacy-note', conversationId, senderId: 'system', senderName: 'system', senderAvatar: 'S', role: 'system', type: 'system', text: '原有会话已保留', createdAt: 1700000000000, status: 'sent' }] } }
+const longHistory=Array.from({length:1500},(_,i)=>({id:'legacy-history-'+i,clientMessageId:'legacy-client-'+i,conversationId,senderId:'more-ai',senderName:'More AI',senderAvatar:'AI',role:'peer',type:'text',text:'历史分页验收 '+i+' '+ 'x'.repeat(6100)+(i===0?' HISTORY-OLDEST-ANCHOR':''),createdAt:1690000000000+i,status:'sent'}))
+migrated.messages[conversationId].unshift(...longHistory)
+migrated.conversations[0].archived=true
+assert(Buffer.byteLength(JSON.stringify(migrated))>8*1024*1024)
 await writeFile(path.join(profile, 'chat-state.json'), JSON.stringify(migrated))
 let session
 const attempts = new Map(), transcripts = []
@@ -76,6 +80,27 @@ try {
   assert((await evaluate(session.client, `document.body.innerText`)).includes('原有会话已保留'))
   await assert.rejects(readFile(path.join(profile, 'chat-state.json')), { code: 'ENOENT' })
   assert.deepEqual(JSON.parse(await readFile(path.join(profile, 'chat-state.json.migrated'), 'utf8')), migrated)
+  // This is real database paging, not a full snapshot sliced by the renderer.
+  const initial=await evaluate(session.client,`window.moreThanChat.loadState().then(s=>({count:s.messages[${JSON.stringify(conversationId)}].length,bytes:new TextEncoder().encode(JSON.stringify(s)).length,archived:s.conversations[0].archived,hasOlder:s.history[${JSON.stringify(conversationId)}].hasOlder}))`)
+  assert.equal(initial.count,50);assert(initial.bytes<512*1024);assert(initial.hasOlder);assert(!initial.archived)
+  assert.equal(await evaluate(session.client,'document.querySelectorAll("button[title=归档]").length'),0)
+  await evaluate(session.client,'document.querySelector("[data-history-older]").click()')
+  await waitForExpression(session.client,'Boolean(document.querySelector("[data-history-latest]")) && !document.querySelector(".message-scroll").innerText.includes("原有会话已保留")')
+  assert.equal(await evaluate(session.client,'document.querySelectorAll("[data-message-id]").length'),50)
+  await evaluate(session.client,'document.querySelector("[data-history-newer]").click()')
+  await waitForExpression(session.client,'document.querySelector(".message-scroll").innerText.includes("原有会话已保留")')
+  await evaluate(session.client,'document.querySelector("[data-history-latest]").click()')
+  await waitForExpression(session.client,'!document.querySelector("[data-history-latest]")')
+  await evaluate(session.client,'document.querySelector("button[title=搜索聊天记录]").click()')
+  await waitForExpression(session.client,'Boolean(document.querySelector("[data-message-search]"))')
+  await evaluate(session.client,`(()=>{const n=document.querySelector('[data-message-search]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(n,'HISTORY-OLDEST-ANCHOR');n.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+  await waitForExpression(session.client,'Boolean(document.querySelector("[data-search-result=legacy-history-0]"))')
+  await evaluate(session.client,'document.querySelector("[data-search-result=legacy-history-0]").click()')
+  await waitForExpression(session.client,'document.querySelector(".message-highlight")?.dataset.messageId==="legacy-history-0"')
+  await evaluate(session.client,'document.querySelector(".message-highlight .message-copy").click()')
+  await waitForExpression(session.client,'document.querySelector(".toast")?.textContent.includes("已复制")')
+  await evaluate(session.client,'document.querySelector("[data-history-latest]").click()')
+  await waitForExpression(session.client,'!document.querySelector("[data-history-latest]") && document.body.innerText.includes("原有会话已保留")')
   await evaluate(session.client, `document.querySelector('button[title="设置"]')?.click()`)
   await waitForExpression(session.client, `Boolean(document.querySelector('.settings-drawer'))`)
   for (const [field, value] of Object.entries({ provider: 'openai-compatible', 'base-url': `http://127.0.0.1:${server.address().port}`, model: 'qa-chat-core', key: credential })) {
@@ -107,6 +132,8 @@ try {
   await waitForExpression(session.client, `document.body.innerText.includes('最后一条回复，关闭窗口后仍应保留。') && !document.querySelector('.send-button.stop')`)
   await close()
   const messages = persisted()
+  assert.equal(messages.filter(message=>message.id.startsWith('legacy-history-')).length,1500)
+  assert(messages.some(message=>message.id==='legacy-history-0'&&message.text.includes('HISTORY-OLDEST-ANCHOR')))
   assert.equal(messages.filter(message => message.role === 'self' && message.text === 'RETRY-QUESTION').length, 1)
   assert(messages.some(message => message.status === 'failed' && message.supersededById && message.errorMessage))
   assert(messages.some(message => message.status === 'sent' && message.retryOfId && message.usage?.totalTokens === 15))
@@ -117,9 +144,14 @@ try {
   session = await launch()
   await waitForExpression(session.client, `document.body.innerText.includes('最后一条回复，关闭窗口后仍应保留。') && Boolean(document.querySelector('.message-usage[data-token-total="15"]'))`)
   await evaluate(session.client, `window.moreThanChat.setModelSettings({clearApiKey:true})`)
-  console.log(JSON.stringify({ passed: true, packaged, sqlite: true, legacyMigrated: true, integrityCheck: true, singleInstance: true, markdown: true, retryWithoutDuplicate: true, doubleClickDeduplicated: true, cancellation: true, tokens: true, closeFlushed: true, restored: true, requests: transcripts.length }))
+  console.log(JSON.stringify({ passed: true, packaged, sqlite: true, legacyMigrated: true, historyOver8MiB:true,sqlitePaging:true,oldSearchAnchor:true,oldMessageCopy:true,archivalMigration:true,integrityCheck: true, singleInstance: true, markdown: true, retryWithoutDuplicate: true, doubleClickDeduplicated: true, cancellation: true, tokens: true, closeFlushed: true, restored: true, requests: transcripts.length }))
 } catch (error) {
   console.error(String(error.message))
+  if(session) {
+    console.error(await evaluate(session.client,`({historyLatest:Boolean(document.querySelector('[data-history-latest]')),older:document.querySelector('[data-history-older]')?.textContent,toast:document.querySelector('.toast')?.textContent,count:document.querySelectorAll('[data-message-id]').length,first:document.querySelector('[data-message-id]')?.dataset.messageId,last:[...document.querySelectorAll('[data-message-id]')].at(-1)?.dataset.messageId})`).catch(()=>({})))
+    const capture=await session.client.send('Page.captureScreenshot',{format:'png',fromSurface:true}).catch(()=>null)
+    if(capture){await mkdir(path.join(root,'.artifacts'),{recursive:true});await writeFile(path.join(root,'.artifacts',packaged?'chat-core-packaged-failure.png':'chat-core-failure.png'),Buffer.from(capture.data,'base64'))}
+  }
   process.exitCode = 1
 } finally {
   if (session) { try { await evaluate(session.client, `window.moreThanChat.setModelSettings({clearApiKey:true})`) } catch {}; await close().catch(() => undefined) }

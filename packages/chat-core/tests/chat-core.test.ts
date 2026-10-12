@@ -7,6 +7,7 @@ import {
   formatRelativeTime,
   interruptStreamingMessages,
   normalizeState,
+  mergeCentralProjection,
   planAssistantRetry,
   toModelTranscript,
   type ChatMessage,
@@ -15,6 +16,31 @@ import {
 } from '../src/index.js'
 
 describe('model chat updates', () => {
+  it('closes a removed relationship but still permits deliberate viewing of its local history',()=>{
+    const state=createSeedState(),assistant=state.activeConversationId,id='server:friend'
+    state.conversations.push({...state.conversations[0]!,id,kind:'direct',serverId:'server',transportId:'builtin.central'})
+    state.activeConversationId=id;state.messages[id]=[]
+    const projection={...state,conversations:state.conversations.map(c=>c.id===id?{...c,unavailable:true}:c)}
+    const removed=mergeCentralProjection(state,projection)
+    expect(removed.activeConversationId).toBe(assistant)
+    const historyView={...removed,activeConversationId:id}
+    expect(mergeCentralProjection(historyView,projection).activeConversationId).toBe(id)
+    expect(removed.conversations.find(c=>c.id===id)).toBeDefined()
+  })
+  it('replaces bounded server windows without accumulating old pages or interrupting local AI state',()=>{
+    const state=withAssistant('streaming','live AI reply'),id='server:friend'
+    state.conversations.push({...state.conversations[0]!,id,kind:'direct',serverId:'server',transportId:'builtin.central'})
+    const template={...state.messages['conversation-assistant']![0]!,conversationId:id,serverId:'server'}
+    state.messages[id]=Array.from({length:100},(_,i)=>({...template,id:'old-'+i,clientMessageId:'old-'+i}))
+    const projection:ChatState={...state,messages:{[id]:[{...template,id:'latest',clientMessageId:'latest'}]},history:{[id]:{before:100,after:100,hasOlder:true,hasNewer:false}}}
+    const merged=mergeCentralProjection(state,projection)
+    expect(merged.messages[id]!.map(m=>m.id)).toEqual(['latest'])
+    expect(merged.messages['conversation-assistant']).toBe(state.messages['conversation-assistant'])
+    expect(merged.messages['conversation-assistant']!.at(-1)!.status).toBe('streaming')
+    expect(merged.activeConversationId).toBe(state.activeConversationId)
+    expect(merged.history?.[id]?.before).toBe(100)
+    expect(state.messages[id]).toHaveLength(100)
+  })
   it('cancels only the selected conversation while another keeps streaming', () => {
     const state = withAssistant('streaming', 'partial')
     state.messages.other = [{ ...state.messages['conversation-assistant']!.at(-1)!, id: 'other-assistant', conversationId: 'other', status: 'streaming' }]

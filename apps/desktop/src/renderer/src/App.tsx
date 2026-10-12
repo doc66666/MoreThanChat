@@ -1,6 +1,7 @@
 import {
   memo,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -8,7 +9,6 @@ import {
   type KeyboardEvent,
 } from 'react'
 import {
-  Archive,
   Bot,
   Check,
   ChevronDown,
@@ -118,10 +118,12 @@ export function App() {
   const [query, setQuery] = useState('')
   const draft = chatDraft.text
   const setDraft = chatDraft.setText
-  const [showArchived,setShowArchived] = useState(false)
   const [showMessageSearch,setShowMessageSearch] = useState(false)
   const [highlightMessage,setHighlightMessage] = useState<string|null>(null)
-  const [historyLimit,setHistoryLimit] = useState(100)
+  type HistoryPage = Awaited<ReturnType<Window['moreThanChat']['getChatHistory']>>
+  const [historyWindow,setHistoryWindow] = useState<(HistoryPage & {conversationId:string})|null>(null)
+  const [historyBusy,setHistoryBusy] = useState(false)
+  const historyRequestRef=useRef(0)
   const [showDetails, setShowDetails] = useState(() => window.innerWidth > 1080)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showNewChat, setShowNewChat] = useState(false)
@@ -396,32 +398,29 @@ export function App() {
     (item) => item.id === state.activeConversationId,
   )
   const messages = active && state ? (state.messages[active.id] ?? []) : []
-  const reading = useChatReading(active?.id,messages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage))
-  useEffect(()=>{setHistoryLimit(100);setHighlightMessage(value=>messages.some(m=>m.id===value)?value:null)},[active?.id])
-  useEffect(()=>{
+  const historic=historyWindow?.conversationId===active?.id ? historyWindow : null
+  const visibleMessages=historic?.messages ?? messages
+  const reading = useChatReading(active?.id,visibleMessages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy)
+  useLayoutEffect(()=>{
     if(!highlightMessage)return
-    const index=messages.findIndex(m=>m.id===highlightMessage)
-    if(index>=0 && historyLimit<messages.length-index)setHistoryLimit(messages.length-index)
-    const timer=window.setTimeout(()=>{
-      reading.pauseReading()
-      document.querySelector('[data-message-id="'+CSS.escape(highlightMessage)+'"]')?.scrollIntoView({block:'center',behavior:'instant'})
-    },60)
+    reading.pauseReading()
+    document.querySelector('[data-message-id="'+CSS.escape(highlightMessage)+'"]')?.scrollIntoView({block:'center',behavior:'instant'})
     const clear=window.setTimeout(()=>setHighlightMessage(null),3000)
-    return()=>{clearTimeout(timer);clearTimeout(clear)}
-  },[highlightMessage,active?.id,historyLimit])
+    return()=>{clearTimeout(clear)}
+  },[highlightMessage,active?.id,historic])
   const filtered = useMemo(() => {
     if (!state) return []
     const needle = query.trim().toLocaleLowerCase()
     return [...state.conversations]
+      .filter(item=>!item.serverId || !item.unavailable)
       .filter(
         (item) => !needle || item.title.toLocaleLowerCase().includes(needle),
       )
-      .filter(item=>Boolean(item.archived)===showArchived)
       .sort(
         (a, b) =>
           Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt,
       )
-  }, [query, state, showArchived])
+  }, [query, state])
 
   if (!state || !active) return <LoadingScreen error={loadError} />
   const readyState = state
@@ -475,6 +474,7 @@ export function App() {
   )
 
   function selectConversation(id: string) {
+    historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHighlightMessage(null)
     void window.moreThanChat.focusChatWindow?.().catch(()=>undefined)
     setState((current) =>
       current
@@ -488,17 +488,36 @@ export function App() {
         : current,
     )
   }
-  async function changeConversationOptions(patch:{pinned?:boolean;archived?:boolean;muted?:boolean}) {
+  async function changeConversationOptions(patch:{pinned?:boolean;muted?:boolean}) {
     try {
       const saved=await window.moreThanChat.setConversationOptions(active!.id,patch)
       setState(current=>current?{...current,conversations:current.conversations.map(c=>c.id===active!.id?{...c,...saved}:c)}:current)
     } catch(error){setToast(errorText(error))}
   }
 
+  async function loadHistory(conversationId:string,input:{before?:number;after?:number;around?:string}={}) {
+    const request=++historyRequestRef.current
+    setHistoryBusy(true);reading.pauseReading()
+    try {
+      // Flush local AI edits before reading SQLite; network messages are already durable.
+      if(stateRef.current)await window.moreThanChat.saveState(stateRef.current)
+      const page=await window.moreThanChat.getChatHistory(conversationId,input)
+      if(request!==historyRequestRef.current)return
+      setHistoryWindow({...page,conversationId});setHighlightMessage(input.around??null)
+      if(!input.around)requestAnimationFrame(()=>{if(request===historyRequestRef.current&&reading.scrollRef.current)reading.scrollRef.current.scrollTop=0})
+    }catch(error){if(request===historyRequestRef.current)setToast(errorText(error))}
+    finally{if(request===historyRequestRef.current)setHistoryBusy(false)}
+  }
+  function returnToLatest() {
+    historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHighlightMessage(null)
+    requestAnimationFrame(()=>reading.jumpToLatest())
+  }
+
   async function sendMessage(voiceAttachment?: AttachmentRef) {
     const text = draft.trim()
     const attachment = voiceAttachment ?? pendingAttachment
     if ((!text && !attachment) || !active) return
+    if(historic)returnToLatest()
     if (attachment && active.transportId !== 'builtin.central') {
       setToast('文件和语音需要中心服务器会话')
       return
@@ -1055,12 +1074,6 @@ export function App() {
             label="插件"
             onClick={() => setShowPlugins(true)}
           />
-          <RailButton
-            icon={<Archive />}
-            label="归档"
-            active={showArchived}
-            onClick={() => setShowArchived(value=>!value)}
-          />
         </div>
         <div className="rail-bottom">
           <RailButton
@@ -1094,7 +1107,7 @@ export function App() {
           <div>
             <p className="eyebrow">工作区</p>
             <button className="workspace-name">
-              {showArchived?'归档会话':'我的空间'} <ChevronDown size={15} />
+              我的空间 <ChevronDown size={15} />
             </button>
           </div>
           <button
@@ -1201,8 +1214,9 @@ export function App() {
         <div className="chat-header-plugins">{renderSlot('chat.header')}</div>
 
         <section className="message-scroll" aria-live="polite" ref={reading.scrollRef} onScroll={reading.onScroll}>
-          {messages.length>historyLimit&&<button className="history-more" onClick={()=>setHistoryLimit(value=>value+100)}>查看更早的消息</button>}
-          {messages.length === 0 ? (
+          {(historic?.hasOlder ?? state.history?.[active.id]?.hasOlder)&&<button className="history-more" data-history-older disabled={historyBusy} onClick={()=>void loadHistory(active.id,{before:(historic?.before ?? state.history?.[active.id]?.before)!})}>{historyBusy?'加载中…':'查看更早的消息'}</button>}
+          {historic&&<button className="history-more" data-history-latest onClick={returnToLatest}>正在浏览历史 · 返回最新消息{active.unread>0?' · '+active.unread:''}</button>}
+          {visibleMessages.length === 0 ? (
             <div className="empty-conversation">
               <div className="empty-icon">
                 <MessageCircleMore />
@@ -1211,7 +1225,7 @@ export function App() {
               <p>从一条消息开始。聊天记录会保存在这台设备上。</p>
             </div>
           ) : (
-            messages.slice(-historyLimit).map((message, index,visible) => (
+            visibleMessages.map((message, index,visible) => (
               <div key={message.id}>
                 {(index===0 || new Date(visible[index-1]!.createdAt).toDateString()!==new Date(message.createdAt).toDateString())&&<div className="message-day"><span>{formatMessageDay(message.createdAt)}</span></div>}
                 {renderSlot('chat.message.before', message)}
@@ -1231,9 +1245,10 @@ export function App() {
               </div>
             ))
           )}
+          {historic?.hasNewer&&<button className="history-more" data-history-newer disabled={historyBusy} onClick={()=>void loadHistory(active.id,{after:historic.after!})}>查看较新的消息</button>}
           <div ref={reading.endRef} />
         </section>
-        {!reading.atBottom&&<button className="jump-latest" onClick={reading.jumpToLatest}>回到最新消息{active.unread>0?' · '+active.unread:''}</button>}
+        {!reading.atBottom&&<button className="jump-latest" onClick={returnToLatest}>回到最新消息{active.unread>0?' · '+active.unread:''}</button>}
 
         <footer
           className="composer-wrap"
@@ -1255,7 +1270,7 @@ export function App() {
                 : undefined,
             }}
           >
-            <ChatComposer
+            {active.serverId&&active.unavailable ? <div className="composer" data-history-readonly><p className="settings-note">好友或群关系已结束。这是保留在本机的只读历史，不能发送新消息。</p></div> : <ChatComposer
               key={active.id}
               draft={draft}
               setDraft={setDraft}
@@ -1325,7 +1340,7 @@ export function App() {
                     </button>
                   )),
                 )}
-            </ChatComposer>
+            </ChatComposer>}
           </div>
           <UiSlot
             name="chat.composer"
@@ -1365,7 +1380,6 @@ export function App() {
             onPlugins={() => setShowPlugins(true)}
             onSettings={() => active.kind === 'assistant' ? setShowSettings(true) : setShowServer(true)}
             onPin={()=>void changeConversationOptions({pinned:!active.pinned})}
-            onArchive={()=>void changeConversationOptions({archived:!active.archived})}
             onMute={()=>void changeConversationOptions({muted:!active.muted})}
           />
           {active.kind==='group'&&active.serverId===serverState?.serverId&&serverState?.directory&&serverState.directory.groups.filter(group=>group.id===active.targetId).map(group=><GroupManager key={group.id} group={group} directory={serverState.directory!} userId={serverState.userId}/>)}
@@ -1468,7 +1482,7 @@ export function App() {
           />
         </>
       )}
-      {showMessageSearch&&<MessageSearch conversationId={active.id} title={active.title} onClose={()=>setShowMessageSearch(false)} onSelect={row=>{selectConversation(row.conversationId);setHighlightMessage(row.messageId);setShowMessageSearch(false)}}/>}
+      {showMessageSearch&&<MessageSearch conversationId={active.id} title={active.title} onClose={()=>setShowMessageSearch(false)} onSelect={row=>{selectConversation(row.conversationId);setShowMessageSearch(false);void loadHistory(row.conversationId,{around:row.messageId})}}/>}
       {showServer && (
         <NetworkPanel
           snapshot={serverState}
@@ -1654,7 +1668,6 @@ function DetailsPanel({
   onPlugins,
   onSettings,
   onPin,
-  onArchive,
   onMute,
 }: {
   conversation: Conversation
@@ -1664,7 +1677,6 @@ function DetailsPanel({
   onPlugins: () => void
   onSettings: () => void
   onPin: () => void
-  onArchive: () => void
   onMute: () => void
 }) {
   return (
@@ -1695,7 +1707,7 @@ function DetailsPanel({
         </button>
       </div>
       <div className="details-card">
-        <div className="conversation-options"><button className="secondary-button" data-archive-conversation onClick={onArchive}>{conversation.archived?'移出归档':'归档会话'}</button><button className="secondary-button" data-mute-conversation aria-pressed={Boolean(conversation.muted)} onClick={onMute}>{conversation.muted?'关闭免打扰':'免打扰'}</button></div>
+        <div className="conversation-options"><button className="secondary-button" data-mute-conversation aria-pressed={Boolean(conversation.muted)} onClick={onMute}>{conversation.muted?'关闭免打扰':'免打扰'}</button></div>
         <div>
           <span>连接方式</span>
           <strong>{transportName}</strong>

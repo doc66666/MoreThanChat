@@ -14,6 +14,64 @@ import { createCentralServer } from '../../central-server/src/server.mjs'
 const cipher={available:()=>true,encrypt:(text:string)=>Buffer.from(text),decrypt:(bytes:Buffer)=>bytes.toString()}
 async function until(check:()=>boolean,ms=6000){const end=Date.now()+ms;while(Date.now()<end){if(check())return;await new Promise(r=>setTimeout(r,20))}throw new Error('Client flow timeout')}
 describe('human chat reliability',()=>{
+  it('does not ACK an incoming message until local persistence succeeds after a disk failure',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'mtc-before-ack-')),aStore=await ChatStore.open(path.join(root,'a')),bStore=await ChatStore.open(path.join(root,'b'))
+    aStore.save(createSeedState());bStore.save(createSeedState())
+    const app=createCentralServer({directory:path.join(root,'server'),mode:'public',adminToken:'qa-only-strong-admin-token-0001'}),url='http://127.0.0.1:'+(await app.listen(0)).port
+    const a=new CentralClient(await ClientIdentity.load(path.join(root,'a'),cipher),aStore,new AttachmentStore(path.join(root,'a','files')),path.join(root,'a'))
+    const b=new CentralClient(await ClientIdentity.load(path.join(root,'b'),cipher),bStore,new AttachmentStore(path.join(root,'b','files')),path.join(root,'b'))
+    try {
+      await a.connect(url,'A');await b.connect(url,'B');await a.action('friends/request',{userId:b.identity.userId});await b.action('friends/accept',{userId:a.identity.userId})
+      await until(()=>Boolean(aStore.load()?.conversations.some(c=>c.targetId===b.identity.userId)))
+      const conversation=String(aStore.load()!.conversations.find(c=>c.targetId===b.identity.userId)!.id),id=randomUUID(),save=bStore.save.bind(bStore)
+      let blocked=true,failures=0
+      vi.spyOn(bStore,'save').mockImplementation((...args)=>{
+        const candidate=args[0] as {messages:Record<string,{text:string}[]>}
+        if(blocked&&Object.values(candidate.messages).flat().some(m=>m.text==='persist-before-ack-body')){failures++;throw new Error('Injected full disk')}
+        return save(...args)
+      })
+      await a.send({conversationId:conversation,clientMessageId:id,text:'persist-before-ack-body'})
+      await until(()=>failures>0)
+      expect(bStore.messageByClient(app.serverId,a.identity.userId,id)).toBeUndefined()
+      expect(app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE recipient=? AND json_extract(payload,'$.message.clientMessageId')=?").get(b.identity.userId,id).n).toBe(1)
+      blocked=false
+      await until(()=>Boolean(bStore.messageByClient(app.serverId,a.identity.userId,id)))
+      await until(()=>app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE recipient=? AND json_extract(payload,'$.message.clientMessageId')=?").get(b.identity.userId,id).n===0)
+      expect(bStore.searchMessages('persist-before-ack-body')).toHaveLength(1)
+    }finally{vi.restoreAllMocks();await a.disconnect(false);await b.disconnect(false);await app.close();aStore.close();bStore.close();await rm(root,{recursive:true,force:true})}
+  },15000)
+  it('drains and deduplicates an old queued message outside the initial history page',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'mtc-old-queue-')),aStore=await ChatStore.open(path.join(root,'a')),bStore=await ChatStore.open(path.join(root,'b'))
+    aStore.save(createSeedState());bStore.save(createSeedState())
+    const app=createCentralServer({directory:path.join(root,'server'),mode:'public',adminToken:'qa-only-strong-admin-token-0001'}),url='http://127.0.0.1:'+(await app.listen(0)).port
+    const a=new CentralClient(await ClientIdentity.load(path.join(root,'a'),cipher),aStore,new AttachmentStore(path.join(root,'a','files')),path.join(root,'a'))
+    const b=new CentralClient(await ClientIdentity.load(path.join(root,'b'),cipher),bStore,new AttachmentStore(path.join(root,'b','files')),path.join(root,'b'))
+    try {
+      await a.connect(url,'A');await b.connect(url,'B');await a.action('friends/request',{userId:b.identity.userId});await b.action('friends/accept',{userId:a.identity.userId})
+      await until(()=>Boolean(aStore.load()?.conversations.some(c=>c.targetId===b.identity.userId)))
+      const conversation=String(aStore.load()!.conversations.find(c=>c.targetId===b.identity.userId)!.id),id=randomUUID()
+      await a.disconnect(false);await a.send({conversationId:conversation,clientMessageId:id,text:'old-outbox-must-deliver'})
+      const state=aStore.load()!,template=state.messages[conversation]![0]!
+      state.messages[conversation]=Array.from({length:80},(_,i)=>({...template,id:randomUUID(),clientMessageId:randomUUID(),status:'sent',text:'padding-'+i,createdAt:Number(template.createdAt)+i+1}))
+      aStore.save(state,undefined,{authoritative:true})
+      expect(aStore.load()!.messages[conversation]!.some(m=>m.clientMessageId===id)).toBe(false)
+      await a.connect(url,'A')
+      await until(()=>aStore.messageByClient(app.serverId,a.identity.userId,id)?.status==='sent')
+      await until(()=>Number((aStore.messageByClient(app.serverId,a.identity.userId,id)?.receipt as {deliveredCount:number}|undefined)?.deliveredCount)===1)
+      await a.send({conversationId:conversation,clientMessageId:id,text:'old-outbox-must-deliver'})
+      const grouped=await a.action('groups',{name:'Separate target',memberIds:[b.identity.userId]})
+      const groupId=String(aStore.load()!.conversations.find(c=>c.targetId===grouped.directory!.groups[0]!.id)!.id)
+      await expect(a.send({conversationId:groupId,clientMessageId:id,text:'old-outbox-must-deliver'})).rejects.toThrow('替换会话')
+      expect(aStore.outbox(app.serverId)).toEqual([])
+      expect(bStore.searchMessages('old-outbox-must-deliver')).toHaveLength(1)
+      expect(app.db.prepare('SELECT COUNT(*) AS n FROM receipts WHERE client_id=?').get(id).n).toBe(1)
+      await a.action('friends/remove',{userId:b.identity.userId})
+      await expect(a.send({conversationId:conversation,clientMessageId:randomUUID(),text:'must-not-send-to-removed-friend'})).rejects.toThrow('已不是')
+      await a.disconnect(false)
+      await expect(a.send({conversationId:conversation,clientMessageId:randomUUID(),text:'must-not-queue-for-removed-friend'})).rejects.toThrow('已不是')
+      expect(aStore.outbox(app.serverId)).toEqual([])
+    }finally{await a.disconnect(false);await b.disconnect(false);await app.close();aStore.close();bStore.close();await rm(root,{recursive:true,force:true})}
+  })
   it('rejects a familiar server id from an unconfirmed address before signing or sending queued messages',async()=>{
     const root=await mkdtemp(path.join(tmpdir(),'mtc-server-pin-')),store=await ChatStore.open(root);store.save(createSeedState())
     const app=createCentralServer({directory:path.join(root,'server'),mode:'public',adminToken:'qa-only-strong-admin-token-0001'}),address=await app.listen(0)

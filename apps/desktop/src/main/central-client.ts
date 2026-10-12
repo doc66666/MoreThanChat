@@ -515,22 +515,22 @@ export class CentralClient {
     this.#publishChat()
   }
   #publishChat(): void {
-    const state = this.store.load()
+    const state = this.store.loadView()
     for (const callback of this.#chatListeners) callback(state)
   }
   refreshChat(): void { this.#publishChat() }
   async #receive(message: RelayMessage): Promise<void> {
     const serverId=this.#snapshot.serverId,conversationId=this.#localId(message.conversationId)
     if(!serverId)throw new Error('本地消息存储未就绪')
-    const duplicate=(state:NonNullable<ReturnType<ChatStore['load']>>) => (state.messages[conversationId]??[]).some(m=>m.id===message.id||(m.senderId===message.senderId&&m.clientMessageId===message.clientMessageId))
+    const duplicate=() => Boolean(this.store.message(message.id)||this.store.messageByClient(serverId,message.senderId,message.clientMessageId))
     const before=this.store.load()
     if(!before)throw new Error('本地消息存储未就绪')
-    if(duplicate(before))return
+    if(duplicate())return
     const attachment=message.attachment?await this.attachments.receive(message.attachment):undefined
     if(serverId!==this.#snapshot.serverId)throw new Error('收件期间服务器已切换，暂不确认旧服务器消息')
     // Rebase after attachment I/O: sender receipts, read markers and preferences may have committed meanwhile.
     const state=this.store.load()!
-    if(duplicate(state))return
+    if(duplicate())return
     let conversation=state.conversations.find(c=>c.id===conversationId)
     if(!conversation){
       conversation={id:conversationId,title:message.targetKind==='group'?(message.targetName??'已离开的群聊'):message.senderName,subtitle:'历史会话 · 当前关系已不可用',
@@ -546,12 +546,13 @@ export class CentralClient {
     state.messages[conversationId]=list
     conversation.updatedAt=Math.max(Number(conversation.updatedAt),message.createdAt)
     if(message.senderId!==this.identity.userId)conversation.unread=reading?0:Number(conversation.unread)+1
-    if(!conversation.muted)conversation.archived=false
     this.store.save(state,undefined,{authoritative:true,...(reading&&this.#supportsReceipts?{readMessages:[{serverId,messageId:message.id}]}:{})})
     this.#publishChat()
   }
   #applyReceipt(state: NonNullable<ReturnType<ChatStore['load']>>, raw: unknown): string | undefined {
     const receipt = parseMessageReceipt(raw)
+    const stored=this.#snapshot.serverId?this.store.messageByClient(this.#snapshot.serverId,this.identity.userId,receipt.clientMessageId):undefined
+    if(stored){const list=state.messages[String(stored.conversationId)]??=[];if(!list.some(m=>m.senderId===stored.senderId&&m.clientMessageId===stored.clientMessageId))list.push(stored)}
     for (const list of Object.values(state.messages)) {
       const message = list.find(m=>m.serverId===this.#snapshot.serverId && m.senderId===this.identity.userId && m.clientMessageId===receipt.clientMessageId)
       if (!message) continue
@@ -568,17 +569,7 @@ export class CentralClient {
   setReadingConversation(id: string | null): void {
     this.#readingId = id
     if (!id) return
-    const state = this.store.load(), conversation = state?.conversations.find(c=>c.id===id)
-    if (!state || !conversation || typeof conversation.serverId!=='string') return
-    const reads: {serverId:string;messageId:string}[] = []
-    for (const message of state.messages[id] ?? []) {
-      if (message.role!=='peer' || message.status!=='sent' || message.readAt || !message.serverId) continue
-      message.readAt = Date.now()
-      if (/^[a-f0-9-]{36}$/.test(String(message.id))) reads.push({serverId:String(message.serverId),messageId:String(message.id)})
-    }
-    if (!reads.length && conversation.unread===0) return
-    conversation.unread = 0
-    this.store.save(state,undefined,{authoritative:true,readMessages:reads})
+    if(!this.store.markConversationRead(id))return
     this.#publishChat()
     void this.#drain()
   }
@@ -590,12 +581,15 @@ export class CentralClient {
     if(!this.store.serverOrigin(conversation.serverId))throw new Error('请先连接此服务器一次以确认地址，再排队发送消息')
     if (!input.clientMessageId || input.clientMessageId.length>80 || input.text.length>100000 || (!input.text.trim() && !input.attachmentId))
       throw new Error('消息不能为空或超出长度限制')
-    if (conversation.unavailable && conversation.serverId===this.#snapshot.serverId && this.#snapshot.status==='connected')
+    if (conversation.unavailable)
       throw new Error('你已不在此群内，或已不是本服好友')
     const wire = input.attachmentId ? await this.attachments.read(input.attachmentId) : undefined
     const latest = this.store.load()!
+    if(latest.conversations.find(c=>c.id===input.conversationId)?.unavailable)throw new Error('当前好友或群关系已不可用')
     const list = latest.messages[input.conversationId] ?? []
-    const existing = list.find(m=>m.senderId===this.identity.userId && m.clientMessageId===input.clientMessageId)
+    const existing = this.store.messageByClient(conversation.serverId,this.identity.userId,input.clientMessageId)
+    if(existing&&existing.conversationId!==input.conversationId)throw new Error('同一消息 ID 不能替换会话')
+    if(existing&&!list.some(m=>m.id===existing.id))list.push(existing)
     if (existing && (existing.text!==input.text || (existing.attachment as {id:string}|undefined)?.id!==input.attachmentId)) throw new Error('同一消息 ID 不能替换内容')
     if (existing?.status==='sent') return {eventId:String(existing.id),acceptedAt:Number(existing.createdAt)}
     const now = Number(existing?.createdAt ?? Date.now())
@@ -608,7 +602,6 @@ export class CentralClient {
     latest.messages[input.conversationId]=list
     const current=latest.conversations.find(c=>c.id===input.conversationId)!
     current.updatedAt=now
-    current.archived=false
     this.store.save(latest,undefined,{authoritative:true,outboxPut:{serverId:conversation.serverId,conversationId:input.conversationId,clientMessageId:input.clientMessageId,createdAt:now}})
     this.#publishChat()
     void this.#drain()
@@ -616,9 +609,8 @@ export class CentralClient {
   }
 
   async retryMessage(messageId: string): Promise<void> {
-    const state = this.store.load()
-    const message = Object.values(state?.messages ?? {}).flat().find(m=>m.id===messageId && m.senderId===this.identity.userId)
-    if (!message || !['failed','queued'].includes(String(message.status))) throw new Error('此消息不能重试')
+    const message = this.store.message(messageId)
+    if (!message || message.senderId!==this.identity.userId || !['failed','queued'].includes(String(message.status))) throw new Error('此消息不能重试')
     await this.send({conversationId:String(message.conversationId),clientMessageId:String(message.clientMessageId),text:String(message.text),
       ...((message.attachment as {id:string}|undefined)?.id ? {attachmentId:(message.attachment as {id:string}).id} : {})})
   }
@@ -633,7 +625,7 @@ export class CentralClient {
       for (const entry of this.store.outbox(serverId)) {
         if (epoch!==this.#epoch || this.#snapshot.status!=='connected') return
         const state=this.store.load()!,conversation=state.conversations.find(c=>c.id===entry.conversationId)
-        const message=state.messages[entry.conversationId]?.find(m=>m.clientMessageId===entry.clientMessageId && m.senderId===this.identity.userId)
+        const message=this.store.messageByClient(serverId,this.identity.userId,entry.clientMessageId)
         if (!message || !conversation) continue
         let requesting=false
         try {
@@ -645,8 +637,9 @@ export class CentralClient {
             AbortSignal.any([this.#controller!.signal,AbortSignal.timeout(10000)]))
           if(epoch!==this.#epoch)return
           if(typeof result.messageId!=='string'||!/^[a-f0-9-]{36}$/.test(result.messageId)||!Number.isSafeInteger(result.acceptedAt))throw new Error('发送回执无效')
-          const latest=this.store.load()!,item=latest.messages[entry.conversationId]?.find(m=>m.clientMessageId===entry.clientMessageId && m.senderId===this.identity.userId)
+          const latest=this.store.load()!,item=this.store.messageByClient(serverId,this.identity.userId,entry.clientMessageId)
           if(!item)throw new Error('本地发送记录丢失')
+          latest.messages[entry.conversationId]=[item]
           item.id=result.messageId;item.createdAt=result.acceptedAt;item.status='sent';delete item.errorMessage
           if(result.receipt){const receipt=parseMessageReceipt(result.receipt);if(receipt.messageId!==result.messageId||receipt.clientMessageId!==entry.clientMessageId)throw new Error('回执与发送消息不匹配');this.#applyReceipt(latest,receipt)}
           this.store.save(latest,undefined,{authoritative:true,outboxRemove:entry.clientMessageId})
@@ -654,9 +647,9 @@ export class CentralClient {
         } catch(error) {
           if(epoch!==this.#epoch)return
           const permanent=!requesting || error instanceof ServerError && error.status>=400 && error.status<500 && ![401,408,429].includes(error.status)
-          const latest=this.store.load()!,item=latest.messages[entry.conversationId]?.find(m=>m.clientMessageId===entry.clientMessageId && m.senderId===this.identity.userId)
+          const latest=this.store.load()!,item=this.store.messageByClient(serverId,this.identity.userId,entry.clientMessageId)
           if(item?.status==='sent')continue
-          if(item){item.status=permanent?'failed':'queued';item.errorMessage=error instanceof ServerError?error.message:!requesting?'本机附件丢失或损坏，请重新选择附件。':'等待恢复连接后自动重试';
+          if(item){latest.messages[entry.conversationId]=[item];item.status=permanent?'failed':'queued';item.errorMessage=error instanceof ServerError?error.message:!requesting?'本机附件丢失或损坏，请重新选择附件。':'等待恢复连接后自动重试';
             this.store.save(latest,undefined,{authoritative:true,...(permanent?{outboxRemove:entry.clientMessageId}:{})});this.#publishChat()}
           if(!permanent)break
         }

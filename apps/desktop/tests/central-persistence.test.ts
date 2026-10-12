@@ -40,7 +40,7 @@ describe('central client durability',()=>{
       const current=store.load()!,id='srv:test'
       current.conversations.push({id,title:'Friend',subtitle:'Central',avatar:'F',accent:'#123',kind:'direct',unread:1,pinned:false,updatedAt:1,transportId:'builtin.central',serverId:'srv'})
       current.messages[id]=[{id:'incoming',clientMessageId:'client',conversationId:id,senderId:'friend',senderName:'Friend',senderAvatar:'F',role:'peer',type:'text',text:'durable',createdAt:1,status:'sent',serverId:'srv'}]
-      store.save(current);store.save(stale)
+      store.save(current,undefined,{authoritative:true});store.save(stale)
       expect(store.load()?.messages[id]?.[0]?.text).toBe('durable')
     }finally{store.close();await rm(root,{recursive:true,force:true})}
   })

@@ -93,19 +93,24 @@ function registerIpc(): void {
   ipcMain.handle('chat:copy-message',(event,id:unknown)=>{
     assertTrustedIpc(event)
     if(typeof id!=='string')throw new Error('无效消息')
-    const message=Object.values(chatStore?.load()?.messages??{}).flat().find(m=>m.id===id)
+    const message=chatStore?.message(id)
     if(!message)throw new Error('消息不存在')
     clipboard.writeText(String(message.text || (message.attachment as {name?:string}|undefined)?.name || ''))
   })
   ipcMain.handle('chat:conversation-options',(event,input:{id:string;patch:Record<string,unknown>})=>{
     assertTrustedIpc(event)
-    if(!input||typeof input.id!=='string'||!input.patch||Object.keys(input.patch).some(key=>!['pinned','archived','muted'].includes(key)||typeof input.patch[key]!=='boolean'))throw new Error('无效会话设置')
+    if(!input||typeof input.id!=='string'||!input.patch||Object.keys(input.patch).some(key=>!['pinned','muted'].includes(key)||typeof input.patch[key]!=='boolean'))throw new Error('无效会话设置')
     const state=chatStore?.load(),conversation=state?.conversations.find(c=>c.id===input.id)
     if(!state||!conversation)throw new Error('会话不存在')
     Object.assign(conversation,input.patch)
     chatStore!.save(state,undefined,{authoritative:true})
     centralClient?.refreshChat()
     return input.patch
+  })
+  ipcMain.handle('chat:history',(event,input:{conversationId:string;before?:number;after?:number;around?:string;limit?:number})=>{
+    assertTrustedIpc(event)
+    if(!input||typeof input.conversationId!=='string'||!chatStore)throw new Error('无效历史请求')
+    return chatStore.messagePage(input.conversationId,input)
   })
   ipcMain.handle('app:appearance', (event, theme: unknown) => {
     assertTrustedIpc(event)
@@ -286,7 +291,7 @@ function registerIpc(): void {
   ipcMain.handle('chat:state:load', (event) => {
     assertTrustedIpc(event)
     if (!chatStore) throw new Error('Chat storage is unavailable.')
-    return chatStore.load()
+    return chatStore.loadView()
   })
   ipcMain.handle('chat:state:save', (event, value: unknown) => {
     assertTrustedIpc(event)
