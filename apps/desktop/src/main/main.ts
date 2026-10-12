@@ -59,6 +59,17 @@ app.on('second-instance', () => {
 })
 
 function registerIpc(): void {
+  ipcMain.handle('app:appearance', (event, theme: unknown) => {
+    assertTrustedIpc(event)
+    if (theme !== 'light' && theme !== 'dark') throw new Error('Invalid appearance')
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window || window.isDestroyed()) return
+    const background = theme === 'dark' ? '#24283b' : '#faf9f6'
+    const chrome = theme === 'dark' ? '#1f2335' : '#f0eee8'
+    window.setBackgroundColor(background)
+    if (process.platform !== 'darwin')
+      window.setTitleBarOverlay({ color: chrome, symbolColor: theme === 'dark' ? '#a9b1d6' : '#62645c', height: 38 })
+  })
   ipcMain.handle('central:state', (event) => {
     assertTrustedIpc(event)
     if (!centralClient) throw new Error('本机身份加密不可用')
@@ -431,12 +442,13 @@ async function createWindow(): Promise<void> {
     height: 820,
     minWidth: 900,
     minHeight: 620,
-    backgroundColor: '#f4f5f8',
+    show: false,
+    backgroundColor: '#faf9f6',
     title: 'MoreThanChat',
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#f7f8fb',
-      symbolColor: '#4b4d59',
+      color: '#f0eee8',
+      symbolColor: '#62645c',
       height: 38,
     },
     webPreferences: {
@@ -447,6 +459,7 @@ async function createWindow(): Promise<void> {
     },
   })
   mainWindow = window
+  window.once('ready-to-show', () => window.show())
   let allowClose = false
   let flushing = false
   window.on('close', (event) => {

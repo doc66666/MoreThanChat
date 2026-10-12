@@ -9,6 +9,7 @@ interface HostPingResult {
 }
 
 const api = {
+  setAppearance:(theme:'light'|'dark'):Promise<void>=>ipcRenderer.invoke('app:appearance',theme),
   getServerState:()=>ipcRenderer.invoke('central:state'),
   copyGlobalUserId:()=>ipcRenderer.invoke('central:copy-id'),
   getPluginInbox:(groupId:string,pluginId:string)=>ipcRenderer.invoke('central:plugin-inbox',{groupId,pluginId}),

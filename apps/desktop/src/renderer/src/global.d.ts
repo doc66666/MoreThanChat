@@ -61,6 +61,7 @@ export interface ModelStreamRef {
 declare global {
   interface Window {
     moreThanChat: {
+      setAppearance(theme:'light'|'dark'):Promise<void>
       getServerState():Promise<ServerSnapshot>
       copyGlobalUserId():Promise<void>
       getPluginInbox(groupId:string,pluginId:string):Promise<Extract<RelayEvent,{kind:'plugin'}>[]>

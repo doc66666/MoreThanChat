@@ -9,6 +9,8 @@
 
 插件可以注册侧栏、导航、消息区域、详情、输入区或浮层，也预留了可信插件替换输入区的能力。群成员可申请接龙、井字棋和通用同步通道，管理员批准后向同服群成员分发。加号支持文件与表情，右侧按住说话，文件和语音在中心会话内发送。
 
+客户端提供暖白陶橙的白天模式、Tokyo Night Storm 夜间模式，以及跟随系统；设置中选择外观，左下方太阳/月亮按钮快速切换。会记住每个用户的选择，并统一聊天、插件、设置与窗口标题栏的配色。
+
 Key 由 Electron Main 的系统加密服务保存，Host 通过私有 RPC 获取运行时凭据；不使用明文文件回退。当前远程分发是受限声明式包，任意可执行第三方 JS/TS 的沙箱、Android、端到端加密与正式签名安装器仍属后续阶段。
 
 ## 当前可运行原型
@@ -35,6 +37,7 @@ pnpm verify:protocol
 pnpm verify:ai-ui
 pnpm verify:chat-ui
 pnpm verify:central-ui
+pnpm verify:appearance-ui
 pnpm central:package
 pnpm package:dir
 ```
@@ -61,6 +64,7 @@ node scripts/verify-ai-ui.mjs --live
 - [Windows 内测阶段验收与使用](docs/stage-acceptance-2026-10-10.md)
 - [SQLite、Markdown、重试与 Token 阶段](docs/chat-core-stage-2026-10-10.md)
 - [中心服务、群插件和手动双端测试](docs/central-and-plugin-stage-2026-10-11.md)
+- [客户端主题与交互验收](docs/ui-appearance-2026-10-12.md)
 - [DeepSeek Harness / Cordis 调研记录](docs/upstream-study.md)
 
 更新本地参考源码：

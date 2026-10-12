@@ -15,9 +15,10 @@ import {
   CircleHelp,
   Info,
   MessageCircleMore,
-  MoreHorizontal,
+  Moon,
   Paperclip,
   PencilLine,
+  Pin,
   Phone,
   PlugZap,
   Search,
@@ -26,6 +27,7 @@ import {
   Settings,
   Smile,
   Sparkles,
+  Sun,
   Users,
   Video,
   X,
@@ -81,6 +83,8 @@ import { ChatComposer } from './ChatComposer'
 import { MessageAttachment } from './MessageAttachment'
 import { UiSlot } from './UiSlot'
 import { MessageMarkdown } from './MessageMarkdown'
+import { AppearancePicker } from './AppearancePicker'
+import { setThemePreference, useAppearance } from './theme'
 
 function uid(): string {
   return crypto.randomUUID()
@@ -91,6 +95,7 @@ function initials(value: string): string {
 }
 
 export function App() {
+  const appearance = useAppearance()
   const [state, setState] = useState<ChatState | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [serverState, setServerState] = useState<ServerSnapshot | null>(null)
@@ -137,6 +142,19 @@ export function App() {
   const stateRef = useRef(state)
   stateRef.current = state
   const saveTimerRef = useRef<number | undefined>(undefined)
+
+  useEffect(() => {
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('.composer-menu')) return
+      if (showServer) setShowServer(false)
+      else if (showSettings) setShowSettings(false)
+      else if (showPlugins) setShowPlugins(false)
+      else if (showNewChat) setShowNewChat(false)
+      else if (window.innerWidth <= 1080) setShowDetails(false)
+    }
+    document.addEventListener('keydown', escape)
+    return () => document.removeEventListener('keydown', escape)
+  }, [showServer, showSettings, showPlugins, showNewChat])
 
   useEffect(() => {
     const dispose = uiSlotRegistry.subscribe(() =>
@@ -949,7 +967,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${showDetails ? '' : 'details-collapsed'}`}>
       <div className="window-drag-region">
         <span className="window-title">
           <Sparkles size={14} /> MoreThanChat
@@ -1004,6 +1022,11 @@ export function App() {
           />
         </div>
         <div className="rail-bottom">
+          <RailButton
+            icon={appearance.resolved === 'dark' ? <Sun /> : <Moon />}
+            label={appearance.resolved === 'dark' ? '白天模式' : '夜间模式'}
+            onClick={() => setThemePreference(appearance.resolved === 'dark' ? 'light' : 'dark')}
+          />
           <RailButton
             icon={<CircleHelp />}
             label="帮助"
@@ -1144,7 +1167,7 @@ export function App() {
                 <MessageCircleMore />
               </div>
               <h2>开始一段新对话</h2>
-              <p>消息暂存在本机，接入服务器 transport 后可自动同步。</p>
+              <p>从一条消息开始。聊天记录会保存在这台设备上。</p>
             </div>
           ) : (
             messages.map((message, index) => (
@@ -1292,6 +1315,12 @@ export function App() {
               ? { modelLabel: modelSubtitle(modelSettings) }
               : {})}
             onClose={() => setShowDetails(false)}
+            onPlugins={() => setShowPlugins(true)}
+            onSettings={() => active.kind === 'assistant' ? setShowSettings(true) : setShowServer(true)}
+            onPin={() => setState(current => current ? {
+              ...current,
+              conversations: current.conversations.map(item => item.id === active.id ? { ...item, pinned: !item.pinned } : item),
+            } : current)}
           />
           {renderSlot('chat.details')}
           {active.kind === 'group' &&
@@ -1485,7 +1514,7 @@ function Avatar({
   return (
     <span
       className={`avatar ${small ? 'small' : ''}`}
-      style={{ background: conversation.accent }}
+      data-avatar-kind={conversation.kind}
     >
       {conversation.avatar}
     </span>
@@ -1567,17 +1596,23 @@ function DetailsPanel({
   transportName,
   modelLabel,
   onClose,
+  onPlugins,
+  onSettings,
+  onPin,
 }: {
   conversation: Conversation
   transportName: string
   modelLabel?: string
   onClose: () => void
+  onPlugins: () => void
+  onSettings: () => void
+  onPin: () => void
 }) {
   return (
     <aside className="details-panel">
       <div className="details-header">
         <strong>会话详情</strong>
-        <button className="icon-button" onClick={onClose}>
+        <button className="icon-button" onClick={onClose} aria-label="关闭会话详情">
           <X size={18} />
         </button>
       </div>
@@ -1587,22 +1622,22 @@ function DetailsPanel({
         <p>{conversation.subtitle}</p>
       </div>
       <div className="details-actions">
-        <button>
-          <Search size={18} />
-          <span>搜索</span>
+        <button onClick={onPlugins}>
+          <PlugZap size={18} />
+          <span>插件</span>
         </button>
-        <button>
-          <Bot size={18} />
-          <span>AI 总结</span>
+        <button onClick={onSettings}>
+          {conversation.kind === 'assistant' ? <Bot size={18} /> : <Users size={18} />}
+          <span>{conversation.kind === 'assistant' ? '模型设置' : '联系人'}</span>
         </button>
-        <button>
-          <MoreHorizontal size={18} />
-          <span>更多</span>
+        <button onClick={onPin} aria-pressed={conversation.pinned}>
+          <Pin size={18} />
+          <span>{conversation.pinned ? '取消置顶' : '置顶会话'}</span>
         </button>
       </div>
       <div className="details-card">
         <div>
-          <span>传输插件</span>
+          <span>连接方式</span>
           <strong>{transportName}</strong>
         </div>
         {modelLabel && (
@@ -1622,7 +1657,7 @@ function DetailsPanel({
       </div>
       <div className="details-note">
         <PlugZap size={17} />
-        <p>这块区域也是 UI Slot。未来插件可以添加成员面板、任务或知识库。</p>
+        <p>把常用工具留在手边。会话插件可以为这里添加协作面板和更多功能。</p>
       </div>
     </aside>
   )
@@ -2025,11 +2060,12 @@ function ModelSettingsPanel({
         data-has-api-key={snapshot?.hasApiKey ? 'true' : 'false'}
       >
         <div className="drawer-header">
-          <h2>模型设置</h2>
+          <h2>设置</h2>
           <button type="button" className="icon-button" onClick={onClose}>
             <X size={18} />
           </button>
         </div>
+        <AppearancePicker />
         <button
           type="button"
           className="secondary-button"
@@ -2037,6 +2073,7 @@ function ModelSettingsPanel({
         >
           中心服务器 / 身份 / 联系人
         </button>
+        <div className="settings-section-heading"><h3>AI 模型</h3></div>
         <p className="settings-note">
           API Key
           由主进程使用系统加密保存，仅供模型服务调用。界面只显示是否已保存，不回传密钥。

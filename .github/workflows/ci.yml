@@ -62,6 +62,9 @@ jobs:
       - name: Verify two-user relay, group plugin approval and media delivery
         if: runner.os == 'Windows'
         run: node scripts/verify-central-ui.mjs
+      - name: Verify light and dark appearance, persistence and responsive layout
+        if: runner.os == 'Windows'
+        run: node scripts/verify-appearance-ui.mjs
       - name: Verify packaged chat and plugin workflow
         if: runner.os == 'Windows'
         shell: pwsh
@@ -72,6 +75,8 @@ jobs:
           node scripts/verify-chat-core-ui.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/verify-central-ui.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-appearance-ui.mjs
       - name: Save Windows application directory
         if: success() && runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

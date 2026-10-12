@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import { Mic, Plus, SendHorizontal } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Mic, Paperclip, Plus, SendHorizontal } from 'lucide-react'
 import type { AttachmentRef } from '@more-than-chat/central-protocol'
 export function ChatComposer({
   draft,
@@ -35,6 +35,32 @@ export function ChatComposer({
   const held = useRef(false),
     recorder = useRef<MediaRecorder | null>(null),
     cancelled = useRef(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    const input = inputRef.current
+    if (!input) return
+    input.style.height = 'auto'
+    input.style.height = Math.min(input.scrollHeight, 140) + 'px'
+  }, [draft])
+  useEffect(() => {
+    if (!menu) return
+    const outside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenu(false)
+    }
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setMenu(false)
+      menuRef.current?.querySelector('button')?.focus()
+    }
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', outside)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [menu])
   const begin = async () => {
     if (!canAttach || generating) return
     held.current = true
@@ -102,18 +128,22 @@ export function ChatComposer({
   return (
     <div className="composer">
       <div className="normal-composer-row">
-        <div className="composer-plus-wrap">
+        <div className="composer-plus-wrap" ref={menuRef}>
           <button
             type="button"
             className="composer-plus"
             title="附件与表情"
+            aria-expanded={menu}
+            aria-controls="composer-attachments-menu"
             onClick={() => setMenu((value) => !value)}
           >
             <Plus size={22} />
           </button>
           {menu && (
-            <div className="composer-menu">
+            <div className="composer-menu" id="composer-attachments-menu" aria-label="附件与表情">
               <button
+                type="button"
+                className="composer-file-action"
                 disabled={!canAttach}
                 onClick={() => {
                   setMenu(false)
@@ -125,15 +155,18 @@ export function ChatComposer({
                     .catch((e) => onError(e.message))
                 }}
               >
-                上传文件 / 图片（5 MiB）
+                <Paperclip size={16} /> 文件或图片 <small>5 MiB</small>
               </button>
-              <div>
+              <div className="composer-emoji-grid">
                 {['🙂', '😂', '👍', '❤️', '🎉', '😮'].map((emoji) => (
                   <button
                     key={emoji}
+                    type="button"
+                    aria-label={`插入表情 ${emoji}`}
                     onClick={() => {
                       setDraft(draft + emoji)
                       setMenu(false)
+                      inputRef.current?.focus()
                     }}
                   >
                     {emoji}
@@ -144,10 +177,12 @@ export function ChatComposer({
           )}
         </div>
         <textarea
+          ref={inputRef}
+          aria-label={`发消息给 ${title}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               onSend()
             }
