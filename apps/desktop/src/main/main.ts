@@ -32,6 +32,17 @@ let quitRequested = false
 let centralClient: CentralClient | null = null
 let attachmentStore: AttachmentStore | null = null
 let centralCleanup: (() => void)[] = []
+let previousUnread = 0
+function updateUnreadNotice(value: unknown): void {
+  const state=value as {conversations?:{unread?:number;muted?:boolean}[]}|null
+  const count=(state?.conversations??[]).reduce((total,c)=>total+(c.muted?0:Math.max(0,Number(c.unread)||0)),0)
+  if(mainWindow&&!mainWindow.isDestroyed()){
+    mainWindow.setTitle(count ? '('+count+' 条未读) MoreThanChat' : 'MoreThanChat')
+    if(count>previousUnread&&!mainWindow.isFocused())mainWindow.flashFrame(true)
+  }
+  if(process.platform!=='win32')app.setBadgeCount(count)
+  previousUnread=count
+}
 
 const systemCipher = {
   available: () =>
@@ -59,6 +70,43 @@ app.on('second-instance', () => {
 })
 
 function registerIpc(): void {
+  ipcMain.handle('app:window-focused',event=>{assertTrustedIpc(event);return Boolean(mainWindow?.isFocused())})
+  ipcMain.handle('app:focus-window',event=>{
+    assertTrustedIpc(event)
+    if(mainWindow&&!mainWindow.isDestroyed()){if(mainWindow.isMinimized())mainWindow.restore();mainWindow.show();mainWindow.focus()}
+  })
+  ipcMain.handle('chat:set-reading',(event,id:unknown)=>{
+    assertTrustedIpc(event)
+    if(id!==null&&(typeof id!=='string'||id.length>200))throw new Error('Invalid conversation')
+    centralClient?.setReadingConversation(mainWindow?.isFocused() && !mainWindow.isMinimized() ? id as string|null : null)
+  })
+  ipcMain.handle('chat:retry-message',(event,id:unknown)=>{
+    assertTrustedIpc(event)
+    if(typeof id!=='string'||id.length>200||!centralClient)throw new Error('无效消息')
+    return centralClient.retryMessage(id)
+  })
+  ipcMain.handle('chat:search',(event,input:{query:string;conversationId?:string})=>{
+    assertTrustedIpc(event)
+    if(!input||typeof input.query!=='string'||input.query.length>200||(input.conversationId!==undefined&&typeof input.conversationId!=='string'))throw new Error('无效搜索条件')
+    return chatStore?.searchMessages(input.query,input.conversationId) ?? []
+  })
+  ipcMain.handle('chat:copy-message',(event,id:unknown)=>{
+    assertTrustedIpc(event)
+    if(typeof id!=='string')throw new Error('无效消息')
+    const message=Object.values(chatStore?.load()?.messages??{}).flat().find(m=>m.id===id)
+    if(!message)throw new Error('消息不存在')
+    clipboard.writeText(String(message.text || (message.attachment as {name?:string}|undefined)?.name || ''))
+  })
+  ipcMain.handle('chat:conversation-options',(event,input:{id:string;patch:Record<string,unknown>})=>{
+    assertTrustedIpc(event)
+    if(!input||typeof input.id!=='string'||!input.patch||Object.keys(input.patch).some(key=>!['pinned','archived','muted'].includes(key)||typeof input.patch[key]!=='boolean'))throw new Error('无效会话设置')
+    const state=chatStore?.load(),conversation=state?.conversations.find(c=>c.id===input.id)
+    if(!state||!conversation)throw new Error('会话不存在')
+    Object.assign(conversation,input.patch)
+    chatStore!.save(state,undefined,{authoritative:true})
+    centralClient?.refreshChat()
+    return input.patch
+  })
   ipcMain.handle('app:appearance', (event, theme: unknown) => {
     assertTrustedIpc(event)
     if (theme !== 'light' && theme !== 'dark') throw new Error('Invalid appearance')
@@ -118,10 +166,19 @@ function registerIpc(): void {
         ![
           'friends/request',
           'friends/accept',
+          'friends/reject',
+          'friends/cancel',
+          'friends/remove',
           'groups',
           'groups/invite',
           'groups/join',
           'groups/accept',
+          'groups/reject',
+          'groups/rename',
+          'groups/kick',
+          'groups/transfer',
+          'groups/leave',
+          'groups/dissolve',
           'plugins/submit',
           'plugins/review',
           'plugins/event',
@@ -460,6 +517,8 @@ async function createWindow(): Promise<void> {
   })
   mainWindow = window
   window.once('ready-to-show', () => window.show())
+  window.on('blur',()=>{centralClient?.setReadingConversation(null);window.webContents.send('app:window-focus-changed',false)})
+  window.on('focus',()=>{window.flashFrame(false);window.webContents.send('app:window-focus-changed',true)})
   let allowClose = false
   let flushing = false
   window.on('close', (event) => {
@@ -592,6 +651,11 @@ app
         chatStore,
         attachmentStore,
         app.getPath('userData'),
+        async (serverId,previous,next)=>{
+          if(!mainWindow||mainWindow.isDestroyed())return false
+          const result=await dialog.showMessageBox(mainWindow,{type:'warning',message:'确认服务器地址变更',detail:'服务器 ID：'+serverId+'\n之前地址：'+previous+'\n新地址：'+next+'\n\n继续连接会将待发送消息交给新地址。请确认这是你迁移或信任的同一服务器。',buttons:['取消','确认连接新地址'],defaultId:0,cancelId:0})
+          return result.response===1
+        },
       )
       await centralClient.load()
       const broadcast = (channel: string, value: unknown) => {
@@ -602,7 +666,7 @@ app
         centralClient.subscribe((snapshot) =>
           broadcast('central:changed', snapshot),
         ),
-        centralClient.onChat((state) => broadcast('central:chat', state)),
+        centralClient.onChat((state) => {updateUnreadNotice(state);broadcast('central:chat', state)}),
         centralClient.onPlugin((event) => broadcast('central:plugin', event)),
       ]
     } catch {

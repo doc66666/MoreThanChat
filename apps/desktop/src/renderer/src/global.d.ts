@@ -61,6 +61,14 @@ export interface ModelStreamRef {
 declare global {
   interface Window {
     moreThanChat: {
+      getWindowFocus():Promise<boolean>
+      focusChatWindow():Promise<void>
+      onWindowFocusChanged(listener:(focused:boolean)=>void):()=>void
+      setReadingConversation(id:string|null):Promise<void>
+      retryChatMessage(id:string):Promise<void>
+      searchChatMessages(query:string,conversationId?:string):Promise<{messageId:string;conversationId:string;text:string;senderName:string;createdAt:number}[]>
+      copyChatMessage(id:string):Promise<void>
+      setConversationOptions(id:string,patch:{pinned?:boolean;archived?:boolean;muted?:boolean}):Promise<{pinned?:boolean;archived?:boolean;muted?:boolean}>
       setAppearance(theme:'light'|'dark'):Promise<void>
       getServerState():Promise<ServerSnapshot>
       copyGlobalUserId():Promise<void>
@@ -68,7 +76,7 @@ declare global {
       connectServer(address:string,displayName:string):Promise<ServerSnapshot>
       disconnectServer():Promise<void>
       serverAction(route:string,data:unknown):Promise<ServerSnapshot>
-      sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string}):Promise<{eventId:string;acceptedAt:number}>
+      sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string}):Promise<{eventId:string;acceptedAt:number;queued?:boolean}>
       chooseAttachment():Promise<AttachmentRef|null>
       recordVoice(input:{data:string;mime:string;durationMs:number}):Promise<AttachmentRef>
       readAttachment(id:string):Promise<WireAttachment>

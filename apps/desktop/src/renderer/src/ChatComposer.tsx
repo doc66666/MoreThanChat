@@ -125,6 +125,16 @@ export function ChatComposer({
     if (recorder.current && recorder.current.state !== 'inactive')
       recorder.current.stop()
   }
+  useEffect(()=>()=>{
+    cancelled.current=true;held.current=false
+    if(recorder.current && recorder.current.state!=='inactive')recorder.current.stop()
+  },[])
+  useEffect(()=>{
+    if(!recording)return
+    const escape=(event:globalThis.KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();stop(true)}}
+    document.addEventListener('keydown',escape)
+    return()=>document.removeEventListener('keydown',escape)
+  },[recording])
   return (
     <div className="composer">
       <div className="normal-composer-row">
@@ -178,6 +188,7 @@ export function ChatComposer({
         </div>
         <textarea
           ref={inputRef}
+          maxLength={100000}
           aria-label={`发消息给 ${title}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

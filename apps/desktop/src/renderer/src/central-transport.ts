@@ -14,10 +14,7 @@ export const centralTransport: ChatTransportPlugin = {
   create: () => ({
     id: 'builtin.central',
     displayName: '中心服务器传输',
-    async connect() {
-      if ((await window.moreThanChat.getServerState()).status !== 'connected')
-        throw new Error('请先连接中心服务器')
-    },
+    async connect() {},
     async disconnect() {},
     async send(input) {
       return window.moreThanChat.sendCentralMessage({

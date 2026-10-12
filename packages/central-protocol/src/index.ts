@@ -38,6 +38,7 @@ export interface RelayMessage {
   text: string
   createdAt: number
   attachment?: WireAttachment
+  targetName?: string
 }
 export interface Group {
   id: string
@@ -62,12 +63,23 @@ export interface GroupPlugin {
   state: Record<string, unknown>
 }
 export interface Directory {
+  revision?: number
+  receipts?: MessageReceipt[]
   self: Member
   friends: Member[]
   requests: Member[]
+  outgoingRequests?: Member[]
   groups: Group[]
   plugins: GroupPlugin[]
   groupRequests?: { groupId: string; groupName: string; user: Member }[]
+}
+export interface MessageReceipt {
+  messageId: string
+  clientMessageId: string
+  acceptedAt: number
+  recipientCount: number
+  deliveredCount: number
+  readCount: number
 }
 export interface ServerSnapshot {
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -81,7 +93,7 @@ export interface ServerSnapshot {
 }
 export type RelayEvent =
   | { id: string; kind: 'message'; message: RelayMessage }
-  | { id: string; kind: 'directory' }
+  | { id: string; kind: 'directory'; receipt?: MessageReceipt }
   | {
       id: string
       kind: 'plugin'
@@ -261,8 +273,11 @@ export function parseDirectory(value: unknown): Directory {
         })
   return {
     self: member(v.self),
+    ...(v.revision === undefined ? {} : { revision: parseRevision(v.revision) }),
+    ...(v.receipts === undefined ? {} : { receipts: list(v.receipts, 200).map(parseMessageReceipt) }),
     friends: list(v.friends, 500).map(member),
     requests: list(v.requests, 500).map(member),
+    ...(v.outgoingRequests===undefined?{}:{outgoingRequests:list(v.outgoingRequests,500).map(member)}),
     groups,
     plugins,
     groupRequests,
@@ -272,7 +287,7 @@ export function parseRelayEvent(value: unknown): RelayEvent {
   const e = record(value),
     id = boundedText(e.id, 80)
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Invalid event id')
-  if (e.kind === 'directory') return { id, kind: 'directory' }
+  if (e.kind === 'directory') return { id, kind: 'directory', ...(e.receipt === undefined ? {} : { receipt: parseMessageReceipt(e.receipt) }) }
   if (e.kind === 'plugin') {
     if (
       !validGroupId(e.groupId) ||
@@ -317,9 +332,24 @@ export function parseRelayEvent(value: unknown): RelayEvent {
       senderName: boundedText(m.senderName, 80),
       text: boundedText(m.text, 100000),
       createdAt: Number(m.createdAt),
+      ...(m.targetName===undefined?{}:{targetName:boundedText(m.targetName,80)}),
       ...(m.attachment === undefined
         ? {}
         : { attachment: m.attachment as WireAttachment }),
     },
   }
+}
+
+function parseRevision(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new Error('Invalid directory revision')
+  return Number(value)
+}
+export function parseMessageReceipt(value: unknown): MessageReceipt {
+  const r = record(value)
+  if (typeof r.messageId !== 'string' || !/^[a-f0-9-]{36}$/.test(r.messageId)
+    || typeof r.clientMessageId !== 'string' || !r.clientMessageId || r.clientMessageId.length > 80
+    || !Number.isSafeInteger(r.acceptedAt) || Number(r.acceptedAt) < 0
+    || ![r.recipientCount, r.deliveredCount, r.readCount].every(n => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= 19)
+    || Number(r.readCount) > Number(r.deliveredCount) || Number(r.deliveredCount) > Number(r.recipientCount)) throw new Error('Invalid message receipt')
+  return { messageId: r.messageId, clientMessageId: r.clientMessageId, acceptedAt: Number(r.acceptedAt), recipientCount: Number(r.recipientCount), deliveredCount: Number(r.deliveredCount), readCount: Number(r.readCount) }
 }

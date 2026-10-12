@@ -531,3 +531,44 @@ svg { stroke-width: 1.7; }
 @media (min-width: 1081px) { .app-shell.details-collapsed { grid-template-columns: 76px 294px minmax(420px, 1fr); } }
 @media (max-height: 720px) { .app-rail { padding-top: 12px; } .rail-actions { margin-top: 12px; gap: 2px; } .rail-button { height: 45px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
+.chat-panel { position: relative; }
+.message-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+.message-copy { opacity: 0; }
+.message-row:hover .message-copy, .message-copy:focus-visible { opacity: 1; }
+.message-actions button { border: 0; border-radius: 5px; padding: 3px 5px; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
+.message-actions button:hover { background: var(--hover); color: var(--text); }
+.message-resend { color: var(--accent-text) !important; }
+.message-highlight .bubble { outline: 2px solid var(--accent); outline-offset: 3px; }
+.history-more { display: block; margin: 0 auto 20px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-secondary); cursor: pointer; }
+.jump-latest { position: absolute; right: 22px; bottom: 154px; z-index: 12; padding: 9px 13px; border: 1px solid var(--accent-border); background: var(--surface); color: var(--accent-text); border-radius: 20px; box-shadow: 0 4px 14px var(--shadow-color); cursor: pointer; font-size: 11px; }
+.connection-note { margin: 0 4px 8px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.search-drawer { display: flex; flex-direction: column; gap: 10px; }
+.search-drawer .search-box { flex-shrink: 0; margin: 14px 0 0; }
+.search-result { display: block; border: 1px solid var(--border); padding: 12px; border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; text-align: left; }
+.search-result:hover { border-color: var(--accent-border); background: var(--accent-soft); }
+.search-result > span { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+.search-result time { color: var(--muted); font-size: 10px; }
+.search-result p { white-space: pre-wrap; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; margin: 8px 0 0; }
+.conversation-options { flex-wrap: wrap; gap: 7px; }
+.conversation-options button { font-size: 10px; height: 31px; padding: 0 10px; }
+.conversation-options button[aria-pressed="true"] { color: var(--accent-text); background: var(--accent-soft); }
+.conversation-preview-row > span svg { vertical-align: -2px; }
+.conversation-preview-row .muted-unread { color: var(--text-secondary); background: var(--hover); }
+.contact-open { border: 0; padding: 0; background: transparent; color: var(--text); cursor: pointer; flex: 1; display: flex; align-items: center; justify-content: space-between; text-align: left; gap: 10px; }
+.contact-remove { flex-shrink: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 7px; border-radius: 6px; margin-left: 5px; }
+.contact-remove:hover { color: var(--danger); background: var(--danger-soft); }
+.contact-row > button:not(.contact-open) { cursor: pointer; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--surface); color: var(--text-secondary); }
+.group-manager { margin: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 12px; }
+.group-manager summary { cursor: pointer; color: var(--text-secondary); font-weight: 600; }
+.group-manager[open] > :not(summary) { margin-top: 12px; }
+.group-member { display: flex; justify-content: space-between; align-items: center; gap: 5px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.group-member strong { display: block; font-size: 12px; font-weight: 550; }
+.group-member small { display: block; color: var(--muted); margin-top: 4px; font-size: 10px; }
+.member-actions { display: flex; gap: 4px; }
+.member-actions button { font-size: 10px; border: 1px solid var(--border); background: transparent; color: var(--text-secondary); padding: 5px; border-radius: 5px; cursor: pointer; }
+.group-manager .secondary-button { font-size: 11px; padding: 0 10px; }
+.danger-text { color: var(--danger); }
+.danger-confirm { padding: 12px; border: 1px solid var(--danger-border); border-radius: 9px; background: var(--danger-soft); }
+.danger-confirm p { font-size: 12px; line-height: 1.6; margin-top: 0; }
+.danger-confirm small { color: var(--text-secondary); display: block; line-height: 1.6; }
+.danger-confirm > div { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }

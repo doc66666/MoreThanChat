@@ -137,6 +137,85 @@ async function approve(pluginId) {
   )
   await click(a, '.network-drawer .drawer-header button')
 }
+async function verifyHumanWorkflow(aid,bid,group) {
+  await openNetwork(a)
+  await click(a,'[data-disconnect-server]')
+  await poll(a,'window.moreThanChat.getServerState().then(s=>s.status==="disconnected")')
+  await click(a,'.network-drawer .drawer-header button')
+  await send(a,'offline-queued-durable-marker')
+  await poll(a,'document.querySelector(".status-queued")?.textContent.includes("offline-queued-durable-marker")')
+  await close(a);a=undefined;a=await launch(profiles.a)
+  await connect(a,'验收用户 A')
+  await click(a,'.network-drawer .drawer-header button')
+  await poll(b,'document.body.innerText.includes("offline-queued-durable-marker")')
+  assert.equal(await evaluate(b.client,'[...document.querySelectorAll("[data-message-id]")].filter(n=>n.textContent.includes("offline-queued-durable-marker")).length'),1)
+  await b.client.send('Page.bringToFront')
+  await evaluate(b.client,'window.moreThanChat.focusChatWindow()')
+  await poll(b,'window.moreThanChat.getWindowFocus()')
+  await poll(a,'window.moreThanChat.loadState().then(s=>Object.values(s.messages).flat().some(m=>m.text==="offline-queued-durable-marker"&&m.receipt?.readCount===1))')
+  const groupConversation=(await evaluate(b.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===group.id).id
+  const aGroupConversation=(await evaluate(a.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===group.id).id
+  await evaluate(a.client,`Promise.all(Array.from({length:35},(_,index)=>window.moreThanChat.sendCentralMessage({conversationId:${JSON.stringify(aGroupConversation)},clientMessageId:crypto.randomUUID(),text:'历史阅读测试 '+index+'：'+('这是一段用于测试滚动位置的消息。'.repeat(8))})))`)
+  await poll(b,'document.body.innerText.includes("历史阅读测试 34：")')
+  await evaluate(b.client,'(()=>{const n=document.querySelector(".message-scroll");n.scrollTop=0;n.dispatchEvent(new Event("scroll"))})()')
+  await evaluate(b.client,'window.moreThanChat.setReadingConversation(null)')
+  await send(a,'unread-off-bottom-marker')
+  await poll(b,`window.moreThanChat.loadState().then(s=>s.messages[${JSON.stringify(groupConversation)}].some(m=>m.text==='unread-off-bottom-marker')&&s.conversations.find(c=>c.id===${JSON.stringify(groupConversation)}).unread>0)`)
+  assert((await evaluate(b.client,'document.querySelector(".message-scroll").scrollTop'))<100)
+  await click(b,'.jump-latest')
+  await poll(a,'window.moreThanChat.loadState().then(s=>Object.values(s.messages).flat().some(m=>m.text==="unread-off-bottom-marker"&&m.receipt?.readCount===1))')
+  await openDetails(b)
+  await click(b,'[data-mute-conversation]')
+  await poll(b,`window.moreThanChat.loadState().then(s=>s.conversations.find(c=>c.id===${JSON.stringify(groupConversation)}).muted)`)
+  await click(b,'[data-archive-conversation]')
+  await poll(b,`window.moreThanChat.loadState().then(s=>s.conversations.find(c=>c.id===${JSON.stringify(groupConversation)}).archived)`)
+  await click(b,'[data-conversation-id="conversation-assistant"]')
+  await send(a,'muted-archive-arrival')
+  await poll(b,`window.moreThanChat.loadState().then(s=>{const c=s.conversations.find(c=>c.id===${JSON.stringify(groupConversation)});return c.archived&&c.muted&&c.unread>0})`)
+  await click(b,'button[title="归档"]')
+  await click(b,`[data-conversation-id="${groupConversation}"]`)
+  await click(b,'[data-archive-conversation]')
+  await click(b,'button[title="归档"]')
+  await input(a,'.composer textarea','group-draft-survives-restart')
+  await openNetwork(a);await click(a,`[data-friend="${bid}"]`)
+  await input(a,'.composer textarea','friend-draft-survives-switch')
+  await openNetwork(a);await click(a,`[data-group="${group.id}"]`)
+  await poll(a,'document.querySelector(".composer textarea").value==="group-draft-survives-restart"')
+  await close(a);a=undefined;a=await launch(profiles.a)
+  await poll(a,'document.querySelector(".composer textarea").value==="group-draft-survives-restart"')
+  await input(a,'.composer textarea','')
+  await click(b,'button[title="搜索聊天记录"]')
+  await input(b,'[data-message-search]','offline-queued-durable-marker')
+  await click(b,'.search-result')
+  await poll(b,'document.querySelector(".message-highlight")?.textContent.includes("offline-queued-durable-marker")')
+  await click(b,'.message-highlight .message-copy')
+  await poll(b,'document.querySelector(".toast")?.textContent.includes("已复制")')
+  await openDetails(a)
+  await click(a,'.group-manager summary')
+  await input(a,'[data-rename-group-field]','可靠聊天验收群')
+  await click(a,'[data-rename-group]')
+  await poll(b,'document.querySelector(".chat-identity h1").textContent==="可靠聊天验收群"')
+  for(const [label,session] of [['a',a],['b',b]]) {
+    const capture=await session.client.send('Page.captureScreenshot',{format:'png',fromSurface:true})
+    await writeFile(path.join(root,'.artifacts',`chat-workflow-${packaged?'packaged-':''}${label}.png`),Buffer.from(capture.data,'base64'))
+  }
+  await click(a,`[data-transfer-owner="${bid}"]`)
+  await click(a,'[data-confirm-group-action]')
+  await poll(a,`window.moreThanChat.getServerState().then(s=>s.directory.groups.find(g=>g.id===${JSON.stringify(group.id)}).ownerId===${JSON.stringify(bid)})`)
+  await click(a,'[data-leave-group]');await click(a,'[data-confirm-group-action]')
+  await poll(a,'window.moreThanChat.getServerState().then(s=>s.directory.groups.length===0)')
+  await click(b,'.group-manager summary')
+  await click(b,'[data-dissolve-group]');await click(b,'[data-confirm-group-action]')
+  await poll(b,'window.moreThanChat.getServerState().then(s=>s.directory.groups.length===0)')
+  await openNetwork(b);await click(b,`[data-remove-friend="${aid}"]`);await click(b,'[data-confirm-remove-friend]')
+  await poll(a,'window.moreThanChat.getServerState().then(s=>s.directory.friends.length===0)')
+  await openNetwork(a);await input(a,'[data-friend-id]',bid);await click(a,'[data-request-friend]')
+  await click(b,`[data-reject-friend="${aid}"]`)
+  await poll(a,'window.moreThanChat.getServerState().then(s=>s.directory.outgoingRequests.length===0)')
+  await click(a,'[data-request-friend]');await click(a,`[data-cancel-friend="${bid}"]`)
+  await poll(b,'window.moreThanChat.getServerState().then(s=>s.directory.requests.length===0)')
+  await click(a,'[data-request-friend]');await click(b,`[data-accept-friend="${aid}"]`)
+}
 try {
   a = await launch(profiles.a)
   b = await launch(profiles.b)
@@ -379,6 +458,7 @@ try {
       Buffer.from(capture.data, 'base64'),
     )
   }
+  await verifyHumanWorkflow(aid,bid,group)
   console.log(
     JSON.stringify({
       passed: true,
@@ -397,6 +477,7 @@ try {
       narrowWindowPluginAccess: true,
       fileRelay: true,
       holdVoiceRelay: true,
+      durableOfflineOutbox:true,deliveryAndReadReceipts:true,unreadReadingPosition:true,archivingAndMute:true,draftPersistence:true,localHistorySearch:true,messageCopy:true,groupAdministration:true,friendRequestManagement:true,
     }),
   )
 } catch (e) {

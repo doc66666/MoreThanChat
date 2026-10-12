@@ -75,6 +75,7 @@ export function createCentralServer({
     CREATE TABLE IF NOT EXISTS group_requests(group_id TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(group_id,user_id));
     CREATE TABLE IF NOT EXISTS queue(id TEXT NOT NULL,recipient TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(id,recipient));
     CREATE TABLE IF NOT EXISTS receipts(sender TEXT NOT NULL,client_id TEXT NOT NULL,fingerprint TEXT NOT NULL,message_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(sender,client_id));
+    CREATE TABLE IF NOT EXISTS message_delivery(message_id TEXT NOT NULL,recipient TEXT NOT NULL,delivered_at INTEGER,read_at INTEGER,PRIMARY KEY(message_id,recipient));
     CREATE TABLE IF NOT EXISTS plugins(group_id TEXT NOT NULL,id TEXT NOT NULL,version INTEGER NOT NULL,pack TEXT NOT NULL,digest TEXT NOT NULL,submitter TEXT NOT NULL,status TEXT NOT NULL,revision INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(group_id,id,version));`)
   const oldMode = db
     .prepare("SELECT value FROM meta WHERE key='mode'")
@@ -84,6 +85,12 @@ export function createCentralServer({
     throw new Error('Server mode is immutable for an existing directory')
   }
   db.prepare("INSERT OR IGNORE INTO meta VALUES ('mode',?)").run(mode)
+  db.prepare("INSERT OR IGNORE INTO meta VALUES ('revision','0')").run()
+  db.exec(`CREATE INDEX IF NOT EXISTS queue_recipient_time ON queue(recipient,created_at);
+    CREATE INDEX IF NOT EXISTS queue_receipt ON queue(recipient,json_extract(payload,'$.receipt.messageId')) WHERE json_extract(payload,'$.kind')='directory';
+    CREATE UNIQUE INDEX IF NOT EXISTS receipt_message_id ON receipts(message_id);
+    CREATE INDEX IF NOT EXISTS receipt_sender_time ON receipts(sender,created_at);`)
+  db.exec(`INSERT OR IGNORE INTO message_delivery(message_id,recipient) SELECT id,recipient FROM queue WHERE json_extract(payload,'$.kind')='message';`)
   db.prepare("INSERT OR IGNORE INTO meta VALUES ('id',?)").run(
     'srv_' + randomUUID(),
   )
@@ -107,6 +114,7 @@ export function createCentralServer({
     db.exec('BEGIN IMMEDIATE')
     try {
       const result = fn()
+      db.prepare("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'").run()
       db.exec('COMMIT')
       return result
     } catch (e) {
@@ -169,11 +177,11 @@ export function createCentralServer({
       Number(
         db
           .prepare(
-            'SELECT COALESCE(SUM(length(payload)),0) AS bytes FROM queue',
+            'SELECT COALESCE(SUM(length(CAST(payload AS BLOB))),0) AS bytes FROM queue',
           )
           .get().bytes,
       ) +
-        payload.length * recipients.length >
+        Buffer.byteLength(payload) * recipients.length >
       512 * 1024 * 1024
     )
       fail(507, '服务器暂存空间已满')
@@ -218,6 +226,20 @@ export function createCentralServer({
         revision: row.revision,
         state: JSON.parse(row.state),
       }))
+  const receiptFor = (messageId) => {
+    const row = db.prepare('SELECT * FROM receipts WHERE message_id=?').get(messageId)
+    if (!row) return null
+    const counts = db.prepare('SELECT COUNT(*) AS total,COUNT(delivered_at) AS delivered,COUNT(read_at) AS read FROM message_delivery WHERE message_id=?').get(messageId)
+    return { messageId,clientMessageId:row.client_id,acceptedAt:row.created_at,recipientCount:counts.total,deliveredCount:counts.delivered,readCount:counts.read }
+  }
+  const queueReceipt = (messageId) => {
+    const sender = db.prepare('SELECT sender FROM receipts WHERE message_id=?').get(messageId)?.sender
+    if (!sender) return null
+    const receipt = receiptFor(messageId)
+    db.prepare("DELETE FROM queue WHERE recipient=? AND json_extract(payload,'$.kind')='directory' AND json_extract(payload,'$.receipt.messageId')=?").run(sender,messageId)
+    enqueue([sender],{id:randomUUID(),kind:'directory',receipt})
+    return sender
+  }
   const directoryFor = (uid) => {
     const friends = db
       .prepare(
@@ -233,6 +255,7 @@ export function createCentralServer({
       .all(uid, uid, uid)
       .map((row) => user(row.requester))
       .filter(Boolean)
+    const outgoingRequests=db.prepare("SELECT a,b FROM friends WHERE status='pending' AND requester=?").all(uid).map(row=>user(row.a===uid?row.b:row.a)).filter(Boolean)
     const groups = db
       .prepare(
         'SELECT g.* FROM groups g JOIN members m ON m.group_id=g.id WHERE m.user_id=?',
@@ -256,9 +279,12 @@ export function createCentralServer({
       }))
       .filter((row) => row.user)
     return {
+      revision: Number(db.prepare("SELECT value FROM meta WHERE key='revision'").get().value),
+      receipts: db.prepare('SELECT message_id FROM receipts WHERE sender=? ORDER BY created_at DESC LIMIT 200').all(uid).map(row=>receiptFor(row.message_id)),
       self: user(uid),
       friends,
       requests,
+      outgoingRequests,
       groups,
       groupRequests,
       plugins: groups.flatMap((group) =>
@@ -309,7 +335,7 @@ export function createCentralServer({
       const url = new URL(request.url, 'http://localhost'),
         route = url.pathname
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1'] })
       if (route === '/v1/admin/access' && request.method === 'POST') {
         const received = Buffer.from(
             (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -384,9 +410,9 @@ export function createCentralServer({
           )
         )
           fail(401, '身份签名验证失败')
-        db.prepare(
+        transaction(()=>db.prepare(
           'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name',
-        ).run(challenge.uid, challenge.publicKey, challenge.name)
+        ).run(challenge.uid, challenge.publicKey, challenge.name))
         for (const [token, entry] of sessions)
           if (entry.expires < Date.now()) sessions.delete(token)
         if (sessions.size > 4096) fail(429, '服务器在线会话已满')
@@ -488,6 +514,44 @@ export function createCentralServer({
         notify(recipients)
         return json(response, 200, { groupId })
       }
+      if (['/v1/friends/reject','/v1/friends/cancel','/v1/friends/remove'].includes(route) && request.method==='POST') {
+        const data=await body(request),peer=text(data.userId),row=db.prepare('SELECT * FROM friends WHERE a=? AND b=?').get(...pair(uid,peer))
+        if(!validUid(peer)||!row)fail(404,'没有此好友或申请')
+        if(route.endsWith('/remove')?row.status!=='accepted':row.status!=='pending'||(route.endsWith('/cancel')?row.requester!==uid:row.requester===uid))fail(403,'不能处理这条申请')
+        transaction(()=>db.prepare('DELETE FROM friends WHERE a=? AND b=?').run(...pair(uid,peer)))
+        notify([uid,peer])
+        return json(response,200,{ok:true})
+      }
+      if (['/v1/groups/rename','/v1/groups/kick','/v1/groups/transfer','/v1/groups/leave','/v1/groups/dissolve','/v1/groups/reject'].includes(route) && request.method==='POST') {
+        const data=await body(request),groupId=text(data.groupId),group=db.prepare('SELECT * FROM groups WHERE id=?').get(groupId)
+        if(!group)fail(404,'群已不存在')
+        member(uid,groupId)
+        const recipients=groupUsers(groupId)
+        if(route.endsWith('/leave')) {
+          if(group.owner===uid)fail(409,'请先转让群管理员，或解散群聊')
+          transaction(()=>db.prepare('DELETE FROM members WHERE group_id=? AND user_id=?').run(groupId,uid))
+        } else {
+          owner(uid,groupId)
+          if(route.endsWith('/rename'))transaction(()=>db.prepare('UPDATE groups SET name=? WHERE id=?').run(text(data.name,80),groupId))
+          else if(route.endsWith('/dissolve'))transaction(()=>{
+            for(const table of ['plugins','group_requests','members'])db.prepare('DELETE FROM '+table+' WHERE group_id=?').run(groupId)
+            db.prepare('DELETE FROM groups WHERE id=?').run(groupId)
+          })
+          else {
+            if(!validUid(data.userId)||data.userId===uid)fail(400,'请选择其他成员')
+            if(route.endsWith('/reject')) {
+              if(!db.prepare('SELECT 1 FROM group_requests WHERE group_id=? AND user_id=?').get(groupId,data.userId))fail(404,'没有待处理申请')
+              transaction(()=>db.prepare('DELETE FROM group_requests WHERE group_id=? AND user_id=?').run(groupId,data.userId))
+            } else {
+              member(data.userId,groupId)
+              if(route.endsWith('/transfer')) { if(!allowed(data.userId))fail(403,'该成员已被服务器禁止');transaction(()=>db.prepare('UPDATE groups SET owner=? WHERE id=?').run(data.userId,groupId)) }
+              else transaction(()=>db.prepare('DELETE FROM members WHERE group_id=? AND user_id=?').run(groupId,data.userId))
+            }
+          }
+        }
+        notify(recipients)
+        return json(response,200,{ok:true})
+      }
       if (route === '/v1/groups/join' && request.method === 'POST') {
         const data = await body(request),
           group = db
@@ -578,7 +642,7 @@ export function createCentralServer({
               .digest('hex')
         } else if (kind === 'group') {
           member(uid, targetId)
-          recipients = groupUsers(targetId).filter((id) => id !== uid)
+          recipients = groupUsers(targetId).filter((id) => id !== uid && allowed(id))
           conversationId = targetId
         } else fail(400, '无效会话')
         if (
@@ -617,6 +681,7 @@ export function createCentralServer({
             messageId: old.message_id,
             conversationId,
             acceptedAt: old.created_at,
+            receipt: receiptFor(old.message_id),
           })
         }
         const now = Date.now(),
@@ -631,6 +696,7 @@ export function createCentralServer({
             senderName: user(uid).displayName,
             text: data.text,
             createdAt: now,
+            targetName: kind==='group'?db.prepare('SELECT name FROM groups WHERE id=?').get(targetId).name:user(targetId).displayName,
             ...(data.attachment ? { attachment: data.attachment } : {}),
           }
         transaction(() => {
@@ -642,12 +708,14 @@ export function createCentralServer({
             messageId,
             now,
           )
+          for (const recipient of recipients) db.prepare('INSERT INTO message_delivery(message_id,recipient) VALUES (?,?)').run(messageId,recipient)
         })
         for (const recipient of recipients) wake(recipient)
         return json(response, 200, {
           messageId,
           conversationId,
           acceptedAt: now,
+          receipt: receiptFor(messageId),
         })
       }
       if (route === '/v1/plugins/submit' && request.method === 'POST') {
@@ -856,6 +924,21 @@ export function createCentralServer({
         events = pending()
         return json(response, 200, { events, directory: directoryFor(uid) })
       }
+      if (route === '/v1/read' && request.method === 'POST') {
+        const data = await body(request)
+        if (!Array.isArray(data.ids) || data.ids.length>100 || data.ids.some(id=>typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id))) fail(400,'无效已读确认')
+        const senders = new Set()
+        transaction(()=>{
+          for (const id of new Set(data.ids)) {
+            const changed = db.prepare('UPDATE message_delivery SET delivered_at=COALESCE(delivered_at,?),read_at=? WHERE message_id=? AND recipient=? AND read_at IS NULL').run(Date.now(),Date.now(),id,uid)
+            db.prepare('DELETE FROM queue WHERE id=? AND recipient=? AND EXISTS(SELECT 1 FROM message_delivery WHERE message_id=? AND recipient=? AND read_at IS NOT NULL)').run(id,uid,id,uid)
+            if (changed.changes) { const sender=queueReceipt(id); if(sender)senders.add(sender) }
+          }
+        })
+        for(const sender of senders)wake(sender)
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+        return json(response,200,{ok:true})
+      }
       if (route === '/v1/ack' && request.method === 'POST') {
         const data = await body(request)
         if (
@@ -864,16 +947,23 @@ export function createCentralServer({
           data.ids.some((id) => typeof id !== 'string' || id.length > 80)
         )
           fail(400, '无效确认')
+        const senders = new Set()
         transaction(() => {
-          for (const id of data.ids)
+          const delivered = []
+          for (const id of data.ids) {
+            const changed = db.prepare('UPDATE message_delivery SET delivered_at=? WHERE message_id=? AND recipient=? AND delivered_at IS NULL').run(Date.now(),id,uid)
+            if (changed.changes) delivered.push(id)
             db.prepare('DELETE FROM queue WHERE id=? AND recipient=?').run(
               id,
               uid,
             )
-          db.prepare('DELETE FROM receipts WHERE created_at<?').run(
-            Date.now() - 7 * 24 * 60 * 60 * 1000,
-          )
+          }
+          for(const id of delivered){const sender=queueReceipt(id);if(sender)senders.add(sender)}
+          const cutoff=Date.now()-7*24*60*60*1000
+          db.prepare("DELETE FROM receipts WHERE created_at<? AND NOT EXISTS(SELECT 1 FROM message_delivery d WHERE d.message_id=receipts.message_id AND (d.delivered_at IS NULL OR d.delivered_at>=? OR d.read_at>=?)) AND message_id NOT IN(SELECT json_extract(payload,'$.receipt.messageId') FROM queue WHERE json_extract(payload,'$.kind')='directory' AND json_extract(payload,'$.receipt.messageId') IS NOT NULL)").run(cutoff,cutoff,cutoff)
+          db.prepare('DELETE FROM message_delivery WHERE message_id NOT IN(SELECT message_id FROM receipts)').run()
         })
+        for(const sender of senders)wake(sender)
         db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
         return json(response, 200, { ok: true })
       }

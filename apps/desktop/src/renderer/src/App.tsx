@@ -13,7 +13,9 @@ import {
   Check,
   ChevronDown,
   CircleHelp,
+  Copy,
   Info,
+  BellOff,
   MessageCircleMore,
   Moon,
   Paperclip,
@@ -37,6 +39,7 @@ import {
   authorToolLabel,
   createSeedState,
   formatRelativeTime,
+  formatMessageDay,
   interruptStreamingMessages,
   normalizeState,
   mergeCentralProjection,
@@ -85,6 +88,10 @@ import { UiSlot } from './UiSlot'
 import { MessageMarkdown } from './MessageMarkdown'
 import { AppearancePicker } from './AppearancePicker'
 import { setThemePreference, useAppearance } from './theme'
+import { useChatDraft } from './chat-drafts'
+import { useChatReading } from './use-chat-reading'
+import { MessageSearch } from './MessageSearch'
+import { GroupManager } from './GroupManager'
 
 function uid(): string {
   return crypto.randomUUID()
@@ -100,15 +107,21 @@ export function App() {
   const [loadError, setLoadError] = useState(false)
   const [serverState, setServerState] = useState<ServerSnapshot | null>(null)
   const [showServer, setShowServer] = useState(false)
-  const [pendingAttachment, setPendingAttachment] =
-    useState<AttachmentRef | null>(null)
+  const chatDraft = useChatDraft(state?.activeConversationId ?? '')
+  const pendingAttachment = chatDraft.attachment
+  const setPendingAttachment = chatDraft.setAttachment
   const [slotEntries, setSlotEntries] = useState<
     RegisteredContribution<UiSlotContribution>[]
   >(() => uiSlotRegistry.list())
   const [groupPluginSlot, setGroupPluginSlot] =
     useState<UiSlotName>('chat.details')
   const [query, setQuery] = useState('')
-  const [draft, setDraft] = useState('')
+  const draft = chatDraft.text
+  const setDraft = chatDraft.setText
+  const [showArchived,setShowArchived] = useState(false)
+  const [showMessageSearch,setShowMessageSearch] = useState(false)
+  const [highlightMessage,setHighlightMessage] = useState<string|null>(null)
+  const [historyLimit,setHistoryLimit] = useState(100)
   const [showDetails, setShowDetails] = useState(() => window.innerWidth > 1080)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showNewChat, setShowNewChat] = useState(false)
@@ -135,10 +148,10 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false)
   const streamIdsRef = useRef(new Map<string, string>())
   const startingConversationsRef = useRef(new Set<string>())
+  const humanSendsRef = useRef(new Set<string>())
   const pendingModelEventsRef = useRef<ModelClientEvent[]>([])
   const hostStatusRef = useRef(hostStatus)
   hostStatusRef.current = hostStatus
-  const endRef = useRef<HTMLDivElement>(null)
   const stateRef = useRef(state)
   stateRef.current = state
   const saveTimerRef = useRef<number | undefined>(undefined)
@@ -146,7 +159,8 @@ export function App() {
   useEffect(() => {
     const escape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('.composer-menu')) return
-      if (showServer) setShowServer(false)
+      if (showMessageSearch) setShowMessageSearch(false)
+      else if (showServer) setShowServer(false)
       else if (showSettings) setShowSettings(false)
       else if (showPlugins) setShowPlugins(false)
       else if (showNewChat) setShowNewChat(false)
@@ -154,7 +168,7 @@ export function App() {
     }
     document.addEventListener('keydown', escape)
     return () => document.removeEventListener('keydown', escape)
-  }, [showServer, showSettings, showPlugins, showNewChat])
+  }, [showServer, showSettings, showPlugins, showNewChat, showMessageSearch])
 
   useEffect(() => {
     const dispose = uiSlotRegistry.subscribe(() =>
@@ -373,10 +387,6 @@ export function App() {
   )
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [state?.activeConversationId, state?.messages])
-
-  useEffect(() => {
     if (!toast) return
     const timer = window.setTimeout(() => setToast(null), 2400)
     return () => window.clearTimeout(timer)
@@ -386,6 +396,19 @@ export function App() {
     (item) => item.id === state.activeConversationId,
   )
   const messages = active && state ? (state.messages[active.id] ?? []) : []
+  const reading = useChatReading(active?.id,messages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage))
+  useEffect(()=>{setHistoryLimit(100);setHighlightMessage(value=>messages.some(m=>m.id===value)?value:null)},[active?.id])
+  useEffect(()=>{
+    if(!highlightMessage)return
+    const index=messages.findIndex(m=>m.id===highlightMessage)
+    if(index>=0 && historyLimit<messages.length-index)setHistoryLimit(messages.length-index)
+    const timer=window.setTimeout(()=>{
+      reading.pauseReading()
+      document.querySelector('[data-message-id="'+CSS.escape(highlightMessage)+'"]')?.scrollIntoView({block:'center',behavior:'instant'})
+    },60)
+    const clear=window.setTimeout(()=>setHighlightMessage(null),3000)
+    return()=>{clearTimeout(timer);clearTimeout(clear)}
+  },[highlightMessage,active?.id,historyLimit])
   const filtered = useMemo(() => {
     if (!state) return []
     const needle = query.trim().toLocaleLowerCase()
@@ -393,11 +416,12 @@ export function App() {
       .filter(
         (item) => !needle || item.title.toLocaleLowerCase().includes(needle),
       )
+      .filter(item=>Boolean(item.archived)===showArchived)
       .sort(
         (a, b) =>
           Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt,
       )
-  }, [query, state])
+  }, [query, state, showArchived])
 
   if (!state || !active) return <LoadingScreen error={loadError} />
   const readyState = state
@@ -451,19 +475,24 @@ export function App() {
   )
 
   function selectConversation(id: string) {
-    setPendingAttachment(null)
+    void window.moreThanChat.focusChatWindow?.().catch(()=>undefined)
     setState((current) =>
       current
         ? {
             ...current,
             activeConversationId: id,
             conversations: current.conversations.map((item) =>
-              item.id === id ? { ...item, unread: 0 } : item,
+              item.id === id && !item.serverId ? { ...item, unread: 0 } : item,
             ),
           }
         : current,
     )
-    setDraft('')
+  }
+  async function changeConversationOptions(patch:{pinned?:boolean;archived?:boolean;muted?:boolean}) {
+    try {
+      const saved=await window.moreThanChat.setConversationOptions(active!.id,patch)
+      setState(current=>current?{...current,conversations:current.conversations.map(c=>c.id===active!.id?{...c,...saved}:c)}:current)
+    } catch(error){setToast(errorText(error))}
   }
 
   async function sendMessage(voiceAttachment?: AttachmentRef) {
@@ -484,6 +513,17 @@ export function App() {
     }
     const now = Date.now()
     const clientMessageId = uid()
+    if (active.transportId === 'builtin.central') {
+      if(humanSendsRef.current.has(active.id))return
+      const plugin=transportRegistry.get(active.transportId)
+      if(!plugin){setToast('当前会话的传输插件不可用');return}
+      humanSendsRef.current.add(active.id)
+      try {
+        await plugin.create().send({clientMessageId,conversationId:active.id,text,createdAt:now,...(attachment?{attachmentId:attachment.id}:{})})
+        setDraft('');setPendingAttachment(null)
+      }catch(error){setToast(errorText(error))}finally{humanSendsRef.current.delete(active.id)}
+      return
+    }
     const outgoing: ChatMessage = {
       id: clientMessageId,
       clientMessageId,
@@ -1018,7 +1058,8 @@ export function App() {
           <RailButton
             icon={<Archive />}
             label="归档"
-            onClick={() => setToast('暂无已归档会话')}
+            active={showArchived}
+            onClick={() => setShowArchived(value=>!value)}
           />
         </div>
         <div className="rail-bottom">
@@ -1053,7 +1094,7 @@ export function App() {
           <div>
             <p className="eyebrow">工作区</p>
             <button className="workspace-name">
-              我的空间 <ChevronDown size={15} />
+              {showArchived?'归档会话':'我的空间'} <ChevronDown size={15} />
             </button>
           </div>
           <button
@@ -1083,6 +1124,7 @@ export function App() {
             return (
               <button
                 key={item.id}
+                data-conversation-id={item.id}
                 className={`conversation-item ${item.id === active.id ? 'active' : ''}`}
                 onClick={() => selectConversation(item.id)}
               >
@@ -1093,8 +1135,8 @@ export function App() {
                     <time>{formatRelativeTime(item.updatedAt)}</time>
                   </span>
                   <span className="conversation-preview-row">
-                    <span>{last?.text ?? '还没有消息'}</span>
-                    {item.unread > 0 && <b>{item.unread}</b>}
+                    <span>{item.muted&&<BellOff size={11}/>} {last?.text || (last?.attachment ? last.attachment.durationMs ? '[语音]' : '[文件] '+last.attachment.name : '还没有消息')}</span>
+                    {item.unread > 0 && <b className={item.muted?'muted-unread':''}>{item.unread>99?'99+':item.unread}</b>}
                   </span>
                 </span>
               </button>
@@ -1129,6 +1171,7 @@ export function App() {
             </div>
           </div>
           <div className="header-actions">
+            <button className="icon-button" title="搜索聊天记录" onClick={()=>setShowMessageSearch(true)}><Search size={18}/></button>
             <button
               className="icon-button"
               title="语音通话"
@@ -1157,10 +1200,8 @@ export function App() {
         </header>
         <div className="chat-header-plugins">{renderSlot('chat.header')}</div>
 
-        <section className="message-scroll" aria-live="polite">
-          <div className="message-day">
-            <span>今天</span>
-          </div>
+        <section className="message-scroll" aria-live="polite" ref={reading.scrollRef} onScroll={reading.onScroll}>
+          {messages.length>historyLimit&&<button className="history-more" onClick={()=>setHistoryLimit(value=>value+100)}>查看更早的消息</button>}
           {messages.length === 0 ? (
             <div className="empty-conversation">
               <div className="empty-icon">
@@ -1170,12 +1211,16 @@ export function App() {
               <p>从一条消息开始。聊天记录会保存在这台设备上。</p>
             </div>
           ) : (
-            messages.map((message, index) => (
+            messages.slice(-historyLimit).map((message, index,visible) => (
               <div key={message.id}>
+                {(index===0 || new Date(visible[index-1]!.createdAt).toDateString()!==new Date(message.createdAt).toDateString())&&<div className="message-day"><span>{formatMessageDay(message.createdAt)}</span></div>}
                 {renderSlot('chat.message.before', message)}
                 <MessageBubble
                   message={message}
-                  compact={messages[index - 1]?.senderId === message.senderId}
+                  compact={visible[index - 1]?.senderId === message.senderId}
+                  highlighted={highlightMessage===message.id}
+                  onCopy={()=>void window.moreThanChat.copyChatMessage(message.id).then(()=>setToast('已复制')).catch(e=>setToast(e.message))}
+                  onResend={message.serverId && message.role==='self' && ['failed','queued'].includes(message.status) ? ()=>void window.moreThanChat.retryChatMessage(message.id).catch(e=>setToast(e.message)) : undefined}
                   onRetry={
                     canRetryLast && message.id === lastMessage?.id
                       ? () => void sendAssistantMessage(message.text, message)
@@ -1186,8 +1231,9 @@ export function App() {
               </div>
             ))
           )}
-          <div ref={endRef} />
+          <div ref={reading.endRef} />
         </section>
+        {!reading.atBottom&&<button className="jump-latest" onClick={reading.jumpToLatest}>回到最新消息{active.unread>0?' · '+active.unread:''}</button>}
 
         <footer
           className="composer-wrap"
@@ -1198,6 +1244,8 @@ export function App() {
           }
         >
           {renderSlot('chat.composer.before')}
+          {chatDraft.error&&<p className="settings-error">草稿未能保存到设备，请检查可用空间。</p>}
+          {active.serverId&&(active.unavailable || active.serverId!==serverState?.serverId || serverState.status!=='connected')&&<p className="connection-note">{active.unavailable?'当前联系人或群已不可用。聊天记录仍保留。':'当前未连接此会话的服务器，发送的消息会保存在本机队列，连接恢复后自动发送。'}</p>}
           <div
             style={{
               display: slotEntries.some(
@@ -1208,15 +1256,14 @@ export function App() {
             }}
           >
             <ChatComposer
+              key={active.id}
               draft={draft}
               setDraft={setDraft}
               onSend={() => void sendMessage()}
               onVoice={(ref) => void sendMessage(ref)}
               onError={setToast}
               canAttach={
-                active.transportId === 'builtin.central' &&
-                serverState?.status === 'connected' &&
-                active.serverId === serverState.serverId
+                active.transportId === 'builtin.central' && !active.unavailable
               }
               generating={messages.some(
                 (message) => message.status === 'streaming',
@@ -1317,11 +1364,11 @@ export function App() {
             onClose={() => setShowDetails(false)}
             onPlugins={() => setShowPlugins(true)}
             onSettings={() => active.kind === 'assistant' ? setShowSettings(true) : setShowServer(true)}
-            onPin={() => setState(current => current ? {
-              ...current,
-              conversations: current.conversations.map(item => item.id === active.id ? { ...item, pinned: !item.pinned } : item),
-            } : current)}
+            onPin={()=>void changeConversationOptions({pinned:!active.pinned})}
+            onArchive={()=>void changeConversationOptions({archived:!active.archived})}
+            onMute={()=>void changeConversationOptions({muted:!active.muted})}
           />
+          {active.kind==='group'&&active.serverId===serverState?.serverId&&serverState?.directory&&serverState.directory.groups.filter(group=>group.id===active.targetId).map(group=><GroupManager key={group.id} group={group} directory={serverState.directory!} userId={serverState.userId}/>)}
           {renderSlot('chat.details')}
           {active.kind === 'group' &&
             active.serverId &&
@@ -1421,6 +1468,7 @@ export function App() {
           />
         </>
       )}
+      {showMessageSearch&&<MessageSearch conversationId={active.id} title={active.title} onClose={()=>setShowMessageSearch(false)} onSelect={row=>{selectConversation(row.conversationId);setHighlightMessage(row.messageId);setShowMessageSearch(false)}}/>}
       {showServer && (
         <NetworkPanel
           snapshot={serverState}
@@ -1525,10 +1573,16 @@ const MessageBubble = memo(function MessageBubble({
   message,
   compact,
   onRetry,
+  onCopy,
+  onResend,
+  highlighted,
 }: {
   message: ChatMessage
   compact: boolean
   onRetry: (() => void) | undefined
+  onCopy: () => void
+  onResend?: (() => void) | undefined
+  highlighted?: boolean
 }) {
   if (message.type === 'system')
     return <div className="system-message">{message.text}</div>
@@ -1536,7 +1590,7 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <article
       data-message-id={message.id}
-      className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status}`}
+      className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status} ${highlighted?'message-highlight':''}`}
     >
       {!own && <span className="message-avatar">{message.senderAvatar}</span>}
       <div className="message-content">
@@ -1568,6 +1622,7 @@ const MessageBubble = memo(function MessageBubble({
             </ul>
           )}
           <span className="bubble-meta">{messageMeta(message)}</span>
+          <div className="message-actions"><button className="message-copy" title="复制消息" onClick={onCopy}><Copy size={13}/></button>{onResend&&<button className="message-resend" onClick={onResend}>{message.status==='queued'?'立即重试':'重新发送'}</button>}</div>
           {message.usage && (
             <span
               className="message-usage"
@@ -1599,6 +1654,8 @@ function DetailsPanel({
   onPlugins,
   onSettings,
   onPin,
+  onArchive,
+  onMute,
 }: {
   conversation: Conversation
   transportName: string
@@ -1607,6 +1664,8 @@ function DetailsPanel({
   onPlugins: () => void
   onSettings: () => void
   onPin: () => void
+  onArchive: () => void
+  onMute: () => void
 }) {
   return (
     <aside className="details-panel">
@@ -1636,6 +1695,7 @@ function DetailsPanel({
         </button>
       </div>
       <div className="details-card">
+        <div className="conversation-options"><button className="secondary-button" data-archive-conversation onClick={onArchive}>{conversation.archived?'移出归档':'归档会话'}</button><button className="secondary-button" data-mute-conversation aria-pressed={Boolean(conversation.muted)} onClick={onMute}>{conversation.muted?'关闭免打扰':'免打扰'}</button></div>
         <div>
           <span>连接方式</span>
           <strong>{transportName}</strong>
@@ -2161,7 +2221,7 @@ function displayText(message: ChatMessage): string {
   if (message.text) return message.text
   if (message.status === 'streaming') return '正在生成…'
   if (message.status === 'cancelled') return '回复已取消。'
-  if (message.status === 'failed') return '回复没有完成。'
+  if (message.status === 'failed') return message.role==='self'?'消息发送失败。':'回复没有完成。'
   return ''
 }
 
@@ -2173,6 +2233,12 @@ function messageMeta(message: ChatMessage): string {
     return `${time} · 失败${message.supersededById ? ' · 已重试' : ''}`
   if (message.role === 'self' && message.status === 'sending')
     return `${time} · 发送中`
+  if (message.status === 'queued') return `${time} · 待发送`
+  if (message.role==='self' && message.receipt?.recipientCount) {
+    const receipt=message.receipt
+    if(receipt.recipientCount===1)return `${time} · ${receipt.readCount?'已读':receipt.deliveredCount?'已送达':'已提交中心'}`
+    return `${time} · ${receipt.deliveredCount}/${receipt.recipientCount} 已送达 · ${receipt.readCount} 已读`
+  }
   if (message.role === 'self')
     return message.serverId ? `${time} · 已提交中心` : `${time} ✓`
   return message.retryOfId ? `${time} · 重试回复` : time

@@ -9,6 +9,14 @@ interface HostPingResult {
 }
 
 const api = {
+  getWindowFocus:():Promise<boolean>=>ipcRenderer.invoke('app:window-focused'),
+  focusChatWindow:():Promise<void>=>ipcRenderer.invoke('app:focus-window'),
+  onWindowFocusChanged:(listener:(focused:boolean)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,focused:boolean)=>listener(focused);ipcRenderer.on('app:window-focus-changed',handler);return()=>ipcRenderer.removeListener('app:window-focus-changed',handler)},
+  setReadingConversation:(id:string|null):Promise<void>=>ipcRenderer.invoke('chat:set-reading',id),
+  retryChatMessage:(id:string):Promise<void>=>ipcRenderer.invoke('chat:retry-message',id),
+  searchChatMessages:(query:string,conversationId?:string)=>ipcRenderer.invoke('chat:search',{query,conversationId}),
+  copyChatMessage:(id:string):Promise<void>=>ipcRenderer.invoke('chat:copy-message',id),
+  setConversationOptions:(id:string,patch:{pinned?:boolean;archived?:boolean;muted?:boolean})=>ipcRenderer.invoke('chat:conversation-options',{id,patch}),
   setAppearance:(theme:'light'|'dark'):Promise<void>=>ipcRenderer.invoke('app:appearance',theme),
   getServerState:()=>ipcRenderer.invoke('central:state'),
   copyGlobalUserId:()=>ipcRenderer.invoke('central:copy-id'),

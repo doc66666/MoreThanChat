@@ -26,8 +26,10 @@ export function NetworkPanel({
     setError(null)
     try {
       await fn()
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : '操作失败')
+      return false
     } finally {
       setBusy(false)
     }
@@ -36,6 +38,7 @@ export function NetworkPanel({
     run(() => window.moreThanChat.serverAction(route, data))
   const directory = snapshot?.directory
   const [joinId, setJoinId] = useState('')
+  const [removeFriend,setRemoveFriend]=useState<{id:string;displayName:string}|null>(null)
   const pending =
     directory?.plugins.filter(
       (plugin) =>
@@ -103,6 +106,7 @@ export function NetworkPanel({
             onClick={() =>
               void run(() => window.moreThanChat.disconnectServer())
             }
+            data-disconnect-server
           >
             断开
           </button>
@@ -138,18 +142,22 @@ export function NetworkPanel({
             </span>
             <button
               data-accept-friend={user.id}
+              disabled={busy}
               onClick={() => void action('friends/accept', { userId: user.id })}
             >
               接受
             </button>
+            <button data-reject-friend={user.id} disabled={busy} onClick={()=>void action('friends/reject',{userId:user.id})}>拒绝</button>
           </div>
         ))}
+        {(directory?.outgoingRequests??[]).map(user=><div className="contact-row" key={'request:'+user.id}><span>{user.displayName}<small>等待对方接受好友申请</small></span><button disabled={busy} data-cancel-friend={user.id} onClick={()=>void action('friends/cancel',{userId:user.id})}>取消申请</button></div>)}
         <h3>好友</h3>
         {(directory?.friends ?? []).map((user) => (
-          <button
+          <div
             className="contact-row"
-            data-friend={user.id}
             key={user.id}
+          >
+            <button className="contact-open" data-friend={user.id}
             onClick={() => {
               onOpenChat(user.id)
               onClose()
@@ -160,8 +168,10 @@ export function NetworkPanel({
               <small>{user.online ? '在线' : '离线 · 消息由服务器暂存'}</small>
             </span>
             <code>{user.id.slice(-8)}</code>
-          </button>
+            </button><button className="contact-remove" title="删除好友" data-remove-friend={user.id} onClick={()=>setRemoveFriend(user)}>×</button>
+          </div>
         ))}
+        {removeFriend&&<div className="danger-confirm"><p>删除好友 {removeFriend.displayName}？本机聊天记录会保留。</p><div><button className="secondary-button" onClick={()=>setRemoveFriend(null)}>取消</button><button className="primary-button" disabled={busy} data-confirm-remove-friend onClick={()=>void action('friends/remove',{userId:removeFriend.id}).then(ok=>{if(ok)setRemoveFriend(null)})}>删除好友</button></div></div>}
         <h3>创建群聊</h3>
         <input
           data-group-name
@@ -240,6 +250,7 @@ export function NetworkPanel({
             >
               批准入群
             </button>
+            <button disabled={busy} onClick={()=>void action('groups/reject',{groupId:request.groupId,userId:request.user.id})}>拒绝</button>
           </div>
         ))}
         <h3>群插件申请 · 管理员审批</h3>

@@ -47,6 +47,7 @@ describe('transactional chat storage', () => {
     const dir = await directory(), store = await open(dir), snapshot = createSeedState(1700000000000)
     store.save(snapshot)
     const db = new DatabaseSync(path.join(dir, 'chat.sqlite'))
+    try {
     const before = db.prepare('SELECT COUNT(*) AS count FROM chat_events').get()?.count
     store.save(snapshot)
     expect(db.prepare('SELECT COUNT(*) AS count FROM chat_events').get()?.count).toBe(before)
@@ -54,9 +55,9 @@ describe('transactional chat storage', () => {
     const message = snapshot.messages['conversation-assistant']![0]!
     message.text = 'secret sk-placeholder-test-credential'; (message as unknown as { apiKey: string }).apiKey = 'private'
     store.save(snapshot)
-    expect(JSON.stringify(store.load())).not.toContain('sk-placeholder-test-credential')
+    expect(store.load()!.messages['conversation-assistant']![0]!.text).toBe('secret sk-placeholder-test-credential')
     expect(JSON.stringify(db.prepare('SELECT payload FROM chat_events').all())).not.toContain('sk-placeholder-test-credential')
     expect(JSON.stringify(store.load())).not.toContain('apiKey')
-    db.close()
+    } finally { db.close() }
   })
 })

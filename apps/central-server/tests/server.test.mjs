@@ -71,6 +71,56 @@ async function befriend(f, a, b) {
 }
 
 describe('central relay contracts', () => {
+  it('reports durable delivery and explicit reading without retaining message contents or trusting unrelated users',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B'),c=await login(f,identity(),'C')
+    await befriend(f,a,b)
+    const sent=await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'receipt-private-body'})
+    expect(sent.data.receipt).toMatchObject({recipientCount:1,deliveredCount:0,readCount:0})
+    await request(f,'read',c.token,{ids:[sent.data.messageId]})
+    await request(f,'ack',a.token,{ids:[sent.data.messageId]})
+    expect((await request(f,'directory',a.token)).data.receipts[0].deliveredCount).toBe(0)
+    await request(f,'ack',b.token,{ids:[sent.data.messageId]})
+    expect((await request(f,'directory',a.token)).data.receipts[0]).toMatchObject({deliveredCount:1,readCount:0})
+    await request(f,'read',b.token,{ids:[sent.data.messageId]})
+    await request(f,'read',b.token,{ids:[sent.data.messageId]})
+    expect((await request(f,'directory',a.token)).data.receipts[0]).toMatchObject({deliveredCount:1,readCount:1})
+    expect(JSON.stringify(f.app.db.prepare('SELECT * FROM queue').all())+JSON.stringify(f.app.db.prepare('SELECT * FROM receipts').all())+JSON.stringify(f.app.db.prepare('SELECT * FROM message_delivery').all())).not.toContain('receipt-private-body')
+    expect((await request(f,'directory',c.token)).data.receipts).toEqual([])
+    expect(f.app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE json_extract(payload,'$.receipt.messageId')=?").get(sent.data.messageId).n).toBe(1)
+  })
+  it('retains idempotency metadata while a seven-day-old message is still undelivered',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B')
+    await befriend(f,a,b)
+    const body={clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'long-offline'}
+    const sent=await request(f,'messages',a.token,body)
+    f.app.db.prepare('UPDATE receipts SET created_at=?').run(Date.now()-10*24*60*60*1000)
+    await request(f,'ack',a.token,{ids:[]})
+    expect((await request(f,'messages',a.token,body)).data.messageId).toBe(sent.data.messageId)
+    expect(f.app.db.prepare('SELECT COUNT(*) AS n FROM queue WHERE id=?').get(sent.data.messageId).n).toBe(1)
+  })
+  it('enforces friendship and group administration, while preserving already accepted offline messages',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B'),c=await login(f,identity(),'C')
+    await request(f,'friends/request',a.token,{userId:b.userId})
+    expect((await request(f,'friends/cancel',b.token,{userId:a.userId})).status).toBe(403)
+    expect((await request(f,'friends/reject',b.token,{userId:a.userId})).status).toBe(200)
+    await befriend(f,a,b)
+    await befriend(f,a,c)
+    const group=(await request(f,'groups',a.token,{name:'Original',memberIds:[b.userId]})).data.groupId
+    expect((await request(f,'groups/rename',b.token,{groupId:group,name:'Unauthorized'})).status).toBe(403)
+    expect((await request(f,'groups/rename',a.token,{groupId:group,name:'Renamed'})).status).toBe(200)
+    await request(f,'groups/invite',a.token,{groupId:group,userId:c.userId})
+    expect((await request(f,'groups/leave',a.token,{groupId:group})).status).toBe(409)
+    await request(f,'groups/transfer',a.token,{groupId:group,userId:b.userId})
+    expect((await request(f,'groups/kick',a.token,{groupId:group,userId:c.userId})).status).toBe(403)
+    await request(f,'groups/kick',b.token,{groupId:group,userId:c.userId})
+    expect((await request(f,'messages',c.token,{clientMessageId:randomUUID(),targetKind:'group',targetId:group,text:'no-access'})).status).toBe(403)
+    const pending=(await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'group',targetId:group,text:'accepted-before-dissolve'})).data.messageId
+    await request(f,'groups/dissolve',b.token,{groupId:group})
+    expect(f.app.db.prepare('SELECT 1 FROM queue WHERE id=? AND recipient=?').get(pending,b.userId)).toBeDefined()
+    expect((await request(f,'directory',b.token)).data.groups).toEqual([])
+    await request(f,'friends/remove',a.token,{userId:b.userId})
+    expect((await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'no-longer-friends'})).status).toBe(403)
+  })
   it('persists undelivered messages across server restarts and retains a stable server id', async () => {
     const f = await fixture(),
       a = await login(f, identity(), 'A'),
@@ -100,7 +150,7 @@ describe('central relay contracts', () => {
     await request(f, 'ack', restored.token, {
       ids: events.data.events.map((e) => e.id),
     })
-    expect(f.app.db.prepare('SELECT COUNT(*) AS n FROM queue').get().n).toBe(0)
+    expect(f.app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE json_extract(payload,'$.kind')='message'").get().n).toBe(0)
   })
   it('applies public blacklists and keeps each group recipient pending independently', async () => {
     const f = await fixture(),
@@ -221,14 +271,14 @@ describe('central relay contracts', () => {
     await request(f, 'ack', a.token, { ids: [sent.data.messageId] })
     expect(f.app.db.prepare('SELECT COUNT(*) AS n FROM queue').get().n).toBe(1)
     await request(f, 'ack', b.token, { ids: [sent.data.messageId] })
-    expect(f.app.db.prepare('SELECT COUNT(*) AS n FROM queue').get().n).toBe(0)
+    expect(f.app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE json_extract(payload,'$.kind')='message'").get().n).toBe(0)
     expect(
       JSON.stringify(f.app.db.prepare('SELECT * FROM receipts').all()),
     ).not.toContain(body.text)
     expect((await request(f, 'messages', a.token, body)).data.messageId).toBe(
       sent.data.messageId,
     )
-    expect(f.app.db.prepare('SELECT COUNT(*) AS n FROM queue').get().n).toBe(0)
+    expect(f.app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE json_extract(payload,'$.kind')='message'").get().n).toBe(0)
   })
   it('isolates servers and refuses unknown users or unapproved plugin traffic', async () => {
     const f = await fixture(),

@@ -15,6 +15,13 @@ interface Snapshot {
   messages: Record<string, RecordValue[]>
 }
 const MAX_STATE_BYTES = 8 * 1024 * 1024
+export interface OutboxEntry { serverId: string; clientMessageId: string; conversationId: string; createdAt: number }
+interface MainCommit {
+  authoritative?: boolean
+  outboxPut?: OutboxEntry
+  outboxRemove?: string | string[]
+  readMessages?: { serverId: string; messageId: string }[]
+}
 
 /** Main owns the connection. Each snapshot commits its projection and change log together. */
 export class ChatStore {
@@ -30,7 +37,7 @@ export class ChatStore {
       const version = Number(
         this.#db.prepare('PRAGMA user_version').get()?.user_version,
       )
-      if (version > 2)
+      if (version > 3)
         throw new Error('Chat database belongs to a newer application version.')
       this.#db.exec(`
         BEGIN IMMEDIATE;
@@ -40,8 +47,12 @@ export class ChatStore {
         CREATE INDEX IF NOT EXISTS message_conversation ON messages(conversation_id, position);
         CREATE TABLE IF NOT EXISTS chat_events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS central_state (server_id TEXT PRIMARY KEY, directory TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS server_origins (server_id TEXT PRIMARY KEY,address TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS plugin_inbox (server_id TEXT NOT NULL,id TEXT NOT NULL,group_id TEXT NOT NULL,plugin_id TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(server_id,id));
-        PRAGMA user_version=2;
+        CREATE TABLE IF NOT EXISTS central_outbox (client_id TEXT PRIMARY KEY, server_id TEXT NOT NULL, conversation_id TEXT NOT NULL, created_at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS central_outbox_server_time ON central_outbox(server_id,created_at);
+        CREATE TABLE IF NOT EXISTS read_outbox (server_id TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(server_id,message_id));
+        PRAGMA user_version=3;
         COMMIT;
       `)
     } catch (error) {
@@ -122,9 +133,10 @@ export class ChatStore {
   save(
     value: unknown,
     serverDirectory?: { serverId: string; directory: unknown },
+    commit: MainCommit = {},
   ): void {
     this.#assertOpen()
-    const snapshot = validateSnapshot(redactSecretFields(value))
+    const snapshot = validateSnapshot(redactSecretFields(value,false))
     // Renderer saves can race a durable incoming delivery. Never remove acknowledged central messages.
     const previousState = this.load()
     if (previousState)
@@ -138,6 +150,8 @@ export class ChatStore {
           current = conversation
           snapshot.conversations.push(current)
           snapshot.messages[String(current.id)] = []
+        } else if (!commit.authoritative) {
+          Object.assign(current, conversation)
         }
         const key = String(current.id),
           list = snapshot.messages[key] ?? []
@@ -149,13 +163,17 @@ export class ChatStore {
                 item.senderId === message.senderId),
           )
           if (match < 0) list.push(message)
-          else if (message.status === 'sent' && message.serverId)
+          else if (!commit.authoritative && message.serverId)
             list[match] = message
         }
         snapshot.messages[key] = list.sort(
           (a, b) => Number(a.createdAt) - Number(b.createdAt),
         )
       }
+    if (previousState && !commit.authoritative) for (const conversation of previousState.conversations.filter(c=>!c.serverId)) {
+      const current=snapshot.conversations.find(c=>c.id===conversation.id)
+      if(current)for(const field of ['pinned','archived','muted'])current[field]=conversation[field]
+    }
     if (Buffer.byteLength(JSON.stringify(snapshot)) > MAX_STATE_BYTES)
       throw new Error('Chat state exceeds the storage limit.')
     const header = JSON.stringify({
@@ -187,7 +205,7 @@ export class ChatStore {
       'INSERT INTO chat_events(kind, entity_id, payload, created_at) VALUES (?, ?, ?, ?)',
     )
     const record = (kind: string, id: string, payload: unknown) =>
-      event.run(kind, id, JSON.stringify(payload), Date.now())
+      event.run(kind, id, JSON.stringify(redactSecretFields(payload)), Date.now())
     const putConversation = this.#db.prepare(
       'INSERT INTO conversations(id, position, payload) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET position=excluded.position, payload=excluded.payload',
     )
@@ -260,6 +278,12 @@ export class ChatStore {
             serverDirectory.serverId,
             JSON.stringify(serverDirectory.directory),
           )
+      if (commit.outboxPut) {
+        const row = commit.outboxPut
+        this.#db.prepare('INSERT OR IGNORE INTO central_outbox VALUES (?,?,?,?)').run(row.clientMessageId,row.serverId,row.conversationId,row.createdAt)
+      }
+      for (const id of typeof commit.outboxRemove==='string' ? [commit.outboxRemove] : commit.outboxRemove ?? []) this.#db.prepare('DELETE FROM central_outbox WHERE client_id=?').run(id)
+      for (const row of commit.readMessages ?? []) this.#db.prepare('INSERT OR IGNORE INTO read_outbox VALUES (?,?)').run(row.serverId,row.messageId)
       this.#db.exec('COMMIT')
     } catch (error) {
       this.#db.exec('ROLLBACK')
@@ -283,6 +307,26 @@ export class ChatStore {
         Date.now(),
       )
     return Number(result.changes)>0
+  }
+  outbox(serverId: string): OutboxEntry[] {
+    this.#assertOpen()
+    return this.#db.prepare('SELECT client_id AS clientMessageId,server_id AS serverId,conversation_id AS conversationId,created_at AS createdAt FROM central_outbox WHERE server_id=? ORDER BY created_at,rowid LIMIT 100').all(serverId) as unknown as OutboxEntry[]
+  }
+  serverOrigin(serverId:string):string|undefined { const row=this.#db.prepare('SELECT address FROM server_origins WHERE server_id=?').get(serverId);return row?String(row.address):undefined }
+  rememberServerOrigin(serverId:string,address:string):void { this.#db.prepare('INSERT INTO server_origins VALUES (?,?) ON CONFLICT(server_id) DO UPDATE SET address=excluded.address').run(serverId,address) }
+  pendingReads(serverId: string): string[] {
+    return this.#db.prepare('SELECT message_id FROM read_outbox WHERE server_id=? LIMIT 100').all(serverId).map(row => String(row.message_id))
+  }
+  confirmReads(serverId: string, ids: string[]): void {
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const id of ids) this.#db.prepare('DELETE FROM read_outbox WHERE server_id=? AND message_id=?').run(serverId,id)
+      this.#db.exec('COMMIT')
+    } catch (error) { this.#db.exec('ROLLBACK'); throw error }
+  }
+  searchMessages(query: string, conversationId?: string): { messageId: string; conversationId: string; text: string; senderName: string; createdAt: number }[] {
+    if (!query.trim() || query.length > 200) return []
+    return this.#db.prepare(`SELECT id AS messageId,conversation_id AS conversationId,json_extract(payload,'$.text') AS text,json_extract(payload,'$.senderName') AS senderName,json_extract(payload,'$.createdAt') AS createdAt FROM messages WHERE (? IS NULL OR conversation_id=?) AND instr(lower(json_extract(payload,'$.text')),lower(?))>0 ORDER BY json_extract(payload,'$.createdAt') DESC LIMIT 50`).all(conversationId ?? null,conversationId ?? null,query.trim()) as unknown as { messageId:string;conversationId:string;text:string;senderName:string;createdAt:number }[]
   }
   pluginInbox(serverId: string, groupId: string, pluginId: string): unknown[] {
     this.#assertOpen()
@@ -345,6 +389,7 @@ function validateSnapshot(value: unknown): Snapshot {
     if (
       !['direct', 'group', 'assistant'].includes(String(item.kind)) ||
       typeof item.pinned !== 'boolean' ||
+      ['archived','muted','unavailable'].some(field => item[field] !== undefined && typeof item[field] !== 'boolean') ||
       !Number.isFinite(item.updatedAt) ||
       !Number.isSafeInteger(item.unread)
     )
@@ -375,12 +420,17 @@ function validateSnapshot(value: unknown): Snapshot {
       if (
         !['self', 'peer', 'system'].includes(String(item.role)) ||
         !['text', 'system'].includes(String(item.type)) ||
-        !['sending', 'sent', 'failed', 'streaming', 'cancelled'].includes(
+        !['queued', 'sending', 'sent', 'failed', 'streaming', 'cancelled'].includes(
           String(item.status),
         ) ||
         !Number.isFinite(item.createdAt)
       )
         throw new Error('Invalid message.')
+      if (item.receipt !== undefined) {
+        const receipt = object(item.receipt)
+        if (![receipt.recipientCount,receipt.deliveredCount,receipt.readCount].every(n => Number.isSafeInteger(n) && Number(n)>=0 && Number(n)<=19) || Number(receipt.readCount)>Number(receipt.deliveredCount) || Number(receipt.deliveredCount)>Number(receipt.recipientCount)) throw new Error('Invalid receipt')
+      }
+      if (item.readAt !== undefined && (!Number.isSafeInteger(item.readAt) || Number(item.readAt)<0)) throw new Error('Invalid read timestamp')
       if (item.authorNotes !== undefined && !Array.isArray(item.authorNotes))
         throw new Error('Invalid author notes.')
       if (Array.isArray(item.authorNotes))

@@ -1,5 +1,5 @@
 export type ConversationKind = 'direct' | 'group' | 'assistant'
-export type MessageStatus = 'sending' | 'sent' | 'failed' | 'streaming' | 'cancelled'
+export type MessageStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'streaming' | 'cancelled'
 export type ParticipantRole = 'self' | 'peer' | 'system'
 
 export interface Profile {
@@ -22,6 +22,9 @@ export interface Conversation {
   serverId?: string
   targetId?: string
   remoteId?: string
+  archived?: boolean
+  muted?: boolean
+  unavailable?: boolean
 }
 
 export interface AuthorToolNote {
@@ -57,6 +60,8 @@ export interface ChatMessage {
   supersededById?: string
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number; reportedRequests: number; requestCount: number }
   serverId?: string
+  receipt?: { recipientCount: number; deliveredCount: number; readCount: number }
+  readAt?: number
   attachment?: { id: string; name: string; mime: string; size: number; durationMs?: number }
 }
 
@@ -86,6 +91,7 @@ export interface IncomingMessageDraft {
 export interface SendReceipt {
   eventId: string
   acceptedAt: number
+  queued?: boolean
   reply?: IncomingMessageDraft
 }
 
@@ -118,6 +124,13 @@ export interface ChatTransportPlugin {
 }
 
 export const chatTransportsServiceId = 'chat.transports'
+export function formatMessageDay(timestamp: number, now = Date.now()): string {
+  const date = new Date(timestamp), today = new Date(now), yesterday = new Date(now)
+  yesterday.setDate(yesterday.getDate()-1)
+  if(date.toDateString()===today.toDateString())return '今天'
+  if(date.toDateString()===yesterday.toDateString())return '昨天'
+  return date.toLocaleDateString('zh-CN',{year:date.getFullYear()===today.getFullYear()?undefined:'numeric',month:'long',day:'numeric'})
+}
 
 /** Server projections never overwrite in-flight AI/local UI state. */
 export function mergeCentralProjection(current: ChatState, projection: ChatState): ChatState {
@@ -125,7 +138,7 @@ export function mergeCentralProjection(current: ChatState, projection: ChatState
   for(const conversation of projection.conversations.filter(item=>item.serverId)) {
     const index=next.conversations.findIndex(item=>item.id===conversation.id)
     if(index<0)next.conversations.push(conversation)
-    else next.conversations[index]={...conversation,unread:current.activeConversationId===conversation.id?0:conversation.unread}
+    else next.conversations[index]={...conversation}
     const incoming=projection.messages[conversation.id]??[],old=current.messages[conversation.id]??[]
     next.messages[conversation.id]=[...old.filter(message=>!incoming.some(item=>item.id===message.id||(item.senderId===message.senderId&&item.clientMessageId===message.clientMessageId))),...incoming].sort((a,b)=>a.createdAt-b.createdAt)
   }
