@@ -19,3 +19,12 @@ it('exposes only user-confirmation IPC and does not give the renderer the Host e
   expect(await mocks.api.groupPluginConsent(input)).toBe('pending')
   expect(mocks.invoke).toHaveBeenLastCalledWith('central:plugin-consent',input)
 })
+it('distinguishes an attachment save from a cancelled file dialog',async()=>{
+  mocks.invoke.mockResolvedValueOnce('cancelled')
+  expect(await mocks.api.saveAttachment('hash')).toBe('cancelled')
+  expect(mocks.invoke).toHaveBeenLastCalledWith('attachment:save','hash')
+  mocks.invoke.mockResolvedValueOnce('saved')
+  expect(await mocks.api.saveAttachment('hash')).toBe('saved')
+  mocks.invoke.mockResolvedValueOnce(undefined)
+  await expect(mocks.api.saveAttachment('hash')).rejects.toThrow('无效附件保存结果')
+})

@@ -58,7 +58,11 @@ const api = {
   chooseAttachment:()=>ipcRenderer.invoke('attachment:choose'),
   recordVoice:(input:unknown)=>ipcRenderer.invoke('attachment:voice',input),
   readAttachment:(id:string)=>ipcRenderer.invoke('attachment:read',id),
-  saveAttachment:(id:string)=>ipcRenderer.invoke('attachment:save',id),
+  saveAttachment:async(id:string):Promise<'saved'|'cancelled'>=>{
+    const result:unknown=await ipcRenderer.invoke('attachment:save',id)
+    if(result!=='saved'&&result!=='cancelled')throw new Error('无效附件保存结果')
+    return result
+  },
   onServerState:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('central:changed',handler);return()=>ipcRenderer.removeListener('central:changed',handler)},
   onCentralChat:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('central:chat',handler);return()=>ipcRenderer.removeListener('central:chat',handler)},
   onPluginEvent:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('central:plugin',handler);return()=>ipcRenderer.removeListener('central:plugin',handler)},

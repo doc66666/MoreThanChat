@@ -1486,7 +1486,7 @@ export function App() {
             onPin={()=>void changeConversationOptions({pinned:!active.pinned})}
             onMute={()=>void changeConversationOptions({muted:!active.muted})}
           />
-          {active.kind==='group'&&active.serverId===serverState?.serverId&&serverState?.directory&&serverState.directory.groups.filter(group=>group.id===active.targetId).map(group=><GroupManager key={group.id} group={group} directory={serverState.directory!} userId={serverState.userId}/>)}
+          {active.kind==='group'&&active.serverId===serverState?.serverId&&serverState?.directory&&serverState.directory.groups.filter(group=>group.id===active.targetId).map(group=><GroupManager key={group.id} group={group} directory={serverState.directory!} userId={serverState.userId} connected={serverState.status==='connected'}/>)}
           {renderSlot('chat.details')}
           {active.kind === 'group' &&
             active.serverId &&
@@ -1591,7 +1591,7 @@ export function App() {
       )}
       {forwardDialog&&<div className="modal-backdrop" onMouseDown={()=>{if(!messageActionBusy)setForwardDialog(null)}}><section className="new-chat-modal message-action-modal" data-forward-dialog role="dialog" aria-modal="true" aria-label="转发消息" onMouseDown={e=>e.stopPropagation()}><div className="drawer-header"><h2>转发消息</h2><button className="icon-button" disabled={messageActionBusy} onClick={()=>setForwardDialog(null)} aria-label="关闭转发"><X size={18}/></button></div><p className="settings-note">作为独立新消息发送，只能选择同一中心服务器的好友或群。</p><p className="forward-preview">{forwardDialog.message.text.slice(0,160)||forwardDialog.message.attachment?.name}</p><div className="forward-targets">{state.conversations.filter(c=>c.serverId===forwardDialog.message.serverId&&!c.unavailable&&c.kind!=='assistant').map(c=><button className="secondary-button" key={c.id} data-forward-target={c.id} disabled={messageActionBusy} onClick={()=>void forwardTo(c.id)}><span>{c.title}</span><small>{c.kind==='group'?'群聊':'好友'}</small></button>)}</div></section></div>}
       {retractConfirm&&<div className="modal-backdrop" onMouseDown={()=>{if(!messageActionBusy)setRetractConfirm(null)}}><section className="new-chat-modal message-action-modal" data-retract-dialog role="dialog" aria-modal="true" aria-label="确认撤回" onMouseDown={e=>e.stopPropagation()}><h2>撤回这条消息？</h2><p className="settings-note">仅本人两分钟内的消息可以撤回。离线成员上线后会收到撤回通知；已经转发、下载或复制的内容无法保证删除。</p><div className="modal-actions"><button className="secondary-button" disabled={messageActionBusy} onClick={()=>setRetractConfirm(null)}>取消</button><button className="primary-button" data-confirm-retract disabled={messageActionBusy} onClick={()=>void confirmRetraction()}>{messageActionBusy?'正在撤回…':'确认撤回'}</button></div></section></div>}
-      {showMessageSearch&&<MessageSearch conversationId={active.id} title={active.title} onClose={()=>setShowMessageSearch(false)} onSelect={row=>{selectConversation(row.conversationId);setShowMessageSearch(false);void loadHistory(row.conversationId,{around:row.messageId})}}/>}
+      {showMessageSearch&&<MessageSearch conversationId={active.id} title={active.title} conversationTitles={Object.fromEntries(state.conversations.map(c=>[c.id,c.title]))} onClose={()=>setShowMessageSearch(false)} onSelect={row=>{selectConversation(row.conversationId);setShowMessageSearch(false);void loadHistory(row.conversationId,{around:row.messageId})}}/>}
       {showServer && (
         <NetworkPanel
           snapshot={serverState}

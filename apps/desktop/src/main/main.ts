@@ -471,8 +471,9 @@ function registerIpc(): void {
         defaultPath: wire.name,
         title: '保存文件',
       })
-    if (!result.canceled && result.filePath)
-      await writeFile(result.filePath, Buffer.from(wire.data, 'base64'))
+    if (result.canceled || !result.filePath) return 'cancelled'
+    await writeFile(result.filePath, Buffer.from(wire.data, 'base64'))
+    return 'saved'
   })
   ipcMain.handle('chat:state:load', (event) => {
     assertTrustedIpc(event)

@@ -111,7 +111,7 @@ declare global {
       chooseAttachment():Promise<AttachmentRef|null>
       recordVoice(input:{data:string;mime:string;durationMs:number}):Promise<AttachmentRef>
       readAttachment(id:string):Promise<WireAttachment>
-      saveAttachment(id:string):Promise<void>
+      saveAttachment(id:string):Promise<'saved'|'cancelled'>
       onServerState(listener:(state:ServerSnapshot)=>void):()=>void
       onCentralChat(listener:(state:unknown)=>void):()=>void
       onPluginEvent(listener:(event:Extract<RelayEvent,{kind:'plugin'}>)=>void):()=>void

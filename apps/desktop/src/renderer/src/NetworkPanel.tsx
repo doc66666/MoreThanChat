@@ -1,4 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { validGroupId } from '@more-than-chat/central-protocol'
+import { slotLabels } from './group-plugin-presentation'
+import { friendRequestIssue, selectedCurrentFriends } from './network-form'
+import { useDialogFocus } from './use-dialog-focus'
 import { IdentitySettings } from './IdentitySettings'
 import { GeneratedGroupPlugin, GroupPluginGate } from './GeneratedGroupPlugin'
 import type {
@@ -23,24 +27,45 @@ export function NetworkPanel({
     [members, setMembers] = useState<string[]>([]),
     [error, setError] = useState<string | null>(null),
     [busy, setBusy] = useState(false)
-  const run = async (fn: () => Promise<unknown>) => {
+  const inFlight=useRef(false)
+  const dialog=useDialogFocus()
+  const [notice,setNotice]=useState('')
+  const connected=snapshot?.status==='connected',disabled=busy||!connected
+  const run = async (fn: () => Promise<unknown>,success='操作已完成') => {
+    if(inFlight.current)return false
+    inFlight.current=true
     setBusy(true)
     setError(null)
+    setNotice('')
     try {
       await fn()
+      setNotice(success)
       return true
     } catch (e) {
       setError(e instanceof Error ? e.message : '操作失败')
       return false
     } finally {
+      inFlight.current=false
       setBusy(false)
     }
   }
-  const action = (route: string, data: unknown) =>
-    run(() => window.moreThanChat.serverAction(route, data))
+  const action = (route: string, data: unknown,success?:string) => {
+    if(!connected){setError('请先连接中心服务器，再进行此操作。');return Promise.resolve(false)}
+    return run(() => window.moreThanChat.serverAction(route, data),success)
+  }
   const directory = snapshot?.directory
   const [joinId, setJoinId] = useState('')
   const [removeFriend,setRemoveFriend]=useState<{id:string;displayName:string}|null>(null)
+  const friendIssue=friendRequestIssue(friendId,snapshot?.userId,directory)
+  const selectedMembers=selectedCurrentFriends(members,directory)
+  const formServer=useRef(snapshot?.serverId??null)
+  useEffect(()=>{
+    const id=snapshot?.serverId
+    if(!id)return
+    // Automatic reconnect temporarily clears serverId; keep unfinished forms in that case.
+    if(formServer.current&&formServer.current!==id){setMembers([]);setGroupName('');setFriendId('');setJoinId('');setRemoveFriend(null);setNotice('');setError(null)}
+    formServer.current=id
+  },[snapshot?.serverId])
   const pending =
     directory?.plugins.filter(
       (plugin) =>
@@ -52,11 +77,13 @@ export function NetworkPanel({
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside
         className="plugin-drawer network-drawer"
+        ref={dialog} tabIndex={-1}
+        role="dialog" aria-modal="true" aria-label="中心服务器与联系人"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="drawer-header">
           <h2>中心服务器与联系人</h2>
-          <button className="icon-button" onClick={onClose}>
+          <button className="icon-button" onClick={onClose} aria-label="关闭服务器与联系人">
             ×
           </button>
         </div>
@@ -67,6 +94,7 @@ export function NetworkPanel({
           <span>服务器地址</span>
           <input
             data-server-field="address"
+            disabled={busy}
             value={address}
             onChange={(e) => setAddress(e.target.value)}
             placeholder="https://你的服务器"
@@ -76,6 +104,8 @@ export function NetworkPanel({
           <span>显示名称</span>
           <input
             data-server-field="name"
+            maxLength={80}
+            disabled={busy}
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
@@ -87,8 +117,8 @@ export function NetworkPanel({
         <button
           type="button"
           className="secondary-button"
-          disabled={!snapshot}
-          onClick={() => void run(() => window.moreThanChat.copyGlobalUserId())}
+          disabled={!snapshot||busy}
+          onClick={() => void run(() => window.moreThanChat.copyGlobalUserId(),'全局用户 ID 已复制')}
         >
           复制自己的全局 ID
         </button>
@@ -96,17 +126,18 @@ export function NetworkPanel({
           <button
             className="primary-button"
             data-connect-server
-            disabled={busy || !snapshot}
+            disabled={busy || !snapshot || !address.trim() || snapshot.status==='connecting'}
             onClick={() =>
-              void run(() => window.moreThanChat.connectServer(address, name))
+              void run(() => window.moreThanChat.connectServer(address, name),'连接成功，可以添加本服好友或加入群聊')
             }
           >
-            Ping 并认证连接
+            {snapshot?.status==='connecting'?'正在连接…':'Ping 并认证连接'}
           </button>
           <button
             className="secondary-button"
+            disabled={busy || snapshot?.status==='disconnected' || !snapshot}
             onClick={() =>
-              void run(() => window.moreThanChat.disconnectServer())
+              void run(() => window.moreThanChat.disconnectServer(),'已断开连接；本机聊天记录仍保留')
             }
             data-disconnect-server
           >
@@ -116,13 +147,21 @@ export function NetworkPanel({
         <p className="settings-note" data-server-status={snapshot?.status}>
           {snapshot?.status === 'connected'
             ? `已连接 · ${snapshot.mode === 'private' ? '私服白名单' : '公共黑名单'} · ${snapshot.serverId}`
-            : (snapshot?.error ?? '尚未连接')}
+            : snapshot?.status==='connecting'?'正在检查地址并认证…':(snapshot?.error ?? '尚未连接')}
         </p>
-        {error && <p className="settings-error">{error}</p>}
+        {(error||busy||notice)&&<div className="network-feedback">
+          {error && <p className="settings-error" role="alert">{error}</p>}
+          {busy&&<p className="settings-note" role="status">正在处理，请稍候…</p>}
+          {notice&&<p className="network-notice" role="status">{notice}</p>}
+        </div>}
+        {!connected&&<p className="settings-note">连接服务器后才能处理好友、群聊和插件申请。离线时可以查看本机已保存的聊天记录。</p>}
         <IdentitySettings key={snapshot?.serverId??'offline'} connected={snapshot?.status==='connected'} />
         <h3>添加本服好友</h3>
         <input
           data-friend-id
+          aria-label="好友的全局用户 ID"
+          maxLength={128}
+          disabled={busy}
           value={friendId}
           onChange={(e) => setFriendId(e.target.value)}
           placeholder="粘贴对方全局用户 ID"
@@ -130,13 +169,14 @@ export function NetworkPanel({
         <button
           className="secondary-button"
           data-request-friend
-          disabled={busy || snapshot?.status !== 'connected'}
+          disabled={disabled || !!friendIssue}
           onClick={() =>
-            void action('friends/request', { userId: friendId.trim() })
+            void action('friends/request', { userId: friendId.trim() },'好友申请已发送，等待对方接受').then(ok=>{if(ok)setFriendId('')})
           }
         >
           提交好友申请
         </button>
+        {friendIssue&&<p className="settings-note">{friendIssue}</p>}
         {(directory?.requests ?? []).map((user) => (
           <div className="contact-row" key={user.id}>
             <span>
@@ -145,16 +185,17 @@ export function NetworkPanel({
             </span>
             <button
               data-accept-friend={user.id}
-              disabled={busy}
+              disabled={disabled}
               onClick={() => void action('friends/accept', { userId: user.id })}
             >
               接受
             </button>
-            <button data-reject-friend={user.id} disabled={busy} onClick={()=>void action('friends/reject',{userId:user.id})}>拒绝</button>
+            <button data-reject-friend={user.id} disabled={disabled} onClick={()=>void action('friends/reject',{userId:user.id})}>拒绝</button>
           </div>
         ))}
-        {(directory?.outgoingRequests??[]).map(user=><div className="contact-row" key={'request:'+user.id}><span>{user.displayName}<small>等待对方接受好友申请</small></span><button disabled={busy} data-cancel-friend={user.id} onClick={()=>void action('friends/cancel',{userId:user.id})}>取消申请</button></div>)}
+        {(directory?.outgoingRequests??[]).map(user=><div className="contact-row" key={'request:'+user.id}><span>{user.displayName}<small>等待对方接受好友申请</small></span><button disabled={disabled} data-cancel-friend={user.id} onClick={()=>void action('friends/cancel',{userId:user.id})}>取消申请</button></div>)}
         <h3>好友</h3>
+        {connected&&!directory?.friends.length&&<p className="settings-note">还没有好友。复制自己的 ID 发给对方，或在上方添加本服好友。</p>}
         {(directory?.friends ?? []).map((user) => (
           <div
             className="contact-row"
@@ -171,13 +212,16 @@ export function NetworkPanel({
               <small>{user.online ? '在线' : '离线 · 消息由服务器暂存'}</small>
             </span>
             <code>{user.id.slice(-8)}</code>
-            </button><button className="contact-remove" title="删除好友" data-remove-friend={user.id} onClick={()=>setRemoveFriend(user)}>×</button>
+            </button><button className="contact-remove" disabled={disabled} aria-label={`删除好友 ${user.displayName}`} title="删除好友" data-remove-friend={user.id} onClick={()=>setRemoveFriend(user)}>×</button>
           </div>
         ))}
-        {removeFriend&&<div className="danger-confirm"><p>删除好友 {removeFriend.displayName}？本机聊天记录会保留。</p><div><button className="secondary-button" onClick={()=>setRemoveFriend(null)}>取消</button><button className="primary-button" disabled={busy} data-confirm-remove-friend onClick={()=>void action('friends/remove',{userId:removeFriend.id}).then(ok=>{if(ok)setRemoveFriend(null)})}>删除好友</button></div></div>}
+        {removeFriend&&<div className="danger-confirm"><p>删除好友 {removeFriend.displayName}？本机聊天记录会保留。</p><div><button className="secondary-button" disabled={busy} onClick={()=>setRemoveFriend(null)}>取消</button><button className="primary-button" disabled={disabled} data-confirm-remove-friend onClick={()=>void action('friends/remove',{userId:removeFriend.id}).then(ok=>{if(ok)setRemoveFriend(null)})}>删除好友</button></div></div>}
         <h3>创建群聊</h3>
         <input
           data-group-name
+          aria-label="新群名称"
+          maxLength={80}
+          disabled={busy}
           value={groupName}
           onChange={(e) => setGroupName(e.target.value)}
           placeholder="群名称"
@@ -186,7 +230,8 @@ export function NetworkPanel({
           <label className="group-member-option" key={user.id}>
             <input
               type="checkbox"
-              checked={members.includes(user.id)}
+              checked={selectedMembers.includes(user.id)}
+              disabled={disabled||(!selectedMembers.includes(user.id)&&selectedMembers.length>=19)}
               onChange={(e) =>
                 setMembers((value) =>
                   e.target.checked
@@ -201,13 +246,14 @@ export function NetworkPanel({
         <button
           className="secondary-button"
           data-create-group
-          disabled={busy || !groupName.trim() || !members.length}
+          disabled={disabled || !groupName.trim() || !selectedMembers.length || selectedMembers.length>19}
           onClick={() =>
-            void action('groups', { name: groupName, memberIds: members })
+            void action('groups', { name: groupName.trim(), memberIds: selectedMembers },'群聊已创建，可在下方打开').then(ok=>{if(ok){setGroupName('');setMembers([])}})
           }
         >
           创建群
         </button>
+        <p className="settings-note">已选 {selectedMembers.length} 位好友；至少选 1 位，最多 19 位，加上你共 20 人。</p>
         <h3>本服群聊</h3>
         {(directory?.groups ?? []).map((group) => (
           <button
@@ -227,23 +273,28 @@ export function NetworkPanel({
           </button>
         ))}
         <input
+          aria-label="要加入的群 ID"
+          maxLength={80}
+          disabled={busy}
           value={joinId}
           onChange={(e) => setJoinId(e.target.value)}
           placeholder="粘贴本服群的全局 ID"
         />
         <button
           className="secondary-button"
-          disabled={busy || snapshot?.status !== 'connected'}
-          onClick={() => void action('groups/join', { groupId: joinId.trim() })}
+          disabled={disabled || !validGroupId(joinId.trim())}
+          onClick={() => void action('groups/join', { groupId: joinId.trim() },'入群申请已发送，等待管理员审批').then(ok=>{if(ok)setJoinId('')})}
         >
           查找群并申请加入
         </button>
+        {joinId&&!validGroupId(joinId.trim())&&<p className="settings-note">请粘贴完整的 grp_ 开头的群 ID。</p>}
         {(directory?.groupRequests ?? []).map((request) => (
           <div className="contact-row" key={request.groupId + request.user.id}>
             <span>
               {request.user.displayName} 申请加入 {request.groupName}
             </span>
             <button
+              disabled={disabled}
               onClick={() =>
                 void action('groups/accept', {
                   groupId: request.groupId,
@@ -253,13 +304,13 @@ export function NetworkPanel({
             >
               批准入群
             </button>
-            <button disabled={busy} onClick={()=>void action('groups/reject',{groupId:request.groupId,userId:request.user.id})}>拒绝</button>
+            <button disabled={disabled} onClick={()=>void action('groups/reject',{groupId:request.groupId,userId:request.user.id})}>拒绝</button>
           </div>
         ))}
         <h3>群插件申请 · 管理员审批</h3>
         {pending.length === 0 && (
           <p className="settings-note">
-            没有待审批申请。进入群聊可提交接龙、小游戏或同步通道插件。
+            {connected?'没有待审批申请。进入群聊可提交 AI 创作的插件或使用演示模板。':'连接服务器后查看待审批的群插件申请。'}
           </p>
         )}
         {pending.map((plugin) => (
@@ -272,15 +323,17 @@ export function NetworkPanel({
               {plugin.pack.displayName} · v{plugin.pack.version}
             </strong>
             <small>{plugin.digest}</small>
+            <p>群聊：{directory?.groups.find(group=>group.id===plugin.groupId)?.name??plugin.groupId}</p>
             <p>申请人：{plugin.submittedBy}</p>
             {plugin.pack.artifact&&<><p>{plugin.pack.artifact.manifest.description} · 更新会重置共享状态，成员需重新确认载入。</p><details><summary>审阅完整插件包</summary><pre>{JSON.stringify(plugin.pack,null,2)}</pre></details></>}
             <p>
-              界面位置：{plugin.pack.slot}；可向本群发送同步事件，无任意 URL
+              界面位置：{slotLabels[plugin.pack.slot]}；可向本群发送同步事件，无任意 URL
               或文件权限。
             </p>
             <div className="draft-actions">
               <button
                 data-approve-group-plugin
+                disabled={disabled}
                 onClick={() =>
                   void action('plugins/review', {
                     groupId: plugin.groupId,
@@ -294,6 +347,7 @@ export function NetworkPanel({
                 批准并向本群分发
               </button>
               <button
+                disabled={disabled}
                 onClick={() =>
                   void action('plugins/review', {
                     groupId: plugin.groupId,
