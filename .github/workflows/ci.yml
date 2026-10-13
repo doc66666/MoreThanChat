@@ -51,6 +51,8 @@ jobs:
         run: node scripts/verify-central-ops.mjs
       - name: Verify standalone central release recovery
         run: node scripts/verify-central-ops.mjs --release .artifacts/central-release
+      - name: Verify bounded central traffic and offline backlog
+        run: node scripts/verify-central-ops.mjs --release .artifacts/central-release --load-rounds 8
       - name: Verify desktop plugin UI
         if: runner.os == 'Windows'
         run: node scripts/verify-plugin-ui.mjs

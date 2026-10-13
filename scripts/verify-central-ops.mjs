@@ -9,15 +9,18 @@ import { DatabaseSync } from 'node:sqlite'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const args = process.argv.slice(2)
-if (args.length && (args.length !== 2 || args[0] !== '--release')) {
-  throw new Error('Usage: node scripts/verify-central-ops.mjs [--release <standalone-directory>]')
+let releaseDirectory, loadRounds = 0
+for (let i = 0; i < args.length; i += 2) {
+  if (args[i] === '--release' && args[i + 1] && releaseDirectory === undefined) releaseDirectory = path.resolve(args[i + 1])
+  else if (args[i] === '--load-rounds' && /^[1-9]\d{0,2}$/.test(args[i + 1] ?? '') && loadRounds === 0) loadRounds = Number(args[i + 1])
+  else throw new Error('Usage: node scripts/verify-central-ops.mjs [--release <standalone-directory>] [--load-rounds 1..999]')
 }
 const root = path.resolve(import.meta.dirname, '..')
-const entry = args.length
-  ? path.join(path.resolve(args[1]), 'server.mjs')
+const entry = releaseDirectory
+  ? path.join(releaseDirectory, 'server.mjs')
   : path.join(root, 'apps', 'central-server', 'src', 'server.mjs')
-const statusEntry = args.length
-  ? path.join(path.resolve(args[1]), 'central-status.mjs')
+const statusEntry = releaseDirectory
+  ? path.join(releaseDirectory, 'central-status.mjs')
   : path.join(root, 'scripts', 'central-status.mjs')
 await access(entry)
 await access(statusEntry)
@@ -105,7 +108,7 @@ async function stop(state, signal = 'SIGKILL') {
   return waitForExit(state)
 }
 
-async function request(state, route, token, body, expected = 200) {
+async function request(state, route, token, body, expected = 200, retries = 0) {
   const response = await fetch(state.url + route, {
     method: body === undefined ? 'GET' : 'POST',
     headers: {
@@ -116,6 +119,11 @@ async function request(state, route, token, body, expected = 200) {
     signal: AbortSignal.timeout(30000),
   })
   const data = await response.json()
+  if (response.status === 429 && expected === 200 && retries < 30 && loadRounds) {
+    const seconds = Number(response.headers.get('retry-after'))
+    await delay(Number.isFinite(seconds) ? Math.min(5000, Math.max(1000, seconds * 1000)) : 1000)
+    return request(state, route, token, body, expected, retries + 1)
+  }
   assert.equal(response.status, expected, `${route}: ${JSON.stringify(data)}`)
   return data
 }
@@ -340,6 +348,85 @@ try {
   assertPurged([group.messageId, direct.messageId, afterRestart.messageId], [marker, attachment.data, 'New traffic after recovery'])
   console.log('PASS: last-device ACK purges bodies, restart does not resurrect them, new group traffic still works')
 
+  if (loadRounds) {
+    const started = performance.now(), latencies = [], expectedMessages = new Map(), seen = new Map()
+    let peakQueueBytes = 0, attachmentMessages = 0
+    const pendingFor = user => inspectDatabase(db => Number(db.prepare('SELECT COUNT(*) AS n FROM queue_devices WHERE user_id=? AND device_id=?').get(user.userId, user.deviceId).n))
+    const pendingMessages = user => inspectDatabase(db => Number(db.prepare("SELECT COUNT(*) AS n FROM queue_devices d JOIN queue q ON q.id=d.event_id AND q.recipient=d.user_id WHERE d.user_id=? AND d.device_id=? AND json_extract(q.payload,'$.kind')='message'").get(user.userId, user.deviceId).n))
+    const record = (user, event) => {
+      if (event.kind !== 'message') return
+      const expected = expectedMessages.get(event.id)
+      assert.ok(expected, 'Unexpected message during load')
+      assert.equal(event.message.senderId, expected.sender)
+      assert.equal(event.message.text, expected.text)
+      assert.equal(event.message.attachment?.id, expected.attachment?.id)
+      if (expected.attachment) {
+        const decoded = Buffer.from(event.message.attachment.data, 'base64')
+        assert.equal(decoded.length, expected.attachment.size)
+        assert.equal(createHash('sha256').update(decoded).digest('hex'), expected.attachment.id)
+      }
+      const received = seen.get(user.deviceId) ?? new Set()
+      assert.equal(received.has(event.id), false, 'An ACKed message was delivered again')
+      received.add(event.id); seen.set(user.deviceId, received)
+    }
+    const drain = async users => {
+      for (const user of users) {
+        while (pendingFor(user)) {
+          const result = await request(server, '/v1/events', user.token)
+          assert.ok(result.events.length, 'Pending obligation made no progress')
+          for (const event of result.events) record(user, event)
+          await acknowledge(server, user, result.events.map(event => event.id))
+        }
+      }
+    }
+    // Clear only control notifications left by the earlier recovery scenario.
+    await drain([a, b1, b2, c])
+    for (let round = 0; round < loadRounds; round++) {
+      for (const sender of [a, b1, c]) {
+        const content = `load-${round}-${randomUUID()}-` + '内容'.repeat(4096)
+        let loadAttachment
+        if (round % 8 === 0) {
+          const data = randomBytes(1024 * 1024)
+          loadAttachment = { id: createHash('sha256').update(data).digest('hex'), name: 'load.bin', mime: 'application/octet-stream', size: data.length, data: data.toString('base64') }
+          attachmentMessages++
+        }
+        const payload = { clientMessageId: randomUUID(), targetKind: 'group', targetId: groupId, text: content, ...(loadAttachment ? { attachment: loadAttachment } : {}) }
+        const began = performance.now()
+        const accepted = await request(server, '/v1/messages', sender.token, payload)
+        latencies.push(performance.now() - began)
+        expectedMessages.set(accepted.messageId, { sender: sender.userId, text: content, attachment: loadAttachment })
+        assert.equal((await request(server, '/v1/messages', sender.token, payload)).messageId, accepted.messageId, 'Identical send retry must deduplicate under load')
+      }
+      // Bob's second registered device intentionally remains offline throughout.
+      await drain([a, b1, c])
+      const stats = await request(server, '/v1/admin/status', adminToken)
+      peakQueueBytes = Math.max(peakQueueBytes, stats.queue.payloadBytes)
+      assert.equal(pendingMessages(b2), expectedMessages.size)
+      if (round + 1 === Math.ceil(loadRounds / 2)) {
+        const oldServerId = (await request(server, '/v1/ping')).serverId
+        await stop(server)
+        server = await start(); await waitForReady(server)
+        assert.equal((await request(server, '/v1/ping')).serverId, oldServerId)
+        a = await login(server, aIdentity); b1 = await login(server, b1Identity)
+        b2 = await login(server, b2Identity); c = await login(server, cIdentity)
+        assert.equal(pendingMessages(b2), expectedMessages.size, 'Offline obligations changed across hard restart')
+      }
+    }
+    await drain([b2, a, b1, c])
+    await drain([a, b1, b2, c])
+    for (const user of [a, b1, b2, c]) {
+      const expected = [...expectedMessages].filter(([, item]) => user.deviceId === b2.deviceId || item.sender !== user.userId).map(([id]) => id).sort()
+      assert.deepEqual([...(seen.get(user.deviceId) ?? [])].sort(), expected, 'Per-device delivered set differs from targets')
+    }
+    const final = await request(server, '/v1/admin/status', adminToken)
+    assert.equal(final.queue.rows, 0)
+    assert.equal(final.queue.payloadBytes, 0)
+    assert.equal(final.queue.deviceObligations, 0)
+    inspectDatabase(db => assert.equal(db.prepare('PRAGMA quick_check').get().quick_check, 'ok'))
+    latencies.sort((left, right) => left - right)
+    console.log(JSON.stringify({ loadPassed: true, rounds: loadRounds, messages: expectedMessages.size, deviceDeliveries: [...seen.values()].reduce((n, ids) => n + ids.size, 0), attachmentMessages, peakQueueBytes, elapsedMs: Math.round(performance.now() - started), sendP95Ms: Math.round(latencies[Math.ceil(latencies.length * 0.95) - 1]), queueRowsAfterDrain: final.queue.rows }))
+  }
+
   if (process.platform === 'win32') {
     await stop(server)
     console.log('SKIP: graceful POSIX SIGTERM (Windows process termination is not a POSIX signal test)')
@@ -354,7 +441,7 @@ try {
     console.log('PASS: graceful SIGTERM while a receiver is long-polling')
   }
   assertPurged([group.messageId, direct.messageId], [marker, attachment.data])
-  console.log(`Central operations verification passed (${args.length ? 'standalone release' : 'workspace source'}).`)
+  console.log(`Central operations verification passed (${releaseDirectory ? 'standalone release' : 'workspace source'}).`)
 } finally {
   for (const state of children) {
     try { await stop(state) } catch (error) { cleanupErrors.push(error) }

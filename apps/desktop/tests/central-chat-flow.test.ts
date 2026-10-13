@@ -14,6 +14,34 @@ import { createCentralServer } from '../../central-server/src/server.mjs'
 const cipher={available:()=>true,encrypt:(text:string)=>Buffer.from(text),decrypt:(bytes:Buffer)=>bytes.toString()}
 async function until(check:()=>boolean,ms=6000){const end=Date.now()+ms;while(Date.now()<end){if(check())return;await new Promise(r=>setTimeout(r,20))}throw new Error('Client flow timeout')}
 describe('human chat reliability',()=>{
+  it('keeps a rate-limited send durable and retries the same message without duplicates',async()=>{
+    const root=await mkdtemp(path.join(tmpdir(),'mtc-rate-retry-')),aStore=await ChatStore.open(path.join(root,'a')),bStore=await ChatStore.open(path.join(root,'b'))
+    aStore.save(createSeedState());bStore.save(createSeedState())
+    const app=createCentralServer({directory:path.join(root,'server'),mode:'public',adminToken:'qa-only-strong-admin-token-0001'}),url='http://127.0.0.1:'+(await app.listen(0)).port
+    const handler=app.server.listeners('request')[0]!
+    let rejected=0, blocked=true
+    app.server.removeListener('request',handler)
+    app.server.on('request',(request:import('node:http').IncomingMessage,response:import('node:http').ServerResponse)=>{
+      if(request.url==='/v1/messages' && blocked){rejected++;request.resume();response.writeHead(429,{'content-type':'application/json','retry-after':'1'});response.end(JSON.stringify({error:'请求过于频繁，请稍后重试'}));return}
+      handler.call(app.server,request,response)
+    })
+    const a=new CentralClient(await ClientIdentity.load(path.join(root,'a'),cipher),aStore,new AttachmentStore(path.join(root,'a','files')),path.join(root,'a'))
+    const b=new CentralClient(await ClientIdentity.load(path.join(root,'b'),cipher),bStore,new AttachmentStore(path.join(root,'b','files')),path.join(root,'b'))
+    try{
+      await a.connect(url,'A');await b.connect(url,'B');await a.action('friends/request',{userId:b.identity.userId});await b.action('friends/accept',{userId:a.identity.userId})
+      await until(()=>Boolean(aStore.load()?.conversations.some(c=>c.targetId===b.identity.userId)))
+      const conversation=String(aStore.load()!.conversations.find(c=>c.targetId===b.identity.userId)!.id),id=randomUUID()
+      await a.send({conversationId:conversation,clientMessageId:id,text:'rate-limited-durable-body'})
+      await until(()=>rejected>=1 && aStore.messageByClient(app.serverId,a.identity.userId,id)?.status==='queued')
+      expect(aStore.outbox(app.serverId).map(entry=>entry.clientMessageId)).toContain(id)
+      expect(bStore.searchMessages('rate-limited-durable-body')).toHaveLength(0)
+      blocked=false
+      await until(()=>aStore.messageByClient(app.serverId,a.identity.userId,id)?.status==='sent')
+      await until(()=>bStore.searchMessages('rate-limited-durable-body').length===1)
+      expect(aStore.outbox(app.serverId)).toEqual([])
+      expect(app.db.prepare('SELECT COUNT(*) AS n FROM message_routes WHERE client_id=?').get(id).n).toBe(1)
+    }finally{await a.disconnect(false);await b.disconnect(false);await app.close();aStore.close();bStore.close();await rm(root,{recursive:true,force:true})}
+  },15000)
   it('does not ACK an incoming message until local persistence succeeds after a disk failure',async()=>{
     const root=await mkdtemp(path.join(tmpdir(),'mtc-before-ack-')),aStore=await ChatStore.open(path.join(root,'a')),bStore=await ChatStore.open(path.join(root,'b'))
     aStore.save(createSeedState());bStore.save(createSeedState())

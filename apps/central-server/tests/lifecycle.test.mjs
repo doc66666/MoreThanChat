@@ -248,7 +248,7 @@ describe('central server lifecycle', () => {
     // closes immediately, so new TCP connections correctly cannot probe it.
     for (const route of ['/readyz', '/v1/ping']) {
       const response = { destroyed: false, writableEnded: false, writeHead: vi.fn(), end: vi.fn() }
-      f.app.server.emit('request', { method: 'GET', url: route }, response)
+      f.app.server.emit('request', { method: 'GET', url: route, complete: true }, response)
       expect(response.writeHead.mock.calls[0][0]).toBe(503)
       expect(response.writeHead.mock.calls[0][1].connection).toBe('close')
     }

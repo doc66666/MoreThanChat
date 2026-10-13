@@ -13,6 +13,7 @@ import { pathToFileURL } from 'node:url'
 import { deviceDelivery } from './device-delivery.mjs'
 import { acquireDirectoryLock, serverLifecycle } from './server-lifecycle.mjs'
 import { collectServerStats } from './server-operations.mjs'
+import { TRAFFIC, tokenBuckets, isControlRequest, trafficClass, bodyLimit, bodyAdmission } from './traffic-policy.mjs'
 import {
   parseGroupPluginPack,
   validUid,
@@ -103,6 +104,12 @@ export function createCentralServer({
 
 function initializeCentralServer({ mode, adminToken, name, accessList, shutdownTimeoutMs, onError }, db, releaseLock) {
   const startedAt = Date.now()
+  const budgets = Object.fromEntries(Object.keys(TRAFFIC).map(key => [key, tokenBuckets()]))
+  const uploads = bodyAdmission(), requestIdentity = new WeakMap()
+  const throttle = (kind, key) => {
+    const retryAfter = budgets[kind].take(key, TRAFFIC[kind])
+    if (retryAfter) throw Object.assign(new ApiError(429, '请求过于频繁，请稍后重试'), { retryAfter })
+  }
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000;
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,public_key TEXT NOT NULL,name TEXT NOT NULL);
@@ -364,43 +371,52 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       ),
     }
   }
-  const auth = (request) => {
+  const auth = (request, traffic) => {
     const token = (request.headers.authorization ?? '').replace(/^Bearer /, '')
     const entry = sessions.get(token)
     if (!entry || entry.expires < Date.now())
       fail(401, '会话已失效，请重新认证')
     if (!allowed(entry.uid)) fail(403, '此身份不在服务器的访问名单中')
     delivery.check(entry.uid,entry.deviceId)
+    if (traffic) throttle(traffic, entry.uid)
     delivery.touch(entry.uid,entry.deviceId)
     entry.expires = Date.now() + 30 * 60 * 1000
     activity.set(entry.uid, Date.now())
     return entry.uid
   }
-  const json = (response, status, body) => {
+  const json = (response, status, body, retryAfter = 1) => {
     if (response.destroyed || response.writableEnded) return
     response.writeHead(status, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
       ...(lifecycle.state === 'draining' ? { connection: 'close' } : {}),
-      ...(status === 429 || status === 503 ? { 'retry-after': '1' } : {}),
+      ...(status === 429 || status === 503 ? { 'retry-after': String(retryAfter) } : {}),
     })
     response.end(JSON.stringify(body))
   }
   const body = async (request) => {
-    let length = 0
-    const chunks = []
-    for await (const chunk of request) {
-      length += chunk.length
-      if (length > 8 * 1024 * 1024) fail(413, '请求太大')
-      chunks.push(chunk)
-    }
-    if (lifecycle.expired || request.aborted) fail(503, '服务器正在关闭，请稍后重试')
+    const route = new URL(request.url, 'http://localhost').pathname
+    const limit = bodyLimit(route)
+    if (Number(request.headers['content-length']) > limit) fail(413, '请求太大')
+    const release = uploads.acquire(requestIdentity.get(request), route, isControlRequest(request.method, route))
+    if (!release) fail(429, '上传请求繁忙，请稍后重试')
     try {
-      return object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-    } catch (e) {
-      if (e instanceof ApiError) throw e
-      fail(400, '无效 JSON')
-    }
+      let length = 0
+      const chunks = []
+      // Keep the socket available for a useful 413 response on chunked overflow.
+      for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+        length += chunk.length
+        if (length > limit) fail(413, '请求太大')
+        chunks.push(chunk)
+      }
+      if (lifecycle.expired || request.aborted) fail(503, '服务器正在关闭，请稍后重试')
+      try {
+        return object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      } catch (e) {
+        if (e instanceof ApiError) throw e
+        fail(400, '无效 JSON')
+      }
+    } finally { release() }
   }
   const server = createServer(async (request, response) => {
     const finished = lifecycle.track(request)
@@ -420,6 +436,8 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       }
       if (lifecycle.state !== 'ready') fail(503, '服务器正在关闭，请稍后重试')
       if (lifecycle.activeRequests > 256) fail(429, '服务器请求繁忙，请稍后重试')
+      if (!isControlRequest(request.method, route) && lifecycle.activeRequests > 224)
+        fail(429, '服务器请求繁忙，请稍后重试')
       if (request.method === 'GET' && route === '/v1/ping')
         return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1'] })
       if ((route === '/v1/admin/access' && request.method === 'POST') || (route === '/v1/admin/status' && request.method === 'GET')) {
@@ -453,6 +471,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         return json(response, 200, { ok: true })
       }
       if (route === '/v1/challenge' && request.method === 'POST') {
+        throttle('authentication', 'server')
         const data = await body(request),
           publicKey = text(data.publicKey, 200),
           uid = clientValue(() => publicUserId(publicKey))
@@ -465,7 +484,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           )
         for (const [id, c] of challenges)
           if (c.expires < Date.now()) challenges.delete(id)
-        if (challenges.size > 1000) fail(429, '认证请求过多')
+        if (challenges.size >= 1000) fail(429, '认证请求过多')
         const features=data.features??[]
         if(!Array.isArray(features)||features.length>20||features.some(v=>typeof v!=='string'||v.length>80))fail(400,'无效客户端能力')
         const deviceId=features.includes('device-delivery-v1')?text(data.deviceId,36):'legacy'
@@ -491,6 +510,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         return json(response, 200, { challengeId, challenge, userId: uid })
       }
       if (route === '/v1/session' && request.method === 'POST') {
+        throttle('authentication', 'server')
         const data = await body(request),
           challenge = challenges.get(data.challengeId)
         challenges.delete(data.challengeId)
@@ -510,15 +530,18 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           )
         )
           fail(401, '身份签名验证失败')
+        throttle('login', challenge.uid)
+        for (const [token, entry] of sessions)
+          if (entry.expires < Date.now()) sessions.delete(token)
+        for (const [uid, lastSeen] of activity)
+          if (Date.now() - lastSeen >= 35000) activity.delete(uid)
+        if (sessions.size >= 4096) fail(429, '服务器在线会话已满')
         transaction(()=>{
           delivery.register(challenge.uid,challenge.deviceId,challenge.deviceName)
           db.prepare(
           'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name',
         ).run(challenge.uid, challenge.publicKey, challenge.name)
         })
-        for (const [token, entry] of sessions)
-          if (entry.expires < Date.now()) sessions.delete(token)
-        if (sessions.size > 4096) fail(429, '服务器在线会话已满')
         const token = randomBytes(32).toString('base64url')
         sessions.set(token, {
           uid: challenge.uid,
@@ -534,7 +557,8 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           directory: directoryFor(challenge.uid),
         })
       }
-      const uid = auth(request)
+      const uid = auth(request, trafficClass(request.method, route))
+      requestIdentity.set(request, uid)
       const deviceId=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.deviceId
       const supportsActions=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('message-actions-v1')??false
       if (route === '/v1/devices' && request.method === 'GET') return json(response,200,{devices:delivery.list(uid,deviceId)})
@@ -1128,13 +1152,19 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       }
       fail(404, '接口不存在')
     } catch (error) {
+      // Do not keep buffering an unconsumed upload after rejecting it. Flush the
+      // error before closing; do not drain attacker-controlled unlimited input.
+      if (!request.complete && !response.destroyed && !response.headersSent) {
+        response.setHeader('connection', 'close')
+        response.once('finish', () => request.destroy())
+      }
       const interrupted = request.aborted || lifecycle.expired
       if (!(error instanceof ApiError) && !interrupted) {
         try { onError({ code: 'REQUEST_FAILED', route: loggedRoutes.has(route) ? route : 'unknown' }) } catch {}
       }
       json(response, error instanceof ApiError ? error.status : interrupted ? 503 : 500, {
         error: error instanceof ApiError ? error.message : interrupted ? '服务器正在关闭，请稍后重试' : '服务器暂时无法处理请求',
-      })
+      }, error.retryAfter ?? 1)
     } finally {
       finished()
     }
