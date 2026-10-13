@@ -208,8 +208,11 @@ async function verifyGeneratedPlacements(group) {
     await approve(id)
     const surface = `[data-ui-slot-surface="${slot}"]`, widget = `${surface} [data-generated-plugin="${id}"]`
     for (const session of [a,b]) await poll(session, `document.querySelector('${widget}')?.checkVisibility()`)
+    const approved = (await state(a)).directory.plugins.find(p=>p.pack.id===id&&p.pack.version===version)
+    assert.deepEqual(approved.state, groupGameArtifact.program.initial)
+    const nextRevision = approved.revision + 1
     await click(a, `${widget} .draft-actions button`)
-    await poll(b, `window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.pack.id===${JSON.stringify(id)}&&p.pack.version===${version}&&p.revision===1&&p.state.players.length===1))`)
+    await poll(b, `window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.pack.id===${JSON.stringify(id)}&&p.pack.version===${version}&&p.revision===${nextRevision}&&p.state.players.length===1))`)
     if (slot === 'app.rail' || slot === 'app.overlay') {
       const panel = `[data-plugin-placement="${slot}"]`
       await click(a, `${panel} .group-plugin-placement-heading button`)
@@ -217,7 +220,7 @@ async function verifyGeneratedPlacements(group) {
       assert.equal(await evaluate(a.client, `document.querySelector('${surface} [data-group-plugin-gate="${id}"]').dataset.consent`), 'loaded')
       await click(a, `${panel}>summary`)
       await poll(a, `document.querySelector('${widget}')?.checkVisibility()`)
-      assert.equal((await state(a)).directory.plugins.find(p=>p.pack.id===id&&p.pack.version===version).revision, 1)
+      assert.equal((await state(a)).directory.plugins.find(p=>p.pack.id===id&&p.pack.version===version).revision, nextRevision)
       await click(a, `${panel} .group-plugin-placement-heading button`)
       await click(b, `${panel} .group-plugin-placement-heading button`)
     }
