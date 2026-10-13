@@ -1096,6 +1096,10 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
             pluginId: pack.id,
             channel,
             payload: data.payload ?? null,
+            // Provenance is derived from the authenticated session and approved row,
+            // never from client-supplied trace/actor/version fields.
+            trace: { actorId: uid, packVersion: pack.version, digest: row.digest, acceptedAt: Date.now(),
+              ...(channel === 'state' ? { stateRevision: row.revision + 1 } : {}) },
           })
         })
         for (const recipient of recipients) wake(recipient)

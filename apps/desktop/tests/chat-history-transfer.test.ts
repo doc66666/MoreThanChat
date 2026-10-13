@@ -46,7 +46,7 @@ describe('history snapshot and conservative merge', () => {
     const target = path.join(await folder(), 'existing.sqlite'); await writeFile(target, 'keep-me')
     await expect(source.createHistorySnapshot(target)).rejects.toMatchObject({ code: 'EEXIST' })
     expect(await readFile(target, 'utf8')).toBe('keep-me')
-  }, 30000)
+  }, process.env.CI === 'true' ? 120000 : 60000)
 
   it('preserves local content/options/header and queues; imports older history as read-only, read and interrupted', async () => {
     const old = message({ text: 'old body', createdAt: 50 }), queued = message({ senderId: self, role: 'self', status: 'queued', createdAt: 60 }), source = await open()

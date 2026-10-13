@@ -1,5 +1,6 @@
 import { parseGroupArtifact, validateProgramState, type GroupArtifact } from './group-program.js'
 export * from './group-program.js'
+export * from './group-program-diagnostics.js'
 export const CENTRAL_PROTOCOL_VERSION = 1
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 export const UI_SLOTS = [
@@ -138,6 +139,7 @@ export type RelayEvent =
       pluginId: string
       channel: string
       payload: unknown
+      trace?: { actorId: string; packVersion: number; digest: string; acceptedAt: number; stateRevision?: number }
     }
 /** Capability passed to approved group plugins; no sockets, tokens or arbitrary URLs. */
 export interface GroupNetwork {
@@ -343,6 +345,15 @@ export function parseRelayEvent(value: unknown): RelayEvent {
       JSON.stringify(e.payload ?? null).length > 32000
     )
       throw new Error('Invalid plugin event')
+    let trace: Extract<RelayEvent, {kind:'plugin'}>['trace']
+    if (e.trace !== undefined) {
+      const t = record(e.trace)
+      if (!validUid(t.actorId) || !Number.isSafeInteger(t.packVersion) || Number(t.packVersion)<1 ||
+        typeof t.digest!=='string' || !/^[a-f0-9]{64}$/.test(t.digest) ||
+        !Number.isSafeInteger(t.acceptedAt) || Number(t.acceptedAt)<0 ||
+        (t.stateRevision!==undefined && (!Number.isSafeInteger(t.stateRevision)||Number(t.stateRevision)<0))) throw new Error('Invalid plugin event trace')
+      trace = {actorId:t.actorId,packVersion:Number(t.packVersion),digest:t.digest,acceptedAt:Number(t.acceptedAt),...(t.stateRevision===undefined?{}:{stateRevision:Number(t.stateRevision)})}
+    }
     return {
       id,
       kind: 'plugin',
@@ -350,6 +361,7 @@ export function parseRelayEvent(value: unknown): RelayEvent {
       pluginId: e.pluginId,
       channel: boundedText(e.channel, 80),
       payload: e.payload ?? null,
+      ...(trace ? {trace} : {}),
     }
   }
   if (e.kind !== 'message') throw new Error('Invalid event kind')

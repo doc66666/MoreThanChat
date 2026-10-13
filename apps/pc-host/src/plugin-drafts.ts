@@ -10,7 +10,7 @@ import type {
   PluginDraftSummary,
 } from '@more-than-chat/protocol'
 import { isStaticTextToolManifest, parseDeclarativeInstall, type DeclarativeComposerAction, type DeclarativeTextTool } from './static-text-tool'
-import { parseGroupArtifact } from '@more-than-chat/central-protocol'
+import { diagnoseGroupProgram, parseGroupArtifact } from '@more-than-chat/central-protocol'
 
 export class PluginDraftError extends Error {
   constructor(readonly code: 'DRAFT_NOT_FOUND', message: string) {
@@ -310,7 +310,10 @@ function assessDraft(manifestJson: string, source: string, installed: readonly I
   if (manifest && source.trim().length === 0) issues.push(finding('error', 'EMPTY_SOURCE', '草稿源码是空的。'))
   if (manifest) {
     if (manifest.targets.includes('pc-ui')) {
-      try { parseGroupArtifact({manifest,program:JSON.parse(source)}) }
+      try {
+        const artifact = parseGroupArtifact({manifest,program:JSON.parse(source)})
+        for (const message of diagnoseGroupProgram(artifact.program)) issues.push(finding('error','NOT_DECLARATIVE',message))
+      }
       catch (error) { issues.push(finding('error','NOT_DECLARATIVE',error instanceof Error ? error.message : '群插件必须满足 group-state-machine 契约；不执行 JS 或外部代码。')) }
     }
     for (const name of findDangerousApis(source)) {

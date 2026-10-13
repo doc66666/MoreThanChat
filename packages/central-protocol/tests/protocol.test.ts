@@ -4,6 +4,15 @@ const uid = 'usr_' + 'a'.repeat(64),
   groupId = 'grp_11111111-1111-4111-8111-111111111111',
   pluginId = 'gplugin_22222222-2222-4222-8222-222222222222'
 describe('central wire boundary', () => {
+  it('accepts legacy events and validates/canonicalizes optional server trace metadata', () => {
+    const e={id:'33333333-3333-4333-8333-333333333333',kind:'plugin',groupId,pluginId,channel:'state',payload:{}}
+    expect(parseRelayEvent(e)).not.toHaveProperty('trace')
+    const trace={actorId:uid,packVersion:2,digest:'a'.repeat(64),acceptedAt:123,stateRevision:5}
+    expect(parseRelayEvent({...e,trace:{...trace,token:'secret'}})).toEqual({...e,trace})
+    for(const bad of [{actorId:'spoof'},{packVersion:0},{digest:'bad'},{acceptedAt:-1},{stateRevision:0.5}]) {
+      expect(()=>parseRelayEvent({...e,trace:{...trace,...bad}})).toThrow(/trace/)
+    }
+  })
   it('bounds and canonicalizes quote and withdrawal extensions without forwarding credentials',()=>{
     const messageId='33333333-3333-4333-8333-333333333333'
     const reference={messageId,senderId:uid,senderName:'A',text:'preview',apiKey:'not-an-application-field'}

@@ -82,7 +82,7 @@ describe('central relay contracts', () => {
     const pack={id:'gplugin_'+randomUUID(),version:1,displayName:'Authored',kind:'declarative',slot:'chat.details',artifact:structuredClone(groupGameArtifact)}
     const submitted=await request(f,'plugins/submit',b.token,{groupId:group,pack});expect(submitted.status).toBe(200)
     const digest=submitted.data.digest,base={groupId:group,pluginId:pack.id,channel:'state',digest}
-    const send=(u,action,revision,input={})=>request(f,'plugins/event',u.token,{...base,expectedRevision:revision,payload:{action,input}})
+    const send=(u,action,revision,input={})=>request(f,'plugins/event',u.token,{...base,expectedRevision:revision,payload:{action,input},trace:{actorId:'spoof',digest:'spoof',stateRevision:999}})
     expect((await send(b,'join',0)).status).toBe(403)
     expect((await request(f,'directory',c.token)).data.plugins).toEqual([])
     const review={groupId:group,pluginId:pack.id,version:1,digest,approve:true}
@@ -95,6 +95,9 @@ describe('central relay contracts', () => {
     expect((await send(outsider,'join',0)).status).toBe(403)
     expect((await send(b,'join',0)).status).toBe(200)
     expect((await send(c,'join',1)).status).toBe(200)
+    const traced = (await request(f,'events',b.token)).data.events.find(e=>e.kind==='plugin')
+    expect(traced.trace).toMatchObject({actorId:b.userId,packVersion:1,digest,stateRevision:1})
+    expect(traced.trace.acceptedAt).toBeGreaterThan(0)
     // The owner is merely a spectator; an event cannot spoof the authenticated actor.
     expect((await send(a,'move',2,{cell:0,actor:b.userId})).status).toBe(400)
     expect((await send(c,'move',2,{cell:0})).status).toBe(400)

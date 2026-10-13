@@ -6,6 +6,7 @@ import { createHostSuccessResponse, parseHostMessage } from '@more-than-chat/pro
 import { HostPluginService } from '../src/plugin-service'
 import { PluginDraftError, PluginDraftService } from '../src/plugin-drafts'
 import { installConfirmedTextTool } from '../src/static-tool-install'
+import { groupGameArtifact } from '../../../scripts/fixtures/group-game.mjs'
 
 const secret = 'sk-test-more-than-chat-secret'
 const sourceMarker = 'draft-source-marker-not-a-secret'
@@ -16,6 +17,23 @@ afterEach(async () => {
 })
 
 describe('PluginDraftService', () => {
+  it('reports view context mistakes during create/validate/diagnose and allows a corrected revision', async () => {
+    const { service } = await createService(new HostPluginService(1, []))
+    const a = structuredClone(groupGameArtifact)
+    a.program.view.grids[0].enabled = {ref:'event.cell'}
+    const input={manifestJson:JSON.stringify(a.manifest),source:JSON.stringify(a.program)}
+    const created=await service.create(input)
+    expect(created.ok).toBe(false)
+    for(const report of [created,await service.validate(a.manifest.id),await service.diagnose(a.manifest.id)]) {
+      expect(report.issues).toEqual(expect.arrayContaining([expect.objectContaining({severity:'error',message:expect.stringContaining('view.grids[0].enabled')})]))
+    }
+    await expect(service.exportGroup(a.manifest.id,1)).rejects.toThrow()
+    a.manifest.version='0.1.1'
+    a.program.view.grids[0].enabled={op:'eq',args:[{ref:'item'},null]}
+    const fixed=await service.create({manifestJson:JSON.stringify(a.manifest),source:JSON.stringify(a.program)})
+    expect(fixed.ok).toBe(true)
+    expect(JSON.parse((await service.exportGroup(a.manifest.id,2)).manifestJson).version).toBe('0.1.1')
+  })
   it('saves an immutable draft without installing it or returning its source', async () => {
     const plugins = new HostPluginService(4, [])
     const { service, directory } = await createService(plugins)
