@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { createCentralServer } from '../apps/central-server/src/server.mjs'
+import { UI_SLOTS } from '../packages/central-protocol/dist/index.js'
+import { groupGameArtifact } from './fixtures/group-game.mjs'
 import {
   CdpClient,
   evaluate,
@@ -188,9 +190,37 @@ async function approve(pluginId) {
   // Approval distributes metadata/content; neither client may execute before opting in.
   for (const session of [a,b]) {
     await poll(session,`document.querySelector('[data-group-plugin-gate="${pluginId}"]')?.dataset.consent==='pending'`)
-    assert.equal(await evaluate(session.client,`Boolean(document.querySelector('[data-group-plugin="${pluginId}"]'))`),false)
+    const rail = '[data-plugin-placement="app.rail"]'
+    if (await evaluate(session.client, `Boolean(document.querySelector('${rail} [data-group-plugin-gate="${pluginId}"]'))&&!document.querySelector('${rail}').open`)) await click(session, `${rail}>summary`)
+    assert.equal(await evaluate(session.client,`Boolean(document.querySelector('[data-group-plugin="${pluginId}"], [data-generated-plugin="${pluginId}"]'))`),false)
     await click(session,`[data-group-plugin-gate="${pluginId}"] [data-enable-group-plugin]`)
     await poll(session,`document.querySelector('[data-group-plugin-gate="${pluginId}"]')?.dataset.consent==='loaded'`)
+  }
+}
+async function verifyGeneratedPlacements(group) {
+  // Handwritten fixture using the exact AI JSON runtime, not a live AI-generation claim.
+  const id = 'gplugin_' + crypto.randomUUID()
+  let version = 0
+  for (const slot of UI_SLOTS) {
+    if (slot === 'chat.details') { await openDetails(a); await openDetails(b) }
+    const pack = {id, version: ++version, displayName:'布局验收', kind:'declarative', slot, artifact:groupGameArtifact}
+    await evaluate(b.client, `window.moreThanChat.serverAction('plugins/submit',${JSON.stringify({groupId:group.id,pack})})`)
+    await approve(id)
+    const surface = `[data-ui-slot-surface="${slot}"]`, widget = `${surface} [data-generated-plugin="${id}"]`
+    for (const session of [a,b]) await poll(session, `document.querySelector('${widget}')?.checkVisibility()`)
+    await click(a, `${widget} .draft-actions button`)
+    await poll(b, `window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.pack.id===${JSON.stringify(id)}&&p.pack.version===${version}&&p.revision===1&&p.state.players.length===1))`)
+    if (slot === 'app.rail' || slot === 'app.overlay') {
+      const panel = `[data-plugin-placement="${slot}"]`
+      await click(a, `${panel} .group-plugin-placement-heading button`)
+      await poll(a, `!document.querySelector('${panel}').open`)
+      assert.equal(await evaluate(a.client, `document.querySelector('${surface} [data-group-plugin-gate="${id}"]').dataset.consent`), 'loaded')
+      await click(a, `${panel}>summary`)
+      await poll(a, `document.querySelector('${widget}')?.checkVisibility()`)
+      assert.equal((await state(a)).directory.plugins.find(p=>p.pack.id===id&&p.pack.version===version).revision, 1)
+      await click(a, `${panel} .group-plugin-placement-heading button`)
+      await click(b, `${panel} .group-plugin-placement-heading button`)
+    }
   }
 }
 async function verifyMessageActions(aid,bid,group) {
@@ -582,6 +612,7 @@ try {
     )
   }
   await verifyMessageActions(aid,bid,group)
+  await verifyGeneratedPlacements(group)
   await verifyHumanWorkflow(aid,bid,group)
   await verifyIdentityAndDevices(aid,bid)
   console.log(
@@ -594,6 +625,7 @@ try {
       globalIdentityRestored: true,
       encryptedPortableIdentity:true,isolatedIdentityProfile:true,multipleDeviceMessages:true,identitySettingsUi:true,
       groupPluginApproval: true,
+      generatedPluginAllNinePlacements: true,
       chainSynchronized: true,
       gameSynchronized: true,
       sidebarPluginLifecycle: true,

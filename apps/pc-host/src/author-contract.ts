@@ -1,3 +1,5 @@
+import { UI_SLOTS } from '@more-than-chat/central-protocol'
+
 export const PLUGIN_AUTHOR_CONTRACT = {
   sdkVersion: 1,
   manifestExample: {
@@ -12,6 +14,11 @@ export const PLUGIN_AUTHOR_CONTRACT = {
   ],
   transformOperations: ['uppercase', 'lowercase', 'trim'],
   groupPlugin: {
+    placement: {
+      slots: UI_SLOTS,
+      instructions: '并非只能放侧边栏。用户提交草稿时选择显示位置，位置属于管理员审批的完整包；不要往 program 或 manifest 添加 slot 字段。可放导航栏、会话侧栏、聊天顶部、消息前后、详情侧栏、输入框上下或应用浮层。导航栏以可展开入口显示，浮层可收起；这些操作不等于停用插件。每条消息前后会重复显示同一共享插件视图，不提供当前消息内容上下文。所有位置只在当前选中的所属群内展示，切换群会卸载视图，不能假定全局常驻。',
+      safety: '使用宿主受控布局，不生成 HTML/CSS/DOM、任意 JS、窗口或置顶遮罩。不允许覆盖身份、审批、权限确认等宿主控件；当前 AI 群插件不能替换整个输入框或内核。需要新位置或新组件时应说明 SDK 尚未提供，不声称已经实现。',
+    },
     manifestExample: {
       manifestVersion: 1, id: 'example.group-counter', version: '0.1.0', displayName: '群计数',
       description: '成员协作计数', targets: ['pc-ui'], engine: { moreThanChat: '^0.1.0' },

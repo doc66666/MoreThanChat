@@ -87,6 +87,7 @@ import {
 } from '@more-than-chat/central-protocol'
 import { NetworkPanel, GroupPluginView } from './NetworkPanel'
 import { GroupDraftSubmission } from './GroupDraftSubmission'
+import { GroupPluginPlacement } from './GroupPluginPlacement'
 import { slotLabels } from './group-plugin-presentation'
 import { shouldSendOnEnter } from './composer-input'
 import { ChatComposer } from './ChatComposer'
@@ -534,6 +535,7 @@ export function App() {
         entries={slotEntries}
         context={message ? { ...slotContext, message } : slotContext}
       />
+      <GroupPluginPlacement key={`${serverState?.serverId}:${serverState?.userId}:${active.id}:${name}`} slot={name} count={groupPlugins.filter(plugin => plugin.pack.slot === name).length}>
       {groupPlugins
         .filter((plugin) => plugin.pack.slot === name)
         .map((plugin) => (
@@ -545,6 +547,7 @@ export function App() {
             onError={setToast}
           />
         ))}
+      </GroupPluginPlacement>
     </div>
   )
 

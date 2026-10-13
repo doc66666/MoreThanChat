@@ -241,7 +241,16 @@ button { color: inherit; }
 .slot-surface:not(:has(.group-plugin-gate, .group-plugin-widget)):has(>.ui-slot:empty){display:none}
 .slot-surface[data-ui-slot-surface="app.overlay"]{position:fixed;top:80px;right:30px;max-width:500px;max-height:65vh;overflow:auto;z-index:25;box-shadow:0 12px 30px var(--shadow-color);background:var(--surface);border-radius:12px}
 .slot-surface[data-ui-slot-surface="app.sidebar"]{max-height:35vh;overflow:auto;flex-shrink:0}
-.slot-surface[data-ui-slot-surface="app.rail"]{max-height:40vh;overflow:auto;width:100%}
+.slot-surface[data-ui-slot-surface="app.rail"]{max-height:40vh;overflow:visible;width:100%;flex-shrink:0}
+.slot-surface[data-ui-slot-surface="app.rail"]>.ui-slot{max-height:25vh;overflow:auto}
+.group-plugin-placement>summary{padding:10px 6px;cursor:pointer;font-size:12px;color:var(--accent-text);overflow-wrap:anywhere}
+.group-plugin-placement>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:8px}
+.group-plugin-placement>summary span{font-size:10px;color:var(--muted)}
+.group-plugin-placement-panel{min-width:0;padding:10px;overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere}
+.group-plugin-placement-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:var(--text-secondary)}
+.group-plugin-placement-heading button{flex-shrink:0}
+.group-plugin-placement[data-plugin-placement="app.rail"]>.group-plugin-placement-panel{position:fixed;left:80px;bottom:20px;width:min(380px,calc(100vw - 100px));max-height:calc(100vh - 100px);z-index:24;border:1px solid var(--border);border-radius:12px;background:var(--surface);box-shadow:0 12px 30px var(--shadow-color)}
+.group-plugin-placement[data-plugin-placement="app.overlay"]>.group-plugin-placement-panel{width:min(420px,calc(100vw - 80px));max-height:calc(65vh - 48px)}
 .chat-header-plugins{max-height:25vh;overflow:auto}
 .slot-surface[data-ui-slot-surface="chat.composer.before"],.slot-surface[data-ui-slot-surface="chat.composer.after"]{max-height:20vh;overflow:auto}
 .server-status{border:1px solid var(--border);background:var(--canvas);padding:4px 8px;border-radius:9px;color:var(--text-secondary);font-size:10px;cursor:pointer;-webkit-app-region:no-drag}

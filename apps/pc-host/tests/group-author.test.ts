@@ -6,6 +6,13 @@ import { PluginDraftService } from '../src/plugin-drafts'
 import { createAuthorToolExecutor } from '../src/author-tools'
 import { ModelService } from '../src/model-service'
 import { groupGameArtifact } from '../../../scripts/fixtures/group-game.mjs'
+import { UI_SLOTS } from '@more-than-chat/central-protocol'
+import { PLUGIN_AUTHOR_CONTRACT } from '../src/author-contract'
+it('advertises all supported placements and their host boundaries to AI authors', () => {
+  expect(PLUGIN_AUTHOR_CONTRACT.groupPlugin.placement.slots).toEqual(UI_SLOTS)
+  expect(PLUGIN_AUTHOR_CONTRACT.groupPlugin.placement.instructions).toContain('用户提交草稿时选择')
+  expect(PLUGIN_AUTHOR_CONTRACT.groupPlugin.placement.safety).toContain('不能替换整个输入框或内核')
+})
 const roots:string[]=[]
 afterEach(async()=>{for(const dir of roots.splice(0))await rm(dir,{recursive:true,force:true})})
 it('creates, validates and exports a pinned group draft through the model tool loop, never installs or submits',async()=>{
