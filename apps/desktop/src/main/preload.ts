@@ -9,6 +9,12 @@ interface HostPingResult {
 }
 
 const api = {
+  getIdentityProfiles:()=>ipcRenderer.invoke('identity:profiles'),
+  backupIdentity:(password:string):Promise<boolean>=>ipcRenderer.invoke('identity:backup',password),
+  restoreIdentity:(password:string):Promise<{id:string}|null>=>ipcRenderer.invoke('identity:restore',password),
+  switchIdentity:(id:string):Promise<void>=>ipcRenderer.invoke('identity:switch',id),
+  getDevices:()=>ipcRenderer.invoke('central:devices'),
+  removeDevice:(id:string):Promise<void>=>ipcRenderer.invoke('central:remove-device',id),
   getWindowFocus:():Promise<boolean>=>ipcRenderer.invoke('app:window-focused'),
   focusChatWindow:():Promise<void>=>ipcRenderer.invoke('app:focus-window'),
   onWindowFocusChanged:(listener:(focused:boolean)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,focused:boolean)=>listener(focused);ipcRenderer.on('app:window-focus-changed',handler);return()=>ipcRenderer.removeListener('app:window-focus-changed',handler)},

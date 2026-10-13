@@ -127,7 +127,7 @@ export interface ServerSnapshot {
 }
 export type RelayEvent =
   | { id: string; kind: 'message'; message: RelayMessage }
-  | { id: string; kind: 'directory'; receipt?: MessageReceipt; retraction?: MessageRetraction }
+  | { id: string; kind: 'directory'; receipt?: MessageReceipt; retraction?: MessageRetraction; read?: { messageId: string; readAt: number } }
   | {
       id: string
       kind: 'plugin'
@@ -321,7 +321,15 @@ export function parseRelayEvent(value: unknown): RelayEvent {
   const e = record(value),
     id = boundedText(e.id, 80)
   if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Invalid event id')
-  if (e.kind === 'directory') return { id, kind: 'directory', ...(e.receipt === undefined ? {} : { receipt: parseMessageReceipt(e.receipt) }),...(e.retraction===undefined?{}:{retraction:parseMessageRetraction(e.retraction)}) }
+  if (e.kind === 'directory') {
+    let read: {messageId:string;readAt:number}|undefined
+    if(e.read!==undefined){
+      const value=e.read as Record<string,unknown>
+      if(!value||typeof value.messageId!=='string'||!/^[a-f0-9-]{36}$/.test(value.messageId)||!Number.isSafeInteger(value.readAt)||Number(value.readAt)<0)throw new Error('Invalid read marker')
+      read={messageId:value.messageId,readAt:Number(value.readAt)}
+    }
+    return { id, kind: 'directory', ...(e.receipt === undefined ? {} : { receipt: parseMessageReceipt(e.receipt) }),...(e.retraction===undefined?{}:{retraction:parseMessageRetraction(e.retraction)}),...(read?{read}:{}) }
+  }
   if (e.kind === 'plugin') {
     if (
       !validGroupId(e.groupId) ||

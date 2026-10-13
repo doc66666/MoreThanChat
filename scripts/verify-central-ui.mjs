@@ -27,7 +27,7 @@ const relay = createCentralServer({
   }),
   address = await relay.listen(0),
   url = 'http://127.0.0.1:' + address.port
-let a, b
+let a, b, c
 async function launch(profile) {
   const port = await reservePort(),
     child = spawn(
@@ -123,6 +123,55 @@ async function openNetwork(session) {
     ))
   )
     await click(session, 'button[title="联系人"]')
+}
+async function verifyIdentityAndDevices(aid,bid) {
+  await openNetwork(a)
+  await poll(a,'Boolean(document.querySelector(".identity-settings"))')
+  const clickText=async(session,text)=>evaluate(session.client,`[...document.querySelectorAll('.identity-settings button')].find(b=>b.textContent===${JSON.stringify(text)}).click()`)
+  await clickText(a,'本机身份')
+  await poll(a,'document.querySelector(".identity-settings").innerText.includes("当前身份")')
+  await clickText(a,'备份身份')
+  await input(a,'input[aria-label="备份密码"]','test-ui-password-001')
+  await input(a,'input[aria-label="确认备份密码"]','test-ui-password-002')
+  await clickText(a,'加密并保存文件')
+  await poll(a,'document.querySelector(".identity-settings [role=alert]")?.textContent.includes("不一致")')
+  await clickText(a,'取消')
+  await clickText(a,'查看本服设备')
+  await poll(a,'document.querySelector(".identity-settings").innerText.includes("此设备")')
+  // Exercise OS-protected import, then boot the ordinary application through its profile selector.
+  const target=path.join(data,'c')
+  for(const mode of ['export','import']){
+    const helper=spawn(require('electron'),[path.join(desktop,'scripts','verify-identity-fixture.cjs'),profiles.a,target,mode],{cwd:desktop,windowsHide:true,stdio:['ignore','pipe','pipe']})
+    helper.stdout.resume();helper.stderr.resume()
+    await waitForExit(helper,15000)
+    assert.equal(helper.exitCode,0,'Native identity backup/import: '+mode)
+  }
+  c=await launch(target)
+  assert.equal((await state(c)).userId,aid)
+  await connect(c,'验收用户 A')
+  await click(c,`[data-friend="${bid}"]`)
+  await poll(c,'document.querySelector(".conversation-item.active")?.innerText.includes("验收用户 B")')
+  await openNetwork(a);await click(a,`[data-friend="${bid}"]`)
+  await openNetwork(b);await click(b,`[data-friend="${aid}"]`)
+  await send(a,'多设备同步：同一身份另一台 PC')
+  await poll(c,'[...document.querySelectorAll("[data-message-id]")].some(n=>n.textContent.includes("多设备同步：同一身份另一台 PC"))')
+  await poll(b,'document.body.innerText.includes("多设备同步：同一身份另一台 PC")')
+  await send(b,'多设备同步：同时收到好友回复')
+  await poll(a,'document.body.innerText.includes("多设备同步：同时收到好友回复")')
+  await poll(c,'document.body.innerText.includes("多设备同步：同时收到好友回复")')
+  await openNetwork(c);await clickText(c,'查看本服设备')
+  await poll(c,'[...document.querySelectorAll(".identity-settings .contact-row")].length===2')
+  await evaluate(c.client,'document.querySelector(".identity-settings").scrollIntoView({block:"start"})')
+  await delay(350)
+  const capture=await c.client.send('Page.captureScreenshot',{format:'png',fromSurface:true})
+  await writeFile(path.join(root,'.artifacts',`identity-devices${packaged?'-packaged':''}.png`),Buffer.from(capture.data,'base64'))
+  await close(c);c=undefined
+  c=await launch(target)
+  await poll(c,'window.moreThanChat.getServerState().then(s=>s.status==="connected")')
+  assert.equal((await state(c)).userId,aid)
+  assert.equal((await evaluate(c.client,'window.moreThanChat.getDevices()')).length,2)
+  assert.equal((await evaluate(c.client,'window.moreThanChat.searchChatMessages("多设备同步：同时收到好友回复")')).length,1)
+  await close(c);c=undefined
 }
 async function openDetails(session) {
   if (!(await evaluate(session.client, 'Boolean(document.querySelector(".details-with-plugins"))')))
@@ -522,6 +571,7 @@ try {
   }
   await verifyMessageActions(aid,bid,group)
   await verifyHumanWorkflow(aid,bid,group)
+  await verifyIdentityAndDevices(aid,bid)
   console.log(
     JSON.stringify({
       passed: true,
@@ -530,6 +580,7 @@ try {
       bidirectionalMessages: true,
       offlineDeliveryAndPurge: true,
       globalIdentityRestored: true,
+      encryptedPortableIdentity:true,isolatedIdentityProfile:true,multipleDeviceMessages:true,identitySettingsUi:true,
       groupPluginApproval: true,
       chainSynchronized: true,
       gameSynchronized: true,
@@ -559,5 +610,6 @@ try {
 } finally {
   await close(a).catch(() => undefined)
   await close(b).catch(() => undefined)
+  await close(c).catch(() => undefined)
   await relay.close()
 }

@@ -393,9 +393,13 @@ export function App() {
   useEffect(() => {
     void window.moreThanChat
       .loadState()
-      .then((value) =>
-        setState(value ? normalizeState(value) : createSeedState()),
-      )
+      .then(async (value) => {
+        const initial = value ? normalizeState(value) : createSeedState()
+        // A newly imported profile can authenticate immediately with existing friends.
+        // Persist its seed before exposing Connect, so Main can project those entries.
+        if (!value) await window.moreThanChat.saveState(initial)
+        setState(initial)
+      })
       .catch(() => setLoadError(true))
   }, [])
 

@@ -39,11 +39,12 @@ async function request(f, route, token, body) {
   })
   return { status: r.status, data: await r.json() }
 }
-async function login(f, id, name,features=['message-actions-v1']) {
+async function login(f, id, name,features=['message-actions-v1'],deviceId) {
   const challenge = await request(f, 'challenge', null, {
     publicKey: id.publicKey,
     displayName: name,
     features,
+    ...(deviceId?{deviceId,deviceName:'Test PC'}:{}),
   })
   expect(challenge.status).toBe(200)
   const result = await request(f, 'session', null, {
@@ -73,6 +74,43 @@ async function befriend(f, a, b) {
 }
 
 describe('central relay contracts', () => {
+  it('synchronizes historical reads after receipt expiry without retaining or re-sending bodies',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),bKey=identity()
+    const b1=await login(f,bKey,'B',['message-actions-v1','device-delivery-v1'],randomUUID())
+    const b2=await login(f,bKey,'B',['message-actions-v1','device-delivery-v1'],randomUUID())
+    await befriend(f,a,b1)
+    const sent=await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b1.userId,text:'historical read'})
+    const id=sent.data.messageId
+    await request(f,'ack',b1.token,{ids:[id]});await request(f,'ack',b2.token,{ids:[id]})
+    f.app.db.prepare('DELETE FROM receipts WHERE message_id=?').run(id)
+    f.app.db.prepare('DELETE FROM message_delivery WHERE message_id=?').run(id)
+    await request(f,'read',b1.token,{ids:[id]})
+    const read=(await request(f,'events',b2.token)).data.events.find(e=>e.read?.messageId===id)
+    expect(read).toBeTruthy()
+    await request(f,'ack',b2.token,{ids:[read.id]})
+    await request(f,'read',b1.token,{ids:[id]})
+    expect(f.app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE json_extract(payload,'$.read.messageId')=?").get(id).n).toBe(0)
+    expect(f.app.db.prepare('SELECT COUNT(*) AS n FROM queue WHERE id=?').get(id).n).toBe(0)
+  })
+  it('adopts legacy pending messages once and refuses ACKs from unassigned or outdated devices',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'A'),original=identity(),b=await login(f,original,'B')
+    await befriend(f,a,b)
+    const sent=await request(f,'messages',a.token,{clientMessageId:randomUUID(),targetKind:'direct',targetId:b.userId,text:'legacy pending before upgrade'})
+    const id=sent.data.messageId,d1=randomUUID(),d2=randomUUID()
+    const b1=await login(f,original,'B',['message-actions-v1','device-delivery-v1'],d1)
+    const b2=await login(f,original,'B',['message-actions-v1','device-delivery-v1'],d2)
+    expect(f.app.db.prepare('SELECT device_id FROM queue_devices WHERE event_id=?').all(id).map(r=>r.device_id)).toEqual([d1])
+    expect((await request(f,'ack',b.token,{ids:[id]})).status).toBe(409)
+    await request(f,'ack',b2.token,{ids:[id]})
+    expect(f.app.db.prepare('SELECT delivered_at FROM message_delivery WHERE message_id=?').get(id).delivered_at).toBeNull()
+    expect((await request(f,'events',b1.token)).data.events.some(e=>e.id===id)).toBe(true)
+    await request(f,'ack',b1.token,{ids:[id]})
+    expect(f.app.db.prepare('SELECT COUNT(*) AS n FROM queue WHERE id=?').get(id).n).toBe(0)
+    const challenge=await request(f,'challenge',null,{publicKey:original.publicKey,displayName:'B',features:['device-delivery-v1'],deviceId:d2,deviceName:'Second PC'})
+    expect(JSON.parse(challenge.data.challenge).deviceId).toBe(d2)
+    const forged={...JSON.parse(challenge.data.challenge),deviceId:d1}
+    expect((await request(f,'session',null,{challengeId:challenge.data.challengeId,signature:sign(null,Buffer.from(JSON.stringify(forged)),original.privateKey).toString('base64url')})).status).toBe(401)
+  })
   it('retains withdrawal notices for temporarily banned original recipients until access is restored',async()=>{
     const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B')
     await befriend(f,a,b)

@@ -8,6 +8,7 @@ await copyFile(
   path.join(root, 'apps', 'central-server', 'src', 'server.mjs'),
   path.join(output, 'server.mjs'),
 )
+await copyFile(path.join(root,'apps','central-server','src','device-delivery.mjs'),path.join(output,'device-delivery.mjs'))
 await copyFile(
   path.join(root, 'scripts', 'central-access.mjs'),
   path.join(output, 'central-access.mjs'),

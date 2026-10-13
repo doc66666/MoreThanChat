@@ -11,6 +11,7 @@ import {
 } from 'node:crypto'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { deviceDelivery } from './device-delivery.mjs'
 import {
   parseGroupPluginPack,
   validUid,
@@ -134,6 +135,7 @@ export function createCentralServer({
           ?.allowed === 1
       : db.prepare('SELECT allowed FROM access WHERE id=?').get(uid)
           ?.allowed !== 0
+  const delivery = deviceDelivery(db, fail)
   const member = (uid, groupId) => {
     if (
       !db
@@ -191,7 +193,7 @@ export function createCentralServer({
   const wake = (uid) => {
     for (const callback of waiting.get(uid) ?? []) callback()
   }
-  const enqueue = (recipients, event, includeDenied = false) => {
+  const enqueue = (recipients, event, includeDenied = false, excludeDevice) => {
     const payload = JSON.stringify(event)
     if (
       Number(
@@ -207,12 +209,13 @@ export function createCentralServer({
       fail(507, '服务器暂存空间已满')
     for (const uid of new Set(recipients)) {
       if (!includeDenied&&!allowed(uid)) continue
-      db.prepare('INSERT OR IGNORE INTO queue VALUES (?,?,?,?)').run(
+      const inserted = db.prepare('INSERT OR IGNORE INTO queue VALUES (?,?,?,?)').run(
         event.id,
         uid,
         payload,
         Date.now(),
       )
+      if (inserted.changes) delivery.assign(event.id, uid, excludeDevice)
     }
   }
   const notify = (recipients) => {
@@ -324,6 +327,8 @@ export function createCentralServer({
     if (!entry || entry.expires < Date.now())
       fail(401, '会话已失效，请重新认证')
     if (!allowed(entry.uid)) fail(403, '此身份不在服务器的访问名单中')
+    delivery.check(entry.uid,entry.deviceId)
+    delivery.touch(entry.uid,entry.deviceId)
     entry.expires = Date.now() + 30 * 60 * 1000
     activity.set(entry.uid, Date.now())
     return entry.uid
@@ -356,7 +361,7 @@ export function createCentralServer({
       const url = new URL(request.url, 'http://localhost'),
         route = url.pathname
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1'] })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1'] })
       if (route === '/v1/admin/access' && request.method === 'POST') {
         const received = Buffer.from(
             (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -395,15 +400,19 @@ export function createCentralServer({
         for (const [id, c] of challenges)
           if (c.expires < Date.now()) challenges.delete(id)
         if (challenges.size > 1000) fail(429, '认证请求过多')
+        const features=data.features??[]
+        if(!Array.isArray(features)||features.length>20||features.some(v=>typeof v!=='string'||v.length>80))fail(400,'无效客户端能力')
+        const deviceId=features.includes('device-delivery-v1')?text(data.deviceId,36):'legacy'
+        const deviceName=deviceId==='legacy'?'旧版设备':text(data.deviceName,80)
+        if(deviceId!=='legacy'&&!/^[a-f0-9-]{36}$/.test(deviceId))fail(400,'无效设备 ID')
         const challengeId = randomUUID(),
           challenge = JSON.stringify({
             protocolVersion: 1,
             serverId,
             userId: uid,
             nonce: randomBytes(32).toString('base64url'),
+            ...(deviceId==='legacy'?{}:{deviceId}),
           })
-        const features=data.features??[]
-        if(!Array.isArray(features)||features.length>20||features.some(v=>typeof v!=='string'||v.length>80))fail(400,'无效客户端能力')
         challenges.set(challengeId, {
           challenge,
           publicKey,
@@ -411,6 +420,7 @@ export function createCentralServer({
           name: text(data.displayName, 80),
           expires: Date.now() + 60000,
           features,
+          deviceId,deviceName,
         })
         return json(response, 200, { challengeId, challenge, userId: uid })
       }
@@ -434,9 +444,12 @@ export function createCentralServer({
           )
         )
           fail(401, '身份签名验证失败')
-        transaction(()=>db.prepare(
+        transaction(()=>{
+          delivery.register(challenge.uid,challenge.deviceId,challenge.deviceName)
+          db.prepare(
           'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name',
-        ).run(challenge.uid, challenge.publicKey, challenge.name))
+        ).run(challenge.uid, challenge.publicKey, challenge.name)
+        })
         for (const [token, entry] of sessions)
           if (entry.expires < Date.now()) sessions.delete(token)
         if (sessions.size > 4096) fail(429, '服务器在线会话已满')
@@ -445,6 +458,7 @@ export function createCentralServer({
           uid: challenge.uid,
           expires: Date.now() + 30 * 60 * 1000,
           features:challenge.features,
+          deviceId:challenge.deviceId,
         })
         activity.set(challenge.uid, Date.now())
         return json(response, 200, {
@@ -455,7 +469,16 @@ export function createCentralServer({
         })
       }
       const uid = auth(request)
+      const deviceId=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.deviceId
       const supportsActions=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('message-actions-v1')??false
+      if (route === '/v1/devices' && request.method === 'GET') return json(response,200,{devices:delivery.list(uid,deviceId)})
+      if (route === '/v1/devices/remove' && request.method === 'POST') {
+        const data=await body(request)
+        transaction(()=>delivery.remove(uid,data.deviceId,deviceId))
+        for(const [token,session] of sessions)if(session.uid===uid&&session.deviceId===data.deviceId)sessions.delete(token)
+        wake(uid)
+        return json(response,200,{devices:delivery.list(uid,deviceId)})
+      }
       if (route === '/v1/logout' && request.method === 'POST') {
         sessions.delete(
           (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -740,6 +763,7 @@ export function createCentralServer({
           }
         transaction(() => {
           enqueue(recipients, { id: messageId, kind: 'message', message })
+          if(deviceId!=='legacy')enqueue([uid],{id:messageId,kind:'message',message},false,deviceId)
           db.prepare('INSERT INTO receipts VALUES (?,?,?,?,?)').run(
             uid,
             clientId,
@@ -751,6 +775,7 @@ export function createCentralServer({
           rememberMessage(message,recipients,fingerprint)
         })
         for (const recipient of recipients) wake(recipient)
+        wake(uid)
         return json(response, 200, {
           messageId,
           conversationId,
@@ -954,11 +979,7 @@ export function createCentralServer({
         const pending = () => {
           const result = []
           let bytes = 0
-          for (const row of db
-            .prepare(
-              "SELECT payload FROM queue WHERE recipient=? AND (? OR json_extract(payload,'$.retraction') IS NULL) ORDER BY created_at,rowid LIMIT 20",
-            )
-            .iterate(uid,supportsActions?1:0)) {
+          for (const row of delivery.pending(uid,deviceId,supportsActions)) {
             const payloadBytes = Buffer.byteLength(row.payload)
             if (result.length && bytes + payloadBytes > 12 * 1024 * 1024) break
             bytes += payloadBytes
@@ -995,11 +1016,16 @@ export function createCentralServer({
         transaction(()=>{
           for (const id of new Set(data.ids)) {
             const changed = db.prepare('UPDATE message_delivery SET delivered_at=COALESCE(delivered_at,?),read_at=? WHERE message_id=? AND recipient=? AND read_at IS NULL').run(Date.now(),Date.now(),id,uid)
-            db.prepare('DELETE FROM queue WHERE id=? AND recipient=? AND EXISTS(SELECT 1 FROM message_delivery WHERE message_id=? AND recipient=? AND read_at IS NOT NULL)').run(id,uid,id,uid)
-            if (changed.changes) { const sender=queueReceipt(id); if(sender)senders.add(sender) }
+            delivery.acknowledge(id,uid,deviceId,supportsActions)
+            if (changed.changes) {
+              const sender=queueReceipt(id); if(sender)senders.add(sender)
+            }
+            const readAt=Date.now()
+            if(deviceId!=='legacy'&&delivery.markRead(id,uid,readAt))enqueue([uid],{id:randomUUID(),kind:'directory',read:{messageId:id,readAt}},false,deviceId)
           }
         })
         for(const sender of senders)wake(sender)
+        wake(uid)
         db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
         return json(response,200,{ok:true})
       }
@@ -1015,17 +1041,13 @@ export function createCentralServer({
         transaction(() => {
           const delivered = []
           for (const id of data.ids) {
+            if(!delivery.acknowledge(id,uid,deviceId,supportsActions))continue
             const changed = db.prepare('UPDATE message_delivery SET delivered_at=? WHERE message_id=? AND recipient=? AND delivered_at IS NULL').run(Date.now(),id,uid)
             if (changed.changes) delivered.push(id)
-            db.prepare("DELETE FROM queue WHERE id=? AND recipient=? AND (? OR json_extract(payload,'$.retraction') IS NULL)").run(
-              id,
-              uid,
-              supportsActions?1:0,
-            )
           }
           for(const id of delivered){const sender=queueReceipt(id);if(sender)senders.add(sender)}
           const cutoff=Date.now()-7*24*60*60*1000
-          db.prepare("DELETE FROM receipts WHERE created_at<? AND NOT EXISTS(SELECT 1 FROM message_delivery d WHERE d.message_id=receipts.message_id AND (d.delivered_at IS NULL OR d.delivered_at>=? OR d.read_at>=?)) AND message_id NOT IN(SELECT json_extract(payload,'$.receipt.messageId') FROM queue WHERE json_extract(payload,'$.kind')='directory' AND json_extract(payload,'$.receipt.messageId') IS NOT NULL)").run(cutoff,cutoff,cutoff)
+          db.prepare("DELETE FROM receipts WHERE created_at<? AND NOT EXISTS(SELECT 1 FROM queue WHERE id=receipts.message_id) AND NOT EXISTS(SELECT 1 FROM message_delivery d WHERE d.message_id=receipts.message_id AND (d.delivered_at IS NULL OR d.delivered_at>=? OR d.read_at>=?)) AND message_id NOT IN(SELECT json_extract(payload,'$.receipt.messageId') FROM queue WHERE json_extract(payload,'$.kind')='directory' AND json_extract(payload,'$.receipt.messageId') IS NOT NULL)").run(cutoff,cutoff,cutoff)
           db.prepare('DELETE FROM message_delivery WHERE message_id NOT IN(SELECT message_id FROM receipts)').run()
         })
         for(const sender of senders)wake(sender)

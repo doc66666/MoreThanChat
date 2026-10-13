@@ -61,6 +61,12 @@ export interface ModelStreamRef {
 declare global {
   interface Window {
     moreThanChat: {
+      getIdentityProfiles():Promise<{current:string;profiles:{id:string;userId:string}[]}>
+      backupIdentity(password:string):Promise<boolean>
+      restoreIdentity(password:string):Promise<{id:string}|null>
+      switchIdentity(id:string):Promise<void>
+      getDevices():Promise<{id:string;name:string;createdAt:number;lastSeen:number;current:boolean}[]>
+      removeDevice(id:string):Promise<void>
       getWindowFocus():Promise<boolean>
       focusChatWindow():Promise<void>
       onWindowFocusChanged(listener:(focused:boolean)=>void):()=>void

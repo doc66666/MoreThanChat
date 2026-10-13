@@ -19,6 +19,7 @@ import { toClientModelEvent } from './model-client-event'
 import { ChatStore } from './chat-store'
 import { CentralClient } from './central-client'
 import { ClientIdentity } from './identity-store'
+import { activeProfile, profilePath, listProfiles, restoreProfile, selectProfile } from './identity-profiles'
 import { AttachmentStore } from './attachments'
 import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
 
@@ -32,6 +33,8 @@ let quitRequested = false
 let centralClient: CentralClient | null = null
 let attachmentStore: AttachmentStore | null = null
 let centralCleanup: (() => void)[] = []
+let pendingProfile: string | null = null
+let identityBusy = false
 let previousUnread = 0
 function updateUnreadNotice(value: unknown): void {
   const state=value as {conversations?:{unread?:number;muted?:boolean}[]}|null
@@ -62,6 +65,15 @@ if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
 }
 
 if (!app.requestSingleInstanceLock()) app.exit(0)
+const profileRoot = app.getPath('userData')
+let currentProfile = 'default'
+try {
+  currentProfile = activeProfile(profileRoot)
+} catch {
+  dialog.showErrorBox('身份空间无法打开', '选中的身份数据缺失或配置损坏。原数据已保留，请检查身份目录。')
+  app.exit(1)
+}
+const dataDirectory = profilePath(profileRoot, currentProfile)
 app.on('second-instance', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
@@ -70,6 +82,60 @@ app.on('second-instance', () => {
 })
 
 function registerIpc(): void {
+  ipcMain.handle('identity:profiles', async event => {
+    assertTrustedIpc(event)
+    return { current: currentProfile, profiles: await listProfiles(profileRoot, systemCipher) }
+  })
+  const identityTask = async <T,>(fn:()=>Promise<T>):Promise<T> => {
+    if(identityBusy)throw new Error('身份操作正在进行')
+    identityBusy=true
+    try{return await fn()}finally{identityBusy=false}
+  }
+  ipcMain.handle('identity:backup', async (event,password:unknown) => {
+    assertTrustedIpc(event)
+    return identityTask(async()=>{
+      if(!centralClient||!mainWindow||typeof password!=='string')throw new Error('身份尚未就绪')
+      const backup=await centralClient.identity.backup(password)
+      const chosen=await dialog.showSaveDialog(mainWindow,{title:'保存加密身份备份',defaultPath:'MoreThanChat-'+centralClient.identity.userId.slice(-8)+'.mtcidentity',filters:[{name:'加密身份备份',extensions:['mtcidentity']}]})
+      if(chosen.canceled||!chosen.filePath)return false
+      try{await writeFile(chosen.filePath,backup,{flag:'wx',mode:0o600})}
+      catch(error){if((error as NodeJS.ErrnoException).code==='EEXIST')throw new Error('该文件已存在，请换一个备份文件名');throw new Error('备份未能保存，请检查目录权限与磁盘空间')}
+      return true
+    })
+  })
+  ipcMain.handle('identity:restore', async (event,password:unknown) => {
+    assertTrustedIpc(event)
+    return identityTask(async()=>{
+      if(!mainWindow||typeof password!=='string')throw new Error('无效身份操作')
+      const chosen=await dialog.showOpenDialog(mainWindow,{title:'导入加密身份备份',properties:['openFile'],filters:[{name:'加密身份备份',extensions:['mtcidentity']}]})
+      if(chosen.canceled||!chosen.filePaths[0])return null
+      if((await stat(chosen.filePaths[0])).size>8192)throw new Error('备份文件过大')
+      const id=await restoreProfile(profileRoot,await readFile(chosen.filePaths[0],'utf8'),password,systemCipher)
+      return {id}
+    })
+  })
+  ipcMain.handle('identity:switch', async (event,id:unknown) => {
+    assertTrustedIpc(event)
+    return identityTask(async()=>{
+      if(typeof id!=='string'||!mainWindow||!(await listProfiles(profileRoot,systemCipher)).some(p=>p.id===id))throw new Error('身份空间不存在')
+      if(id===currentProfile)return
+      const result=await dialog.showMessageBox(mainWindow,{type:'question',message:'重启并切换身份？',detail:'当前身份的消息、插件与设置会留在原空间，可随时切回。新导入身份不包含旧设备的本地聊天历史或 API 密钥。',buttons:['取消','重启切换'],defaultId:0,cancelId:0})
+      if(result.response===1){pendingProfile=id;app.quit()}
+    })
+  })
+  ipcMain.handle('central:devices',event=>{assertTrustedIpc(event);return centralClient?.devices()??[]})
+  ipcMain.handle('central:remove-device',async(event,id:unknown)=>{
+    assertTrustedIpc(event)
+    if(typeof id!=='string'||!centralClient||!mainWindow)throw new Error('无效设备')
+    const serverId=centralClient.snapshot().serverId
+    const device=(await centralClient.devices()).find(d=>d.id===id&&!d.current)
+    if(!device)throw new Error('不能移除此设备')
+    const result=await dialog.showMessageBox(mainWindow,{type:'warning',message:'移除设备 '+device.name+'？',detail:'本服将停止向它投递，并清除专门等待它接收的消息。它已保存的本地内容仍会保留。此操作不是身份密钥吊销。',buttons:['取消','移除设备'],defaultId:0,cancelId:0})
+    if(result.response===1){
+      if(centralClient.snapshot().serverId!==serverId)throw new Error('服务器已切换，请重新查看设备列表')
+      await centralClient.removeDevice(id)
+    }
+  })
   ipcMain.handle('app:window-focused',event=>{assertTrustedIpc(event);return Boolean(mainWindow?.isFocused())})
   ipcMain.handle('app:focus-window',event=>{
     assertTrustedIpc(event)
@@ -462,7 +528,7 @@ function startHostSupervisor(): void {
   hostSupervisor = new HostSupervisor({
     clientVersion: app.getVersion(),
     credentials: new EncryptedCredentialStore(
-      path.join(app.getPath('userData'), 'host-private'),
+      path.join(dataDirectory, 'host-private'),
       {
         available: () =>
           safeStorage.isEncryptionAvailable() &&
@@ -476,7 +542,7 @@ function startHostSupervisor(): void {
       entryPath: hostEntry.entryPath,
       cwd: hostEntry.cwd,
       environment: {
-        MTC_HOST_DATA_DIR: path.join(app.getPath('userData'), 'host-private'),
+        MTC_HOST_DATA_DIR: path.join(dataDirectory, 'host-private'),
         MTC_HOST_QA_CRASH_ONCE:
           process.env.MTC_QA_HOST_CRASH_ONCE === '1' ? '1' : undefined,
       },
@@ -518,6 +584,7 @@ async function createWindow(): Promise<void> {
       height: 38,
     },
     webPreferences: {
+      ...(currentProfile==='default'?{}:{partition:'persist:identity-'+currentProfile}),
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       sandbox: true,
@@ -549,6 +616,7 @@ async function createWindow(): Promise<void> {
       cleanup()
       flushing = false
       quitRequested = false
+      pendingProfile = null
     }
     const acknowledged = (event: IpcMainEvent, reply: unknown) => {
       const result = reply as { token?: unknown; ok?: unknown } | null
@@ -646,20 +714,20 @@ async function createWindow(): Promise<void> {
 app
   .whenReady()
   .then(async () => {
-    chatStore = await ChatStore.open(app.getPath('userData'))
+    chatStore = await ChatStore.open(dataDirectory)
     attachmentStore = new AttachmentStore(
-      path.join(app.getPath('userData'), 'attachments'),
+      path.join(dataDirectory, 'attachments'),
     )
     try {
       const identity = await ClientIdentity.load(
-        path.join(app.getPath('userData'), 'host-private'),
+        path.join(dataDirectory, 'host-private'),
         systemCipher,
       )
       centralClient = new CentralClient(
         identity,
         chatStore,
         attachmentStore,
-        app.getPath('userData'),
+        dataDirectory,
         async (serverId,previous,next)=>{
           if(!mainWindow||mainWindow.isDestroyed())return false
           const result=await dialog.showMessageBox(mainWindow,{type:'warning',message:'确认服务器地址变更',detail:'服务器 ID：'+serverId+'\n之前地址：'+previous+'\n新地址：'+next+'\n\n继续连接会将待发送消息交给新地址。请确认这是你迁移或信任的同一服务器。',buttons:['取消','确认连接新地址'],defaultId:0,cancelId:0})
@@ -728,5 +796,11 @@ app.on('before-quit', (event) => {
     .catch((error) => {
       console.error('[pc-host] Failed to stop cleanly:', error)
     })
-    .finally(() => app.quit())
+    .finally(async () => {
+      if(pendingProfile){
+        try { await selectProfile(profileRoot,pendingProfile); app.relaunch() }
+        catch { dialog.showErrorBox('身份切换未完成','原身份及聊天数据已保留，下次启动仍会打开原空间。') }
+      }
+      app.quit()
+    })
 })

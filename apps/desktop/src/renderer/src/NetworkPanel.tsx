@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { IdentitySettings } from './IdentitySettings'
 import type {
   GroupPlugin,
   ServerSnapshot,
@@ -117,6 +118,7 @@ export function NetworkPanel({
             : (snapshot?.error ?? '尚未连接')}
         </p>
         {error && <p className="settings-error">{error}</p>}
+        <IdentitySettings key={snapshot?.serverId??'offline'} connected={snapshot?.status==='connected'} />
         <h3>添加本服好友</h3>
         <input
           data-friend-id

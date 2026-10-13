@@ -394,6 +394,17 @@ export class ChatStore {
       return Number(result.changes)>0||saved.unread!==0
     }catch(error){this.#db.exec('ROLLBACK');throw error}
   }
+  applyDeviceRead(serverId: string, messageId: string, readAt: number): boolean {
+    const message=this.message(messageId)
+    if(!message||message.serverId!==serverId||message.role!=='peer'||message.readAt!==undefined)return false
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      this.#db.prepare("UPDATE messages SET payload=json_set(payload,'$.readAt',?) WHERE id=?").run(readAt,messageId)
+      this.#db.prepare("UPDATE conversations SET payload=json_set(payload,'$.unread',max(0,COALESCE(json_extract(payload,'$.unread'),0)-1)) WHERE id=?").run(String(message.conversationId))
+      this.#db.prepare('DELETE FROM read_outbox WHERE server_id=? AND message_id=?').run(serverId,messageId)
+      this.#db.exec('COMMIT');return true
+    } catch(error){this.#db.exec('ROLLBACK');throw error}
+  }
   searchMessages(query: string, conversationId?: string): { messageId: string; conversationId: string; text: string; senderName: string; createdAt: number }[] {
     if (!query.trim() || query.length > 200) return []
     const needle=query.trim(),indexed=[...needle].length>=3

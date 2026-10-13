@@ -18,6 +18,8 @@ import {
 import { ClientIdentity } from './identity-store'
 import { AttachmentStore } from './attachments'
 import { ChatStore } from './chat-store'
+import { loadDeviceId } from './device-store'
+import { hostname } from 'node:os'
 
 export const DEFAULT_CENTRAL_ADDRESS =
   process.env.MTC_DEFAULT_CENTRAL_URL ?? 'http://localhost:8787'
@@ -65,6 +67,8 @@ export class CentralClient {
   #draining = false
   #workerTimer: ReturnType<typeof setTimeout> | undefined
   #supportsReceipts = false
+  #supportsDevices = false
+  #deviceId: string | null = null
   #settingsWrites: Promise<void> = Promise.resolve()
   #listeners = new Set<(snapshot: ServerSnapshot) => void>()
   #chatListeners = new Set<(state: unknown) => void>()
@@ -117,6 +121,16 @@ export class CentralClient {
   snapshot(): ServerSnapshot {
     return structuredClone(this.#snapshot)
   }
+  async devices(): Promise<{id:string;name:string;createdAt:number;lastSeen:number;current:boolean}[]> {
+    if(!this.#supportsDevices||!this.#token)throw new Error('请连接支持多设备的新版中心服务器')
+    const result=await this.#request('devices')
+    if(!Array.isArray(result.devices)||result.devices.length>8||result.devices.some((d:any)=>!d||typeof d.id!=='string'||!/^[a-f0-9-]{36}$/.test(d.id)||typeof d.name!=='string'||d.name.length>80||!Number.isSafeInteger(d.createdAt)||!Number.isSafeInteger(d.lastSeen)||typeof d.current!=='boolean'))throw new Error('设备列表无效')
+    return result.devices
+  }
+  async removeDevice(id:string):Promise<void>{
+    if(!this.#supportsDevices||!this.#token||typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)||id===this.#deviceId)throw new Error('不能移除此设备')
+    await this.#request('devices/remove','POST',{deviceId:id})
+  }
   subscribe(listener: (snapshot: ServerSnapshot) => void): () => void {
     this.#listeners.add(listener)
     return () => this.#listeners.delete(listener)
@@ -145,7 +159,8 @@ export class CentralClient {
       throw new Error('无效身份挑战')
     const parsed = JSON.parse(value.challenge) as Record<string, unknown>
     if (
-      Object.keys(parsed).length !== 4 ||
+      Object.keys(parsed).length !== (this.#supportsDevices?5:4) ||
+      (this.#supportsDevices && parsed.deviceId !== this.#deviceId) ||
       parsed.protocolVersion !== 1 ||
       parsed.serverId !== serverId ||
       parsed.userId !== this.identity.userId ||
@@ -240,10 +255,13 @@ export class CentralClient {
       if(epoch!==this.#epoch)throw new Error('连接已取消')
       this.#supportsReceipts = Array.isArray(ping.features) && ping.features.includes('message-receipts-v1')
       this.#supportsActions = Array.isArray(ping.features) && ping.features.includes('message-actions-v1')
+      this.#supportsDevices = Array.isArray(ping.features) && ping.features.includes('device-delivery-v1')
+      this.#deviceId ??= await loadDeviceId(this.directory)
       const challenge = await request('challenge', 'POST', {
         publicKey: this.identity.publicKey,
         displayName: this.#snapshot.displayName,
         features:['message-actions-v1'],
+        ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
       })
       if(epoch!==this.#epoch)throw new Error('连接已取消')
       const session = await request('session', 'POST', {
@@ -351,6 +369,7 @@ export class CentralClient {
         for (const event of events) {
           if (event.kind === 'message') await this.#receive(event.message)
           else if (event.kind === 'directory') {
+            if(event.read&&this.store.applyDeviceRead(this.#snapshot.serverId!,event.read.messageId,event.read.readAt))this.#publishChat()
             if(event.retraction)this.#applyRetraction(event.retraction)
             if(event.receipt){
             const state = this.store.load()
@@ -411,6 +430,7 @@ export class CentralClient {
               publicKey: this.identity.publicKey,
               displayName: this.#snapshot.displayName,
               features:['message-actions-v1'],
+              ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
             })
             const session = await this.#request('session', 'POST', {
               challengeId: challenge.challengeId,
