@@ -10,7 +10,6 @@ import {
 } from 'react'
 import {
   Bot,
-  Check,
   ChevronDown,
   CircleHelp,
   Copy,
@@ -88,6 +87,8 @@ import {
 } from '@more-than-chat/central-protocol'
 import { NetworkPanel, GroupPluginView } from './NetworkPanel'
 import { GroupDraftSubmission } from './GroupDraftSubmission'
+import { slotLabels } from './group-plugin-presentation'
+import { shouldSendOnEnter } from './composer-input'
 import { ChatComposer } from './ChatComposer'
 import { MessageAttachment } from './MessageAttachment'
 import { UiSlot } from './UiSlot'
@@ -464,7 +465,7 @@ export function App() {
 
   useEffect(() => {
     if (!toast) return
-    const timer = window.setTimeout(() => setToast(null), 2400)
+    const timer = window.setTimeout(() => setToast(null), 5000)
     return () => window.clearTimeout(timer)
   }, [toast])
 
@@ -637,7 +638,7 @@ export function App() {
       humanSendsRef.current.add(active.id)
       try {
         await plugin.create().send({clientMessageId,conversationId:active.id,text,createdAt:now,...(attachment?{attachmentId:attachment.id}:{}),...(chatDraft.quoteMessageId?{quoteMessageId:chatDraft.quoteMessageId}:{})})
-        setDraft('');setPendingAttachment(null);chatDraft.setQuoteMessageId(null)
+        chatDraft.consume(attachment)
       }catch(error){setToast(errorText(error))}finally{humanSendsRef.current.delete(active.id)}
       return
     }
@@ -1080,7 +1081,7 @@ export function App() {
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (shouldSendOnEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.nativeEvent.keyCode })) {
       event.preventDefault()
       void sendMessage()
     }
@@ -1377,8 +1378,8 @@ export function App() {
               key={active.id}
               draft={draft}
               setDraft={setDraft}
-              onSend={() => void sendMessage()}
-              onVoice={(ref) => void sendMessage(ref)}
+              onSend={() => sendMessage()}
+              onVoice={async (ref) => { setPendingAttachment(ref); await sendMessage(ref) }}
               onError={setToast}
               canAttach={
                 active.transportId === 'builtin.central' && !active.unavailable
@@ -1506,7 +1507,7 @@ export function App() {
                   >
                     {UI_SLOTS.map((slot) => (
                       <option key={slot} value={slot}>
-                        {slot}
+                        {slotLabels[slot]}
                       </option>
                     ))}
                   </select>
@@ -1607,9 +1608,10 @@ export function App() {
       )}
       {renderSlot('app.overlay')}
       {toast && (
-        <div className="toast">
-          <Check size={17} />
-          {toast}
+        <div className="toast" role="status" aria-live="polite" aria-atomic="true">
+          <Info size={17} aria-hidden="true" />
+          <span>{toast}</span>
+          <button className="icon-button" aria-label="关闭通知" onClick={() => setToast(null)}><X size={15} /></button>
         </div>
       )}
     </div>

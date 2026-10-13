@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Mic, Paperclip, Plus, SendHorizontal } from 'lucide-react'
 import type { AttachmentRef } from '@more-than-chat/central-protocol'
+import { VoiceCapture, type VoicePhase } from './voice-capture'
+import { insertAtSelection, shouldSendOnEnter } from './composer-input'
 export function ChatComposer({
   draft,
   setDraft,
@@ -19,8 +21,8 @@ export function ChatComposer({
 }: {
   draft: string
   setDraft: (value: string) => void
-  onSend: () => void
-  onVoice: (ref: AttachmentRef) => void
+  onSend: () => void | Promise<void>
+  onVoice: (ref: AttachmentRef) => void | Promise<void>
   onError: (message: string) => void
   canAttach: boolean
   generating: boolean
@@ -32,11 +34,33 @@ export function ChatComposer({
   children: React.ReactNode
   reference?:React.ReactNode
 }) {
-  const [menu, setMenu] = useState(false),
-    [recording, setRecording] = useState(false)
-  const held = useRef(false),
-    recorder = useRef<MediaRecorder | null>(null),
-    cancelled = useRef(false)
+  const [menu, setMenu] = useState(false)
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle')
+  const [seconds, setSeconds] = useState(0)
+  const [preparingFile, setPreparingFile] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [problem, setProblem] = useState('')
+  const mounted = useRef(true)
+  const operation = useRef(false)
+  const callbacks = useRef({ onVoice, onError })
+  callbacks.current = { onVoice, onError }
+  const voice = useRef<VoiceCapture | null>(null)
+  const recording = voicePhase === 'recording'
+  const locked = preparingFile || sending || voicePhase !== 'idle'
+  function report(message: string) { if (mounted.current) { setProblem(message); callbacks.current.onError(message) } }
+  if (!voice.current) voice.current = new VoiceCapture({
+    getStream: () => navigator.mediaDevices.getUserMedia({ audio: true }),
+    createRecorder: stream => new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm' }),
+    onPhase: phase => { if (mounted.current) setVoicePhase(phase) },
+    onError: report,
+    prepare: async (blob, durationMs) => {
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      let binary = ''
+      for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768))
+      const ref = await window.moreThanChat.recordVoice({ data: btoa(binary), mime: 'audio/webm', durationMs })
+      return () => callbacks.current.onVoice(ref)
+    },
+  })
   const menuRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   useLayoutEffect(() => {
@@ -63,80 +87,49 @@ export function ChatComposer({
       document.removeEventListener('keydown', escape)
     }
   }, [menu])
-  const begin = async () => {
-    if (!canAttach || generating) return
-    held.current = true
-    cancelled.current = false
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      if (!held.current) {
-        stream.getTracks().forEach((track) => track.stop())
-        return
-      }
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
-      const value = new MediaRecorder(stream, { mimeType: mime }),
-        chunks: BlobPart[] = [],
-        started = Date.now()
-      value.ondataavailable = (event) => {
-        if (event.data.size) chunks.push(event.data)
-      }
-      const timer = window.setTimeout(() => {
-        held.current = false
-        if (value.state !== 'inactive') value.stop()
-      }, 59000)
-      value.onstop = () => {
-        window.clearTimeout(timer)
-        stream.getTracks().forEach((track) => track.stop())
-        setRecording(false)
-        recorder.current = null
-        if (cancelled.current) return
-        void new Blob(chunks, { type: mime })
-          .arrayBuffer()
-          .then(async (buffer) => {
-            const bytes = new Uint8Array(buffer)
-            let binary = ''
-            for (let i = 0; i < bytes.length; i += 32768)
-              binary += String.fromCharCode(...bytes.subarray(i, i + 32768))
-            const durationMs = Math.min(60000, Date.now() - started)
-            if (durationMs < 300) throw new Error('录音太短，请按住说话')
-            onVoice(
-              await window.moreThanChat.recordVoice({
-                data: btoa(binary),
-                mime: 'audio/webm',
-                durationMs,
-              }),
-            )
-          })
-          .catch((e) =>
-            onError(e instanceof Error ? e.message : '录音发送失败'),
-          )
-      }
-      recorder.current = value
-      value.start()
-      setRecording(true)
-    } catch (e) {
-      held.current = false
-      onError(e instanceof Error ? e.message : '无法使用麦克风')
+  const begin = () => {
+    if (!canAttach || generating || operation.current || attachment) return
+    setProblem('')
+    void voice.current!.begin()
+  }
+  useEffect(() => {
+    mounted.current = true
+    const cancel = () => voice.current?.cancel()
+    const escape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') cancel() }
+    const hidden = () => { if (document.hidden) cancel() }
+    window.addEventListener('blur', cancel)
+    document.addEventListener('visibilitychange', hidden)
+    document.addEventListener('keydown', escape)
+    return () => {
+      mounted.current = false; cancel()
+      window.removeEventListener('blur', cancel)
+      document.removeEventListener('visibilitychange', hidden)
+      document.removeEventListener('keydown', escape)
     }
+  }, [])
+  useEffect(() => {
+    if (!recording) return
+    setSeconds(0)
+    const start = Date.now()
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [recording])
+  async function send() {
+    if (operation.current || locked || generating || (!draft.trim() && !attachment)) return
+    operation.current = true; setSending(true); setProblem('')
+    try { await onSend() }
+    catch (error) { report(error instanceof Error ? error.message : '消息发送失败，请重试。') }
+    finally { operation.current = false; if (mounted.current) { setSending(false); inputRef.current?.focus() } }
   }
-  const stop = (cancel = false) => {
-    held.current = false
-    if (cancel) cancelled.current = true
-    if (recorder.current && recorder.current.state !== 'inactive')
-      recorder.current.stop()
+  async function chooseFile() {
+    if (operation.current || locked) return
+    operation.current = true; setPreparingFile(true); setProblem(''); setMenu(false)
+    try {
+      const ref = await window.moreThanChat.chooseAttachment()
+      if (mounted.current && ref) onAttachment(ref)
+    } catch (error) { report(error instanceof Error ? error.message : '附件准备失败，请重试。') }
+    finally { operation.current = false; if (mounted.current) { setPreparingFile(false); inputRef.current?.focus() } }
   }
-  useEffect(()=>()=>{
-    cancelled.current=true;held.current=false
-    if(recorder.current && recorder.current.state!=='inactive')recorder.current.stop()
-  },[])
-  useEffect(()=>{
-    if(!recording)return
-    const escape=(event:globalThis.KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();stop(true)}}
-    document.addEventListener('keydown',escape)
-    return()=>document.removeEventListener('keydown',escape)
-  },[recording])
   return (
     <div className="composer">
       {reference}
@@ -146,6 +139,8 @@ export function ChatComposer({
             type="button"
             className="composer-plus"
             title="附件与表情"
+            aria-label="附件与表情"
+            disabled={locked}
             aria-expanded={menu}
             aria-controls="composer-attachments-menu"
             onClick={() => setMenu((value) => !value)}
@@ -158,18 +153,11 @@ export function ChatComposer({
                 type="button"
                 className="composer-file-action"
                 disabled={!canAttach}
-                onClick={() => {
-                  setMenu(false)
-                  void window.moreThanChat
-                    .chooseAttachment()
-                    .then((ref) => {
-                      if (ref) onAttachment(ref)
-                    })
-                    .catch((e) => onError(e.message))
-                }}
+                onClick={() => void chooseFile()}
               >
                 <Paperclip size={16} /> 文件或图片 <small>5 MiB</small>
               </button>
+              {!canAttach && <p className="composer-menu-note">文件和语音仅用于好友或群聊。</p>}
               <div className="composer-emoji-grid">
                 {['🙂', '😂', '👍', '❤️', '🎉', '😮'].map((emoji) => (
                   <button
@@ -177,9 +165,11 @@ export function ChatComposer({
                     type="button"
                     aria-label={`插入表情 ${emoji}`}
                     onClick={() => {
-                      setDraft(draft + emoji)
+                      const input = inputRef.current
+                      const result = insertAtSelection(draft, emoji, input?.selectionStart ?? draft.length, input?.selectionEnd ?? draft.length)
+                      setDraft(result.text)
                       setMenu(false)
-                      inputRef.current?.focus()
+                      requestAnimationFrame(() => { if (mounted.current) { input?.focus(); input?.setSelectionRange(result.cursor, result.cursor) } })
                     }}
                   >
                     {emoji}
@@ -194,11 +184,12 @@ export function ChatComposer({
           maxLength={100000}
           aria-label={`发消息给 ${title}`}
           value={draft}
+          readOnly={sending}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            if (shouldSendOnEnter({ key: e.key, shiftKey: e.shiftKey, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode })) {
               e.preventDefault()
-              onSend()
+              void send()
             }
           }}
           placeholder={`发消息给 ${title}`}
@@ -214,7 +205,9 @@ export function ChatComposer({
               <button
                 className="send-button"
                 title="发送文字或文件"
-                onClick={onSend}
+                aria-label={sending ? '正在发送' : '发送文字或文件'}
+                disabled={locked}
+                onClick={() => void send()}
               >
                 <SendHorizontal size={19} />
               </button>
@@ -222,28 +215,37 @@ export function ChatComposer({
             <button
               type="button"
               className={`voice-button ${recording ? 'recording' : ''}`}
-              disabled={!canAttach}
-              title="按住说话，松开发送；Esc 取消"
+              disabled={!canAttach || preparingFile || sending || voicePhase === 'preparing' || !!attachment}
+              aria-label="按住说话，松开发送；可按住空格录音，Esc 取消"
+              title={attachment ? '请先发送或移除当前附件' : !canAttach ? '语音仅用于好友或群聊' : '按住说话，松开发送；空格录音，Esc 取消'}
               onPointerDown={(event) => {
+                if (event.button !== 0) return
                 event.currentTarget.setPointerCapture(event.pointerId)
-                void begin()
+                begin()
               }}
-              onPointerUp={() => stop()}
-              onPointerCancel={() => stop(true)}
+              onPointerUp={() => voice.current?.finish()}
+              onPointerCancel={() => voice.current?.cancel()}
               onKeyDown={(e) => {
-                if (e.key === 'Escape') stop(true)
+                if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (!e.repeat) begin() }
               }}
+              onKeyUp={e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); voice.current?.finish() } }}
+              onBlur={() => { if (voicePhase === 'requesting' || voicePhase === 'recording') voice.current?.cancel() }}
             >
               <Mic size={18} />
-              <span>{recording ? '松开发送' : '按住说话'}</span>
+              <span>{recording ? '松开发送' : voicePhase === 'requesting' ? '等待麦克风' : voicePhase === 'preparing' ? '正在准备' : '按住说话'}</span>
             </button>
           </>
         )}
       </div>
+      {(preparingFile || sending || voicePhase !== 'idle') && <div className="composer-progress" role="status">
+        <span>{preparingFile ? '正在选择或准备附件…' : sending ? '正在加入发送队列…' : recording ? `正在录音 ${seconds}s / 59s · 松开发送，Esc 取消` : voicePhase === 'requesting' ? '等待麦克风权限，请保持按住；松开取消。' : '正在准备语音…'}</span>
+        {(voicePhase === 'requesting' || recording) && <button type="button" onClick={() => voice.current?.cancel()}>取消录音</button>}
+      </div>}
+      {problem && <div className="composer-problem" role="alert"><span>{problem}</span><button type="button" aria-label="关闭输入提示" onClick={() => setProblem('')}>关闭</button></div>}
       {attachment && (
         <div className="attachment-pending">
-          {attachment.name} · {(attachment.size / 1024).toFixed(1)} KiB{' '}
-          <button onClick={clearAttachment}>移除</button>
+          <Paperclip size={15} /><span title={attachment.name}>{attachment.name}</span><small>{(attachment.size / 1024).toFixed(1)} KiB</small>
+          <button disabled={locked} onClick={clearAttachment} aria-label={`移除附件 ${attachment.name}`}>移除</button>
         </div>
       )}
       <div className="composer-toolbar">

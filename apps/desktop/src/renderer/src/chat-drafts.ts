@@ -22,10 +22,18 @@ function update(id: string, patch: Partial<Draft>) {
   snapshot = { drafts, error }
   for (const listener of listeners) listener()
 }
+// A slow send must not erase text or attachments edited while it was in flight.
+export function consumeDraft(current: Draft, sent: Draft): Draft {
+  return {
+    text: current.text === sent.text ? '' : current.text,
+    attachment: current.attachment?.id === sent.attachment?.id ? null : current.attachment,
+    quoteMessageId: current.quoteMessageId === sent.quoteMessageId ? null : current.quoteMessageId,
+  }
+}
 export function useChatDraft(id: string) {
   const value = useSyncExternalStore(subscribe, () => snapshot)
   const draft = value.drafts[id] ?? empty
-  return { ...draft, error: value.error, setText: (text: string | ((previous:string)=>string)) => update(id, { text: typeof text==='function' ? text(snapshot.drafts[id]?.text ?? '') : text }), setAttachment: (attachment: AttachmentRef | null) => update(id, { attachment }),setQuoteMessageId:(quoteMessageId:string|null)=>update(id,{quoteMessageId}) }
+  return { ...draft, error: value.error, consume: (attachment = draft.attachment) => update(id, consumeDraft(snapshot.drafts[id] ?? empty, { ...draft, attachment })), setText: (text: string | ((previous:string)=>string)) => update(id, { text: typeof text==='function' ? text(snapshot.drafts[id]?.text ?? '') : text }), setAttachment: (attachment: AttachmentRef | null) => update(id, { attachment }),setQuoteMessageId:(quoteMessageId:string|null)=>update(id,{quoteMessageId}) }
 }
 export function clearRetractedDraftQuotes(serverId:string,messageId:string):void {
   for(const [id,draft] of Object.entries(snapshot.drafts))if(id.startsWith(serverId+':')&&draft.quoteMessageId===messageId)update(id,{quoteMessageId:null})

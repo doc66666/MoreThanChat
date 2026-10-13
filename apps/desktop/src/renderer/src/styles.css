@@ -616,3 +616,22 @@ svg { stroke-width: 1.7; }
 .history-transfer-progress, .history-transfer-result { margin: 12px 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text-secondary); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .history-transfer-progress small { display: block; color: var(--muted); font-size: 11px; }
 .history-transfer-help { margin-top: 14px; }
+.composer-progress, .composer-problem { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; margin-top: 8px; border-radius: 8px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.composer-progress { background: var(--surface-muted); color: var(--text-secondary); }
+.composer-problem { background: var(--danger-soft); color: var(--danger); }
+.composer-progress button, .composer-problem button { flex-shrink: 0; border: 0; background: transparent; color: inherit; cursor: pointer; padding: 5px; }
+.composer-menu-note { font-size: 11px; color: var(--muted); padding: 0 8px; line-height: 1.5; }
+.normal-composer-row button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.attachment-pending { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.attachment-pending > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-pending > svg, .attachment-pending > small, .attachment-pending > button { flex-shrink: 0; }
+.plugin-workflow { display: flex; flex-wrap: wrap; gap: 8px 24px; padding-left: 18px; margin: 0; font-size: 11px; color: var(--text-secondary); line-height: 1.6; }
+.plugin-submission-history { font-size: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.plugin-submission-history summary { cursor: pointer; color: var(--text-secondary); }
+.plugin-submission-history p { padding-top: 8px; }
+.group-plugin-gate .inline-problem, .group-plugin-widget .inline-problem, .group-draft-submit .inline-problem { color: var(--danger); background: var(--danger-soft); border-radius: 8px; padding: 8px 10px; }
+.group-draft-submit .inline-success { color: var(--success); background: var(--success-soft); border-radius: 8px; padding: 8px 10px; }
+.toast > span { min-width: 0; overflow-wrap: anywhere; }
+.toast > svg, .toast > button { flex-shrink: 0; }
+.toast { max-width: min(560px, calc(100vw - 32px)); }
+.toast > .icon-button { color: inherit; }
