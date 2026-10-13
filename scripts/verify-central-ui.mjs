@@ -327,8 +327,13 @@ async function verifyHumanWorkflow(aid,bid,group) {
   await openNetwork(a);await input(a,'[data-friend-id]',bid);await click(a,'[data-request-friend]')
   await click(b,`[data-reject-friend="${aid}"]`)
   await poll(a,'window.moreThanChat.getServerState().then(s=>s.directory.outgoingRequests.length===0)')
+  // Successful requests clear the UID input; each new application needs a target.
+  await poll(a,'document.querySelector("[data-friend-id]")?.value===""')
+  await input(a,'[data-friend-id]',bid)
   await click(a,'[data-request-friend]');await click(a,`[data-cancel-friend="${bid}"]`)
   await poll(b,'window.moreThanChat.getServerState().then(s=>s.directory.requests.length===0)')
+  await poll(a,'document.querySelector("[data-friend-id]")?.value===""')
+  await input(a,'[data-friend-id]',bid)
   await click(a,'[data-request-friend]');await click(b,`[data-accept-friend="${aid}"]`)
   await poll(a,`document.querySelectorAll('[data-conversation-id="${removedDirect}"]').length===1`)
   assert.equal(await evaluate(a.client,`window.moreThanChat.loadState().then(s=>s.conversations.filter(c=>c.targetId===${JSON.stringify(bid)}&&c.kind==='direct').length)`),1)
