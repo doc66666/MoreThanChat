@@ -14,6 +14,7 @@ import { deviceDelivery } from './device-delivery.mjs'
 import { acquireDirectoryLock, serverLifecycle } from './server-lifecycle.mjs'
 import { collectServerStats } from './server-operations.mjs'
 import { TRAFFIC, tokenBuckets, isControlRequest, trafficClass, bodyLimit, bodyAdmission } from './traffic-policy.mjs'
+import { responseBudget, writeResponse, RESPONSE_LIMIT } from './response-flow.mjs'
 import {
   parseGroupPluginPack,
   validUid,
@@ -106,6 +107,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
   const startedAt = Date.now()
   const budgets = Object.fromEntries(Object.keys(TRAFFIC).map(key => [key, tokenBuckets()]))
   const uploads = bodyAdmission(), requestIdentity = new WeakMap()
+  const outbound = responseBudget()
   const throttle = (kind, key) => {
     const retryAfter = budgets[kind].take(key, TRAFFIC[kind])
     if (retryAfter) throw Object.assign(new ApiError(429, '请求过于频繁，请稍后重试'), { retryAfter })
@@ -237,6 +239,11 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
   // this private capability. They must remain writable when new traffic reaches
   // its admission budget, or the first ACK of a multi-device body cannot commit.
   const deliveryControlBudget = Symbol('delivery-control-budget')
+  // Reuse this hot statement: native SQLite bindings retain the last payload
+  // until rebinding/finalization. Preparing per recipient leaves many large
+  // attachment copies waiting for JS garbage collection. One statement bounds
+  // that retention to one payload; all enqueue work is synchronous.
+  const insertQueuedEvent = db.prepare('INSERT OR IGNORE INTO queue VALUES (?,?,?,?)')
   const enqueue = (recipients, event, includeDenied = false, excludeDevice, budget) => {
     const payload = JSON.stringify(event)
     if (
@@ -254,7 +261,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       fail(507, '服务器暂存空间已满')
     for (const uid of new Set(recipients)) {
       if (!includeDenied&&!allowed(uid)) continue
-      const inserted = db.prepare('INSERT OR IGNORE INTO queue VALUES (?,?,?,?)').run(
+      const inserted = insertQueuedEvent.run(
         event.id,
         uid,
         payload,
@@ -386,13 +393,23 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
   }
   const json = (response, status, body, retryAfter = 1) => {
     if (response.destroyed || response.writableEnded) return
+    let payload = JSON.stringify(body), release
+    const size = Buffer.byteLength(payload)
+    if (size > 64 * 1024) {
+      release = outbound.acquire(size, requestIdentity.get(response.req))
+      if (!release) {
+        status = size > RESPONSE_LIMIT ? 503 : 429
+        payload = JSON.stringify({ error: size > RESPONSE_LIMIT ? '服务器响应过大，请联系管理员' : '响应发送繁忙，请稍后重试' })
+      }
+    }
     response.writeHead(status, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
       ...(lifecycle.state === 'draining' ? { connection: 'close' } : {}),
       ...(status === 429 || status === 503 ? { 'retry-after': String(retryAfter) } : {}),
     })
-    response.end(JSON.stringify(body))
+    if (release) return writeResponse(response, payload, release, { onTimeout: () => outbound.timeout() })
+    response.end(payload)
   }
   const body = async (request) => {
     const route = new URL(request.url, 'http://localhost').pathname
@@ -454,6 +471,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           startedAt, now: Date.now(),
           activeSessions: [...sessions.values()].filter(session => session.expires > Date.now()).length,
           pendingPolls: [...waiting.values()].reduce((count, listeners) => count + listeners.size, 0),
+          outbound: outbound.snapshot(), memory: process.memoryUsage(),
           closing: lifecycle.state !== 'ready',
         }))
         const data = await body(request)
@@ -531,6 +549,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         )
           fail(401, '身份签名验证失败')
         throttle('login', challenge.uid)
+        requestIdentity.set(request, challenge.uid)
         for (const [token, entry] of sessions)
           if (entry.expires < Date.now()) sessions.delete(token)
         for (const [uid, lastSeen] of activity)

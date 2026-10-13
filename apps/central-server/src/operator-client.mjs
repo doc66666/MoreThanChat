@@ -56,7 +56,11 @@ function statusResult(value) {
   if (value?.version !== 1 || typeof value.closing !== 'boolean') throw new Error('Invalid status')
   return {
     version: 1, uptimeMs: number(value.uptimeMs), closing: value.closing,
-    runtime: { activeSessions: number(value.runtime.activeSessions), pendingPolls: number(value.runtime.pendingPolls) },
+    runtime: {
+      activeSessions: number(value.runtime.activeSessions), pendingPolls: number(value.runtime.pendingPolls),
+      ...(value.runtime.outbound ? { outbound: Object.fromEntries(['active', 'bytes', 'peakBytes', 'rejected', 'timeouts'].map(key => [key, number(value.runtime.outbound[key])])) } : {}),
+      ...(value.runtime.memory ? { memory: Object.fromEntries(['rssBytes', 'heapUsedBytes', 'externalBytes'].map(key => [key, number(value.runtime.memory[key])])) } : {}),
+    },
     users: number(value.users), groups: number(value.groups),
     devices: { active: number(value.devices.active), revoked: number(value.devices.revoked) },
     queue: { rows: number(value.queue.rows), payloadBytes: number(value.queue.payloadBytes),

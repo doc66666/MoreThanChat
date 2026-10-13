@@ -10,6 +10,19 @@ const uid = 'usr_' + 'a'.repeat(64)
 const roots = []
 const stats = () => ({ version: 1, uptimeMs: 2500, closing: false, runtime: { activeSessions: 2, pendingPolls: 1 }, users: 3, groups: 1, devices: { active: 4, revoked: 1 }, queue: { rows: 5, payloadBytes: 3000, deviceObligations: 8, oldestAgeMs: 900 } })
 const response = data => new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } })
+
+it('projects only numeric response-flow and process-memory aggregates', async () => {
+  const value = stats()
+  value.runtime.outbound = { active: 2, bytes: 120, peakBytes: 240, rejected: 1, timeouts: 0, privateMessage: TOKEN }
+  value.runtime.memory = { rssBytes: 1000, heapUsedBytes: 400, externalBytes: 200, privateUid: uid }
+  const result = await runStatusCli([], { env, fetchImpl: async () => response(value) })
+  expect(result.runtime.outbound).toEqual({ active: 2, bytes: 120, peakBytes: 240, rejected: 1, timeouts: 0 })
+  expect(result.runtime.memory).toEqual({ rssBytes: 1000, heapUsedBytes: 400, externalBytes: 200 })
+  expect(JSON.stringify(result)).not.toContain(TOKEN)
+  expect(JSON.stringify(result)).not.toContain(uid)
+  value.runtime.outbound.bytes = -1
+  await expect(runStatusCli([], { env, fetchImpl: async () => response(value) })).rejects.toThrow('invalid')
+})
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })

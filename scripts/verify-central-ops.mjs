@@ -2,19 +2,22 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
 import { access, mkdtemp, rm } from 'node:fs/promises'
-import { createServer } from 'node:net'
+import { createServer, connect } from 'node:net'
+import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const args = process.argv.slice(2)
-let releaseDirectory, loadRounds = 0
+let releaseDirectory, loadRounds = 0, soakSeconds = 0
 for (let i = 0; i < args.length; i += 2) {
   if (args[i] === '--release' && args[i + 1] && releaseDirectory === undefined) releaseDirectory = path.resolve(args[i + 1])
   else if (args[i] === '--load-rounds' && /^[1-9]\d{0,2}$/.test(args[i + 1] ?? '') && loadRounds === 0) loadRounds = Number(args[i + 1])
-  else throw new Error('Usage: node scripts/verify-central-ops.mjs [--release <standalone-directory>] [--load-rounds 1..999]')
+  else if (args[i] === '--soak-seconds' && /^[1-9]\d{0,3}$/.test(args[i + 1] ?? '') && Number(args[i + 1]) <= 3600 && soakSeconds === 0) soakSeconds = Number(args[i + 1])
+  else throw new Error('Usage: node scripts/verify-central-ops.mjs [--release <standalone-directory>] [--load-rounds 1..999] [--soak-seconds 1..3600]')
 }
+if (soakSeconds && !loadRounds) loadRounds = 8
 const root = path.resolve(import.meta.dirname, '..')
 const entry = releaseDirectory
   ? path.join(releaseDirectory, 'server.mjs')
@@ -28,6 +31,7 @@ const temporary = await mkdtemp(path.join(tmpdir(), 'mtc-central-ops-'))
 const directory = path.join(temporary, 'relay')
 const adminToken = randomBytes(32).toString('base64url')
 const children = new Set()
+const slowSockets = []
 const cleanupErrors = []
 
 async function reservePort() {
@@ -184,7 +188,9 @@ async function verifyStatusCli(server, privateValues) {
   try { result = JSON.parse(state.stdout) } catch { throw new Error('Status CLI returned invalid JSON') }
   const keys = (value, expected) => assert.deepEqual(Object.keys(value).sort(), expected.sort())
   keys(result, ['version', 'uptimeMs', 'closing', 'runtime', 'users', 'groups', 'devices', 'queue'])
-  keys(result.runtime, ['activeSessions', 'pendingPolls'])
+  keys(result.runtime, ['activeSessions', 'pendingPolls', 'outbound', 'memory'])
+  keys(result.runtime.outbound, ['active', 'bytes', 'peakBytes', 'rejected', 'timeouts'])
+  keys(result.runtime.memory, ['rssBytes', 'heapUsedBytes', 'externalBytes'])
   keys(result.devices, ['active', 'revoked'])
   keys(result.queue, ['rows', 'payloadBytes', 'deviceObligations', 'oldestAgeMs'])
   assert.equal(result.version, 1)
@@ -348,9 +354,53 @@ try {
   assertPurged([group.messageId, direct.messageId, afterRestart.messageId], [marker, attachment.data, 'New traffic after recovery'])
   console.log('PASS: last-device ACK purges bodies, restart does not resurrect them, new group traffic still works')
 
+  if (soakSeconds) {
+    const data = randomBytes(5 * 1024 * 1024)
+    const pack = { id: createHash('sha256').update(data).digest('hex'), name: 'slow.bin', mime: 'application/octet-stream', size: data.length, data: data.toString('base64') }
+    const sent = await request(server, '/v1/messages', a.token, { clientMessageId: randomUUID(), targetKind: 'direct', targetId: b1.userId, text: 'slow receiver', attachment: pack })
+    for (let index = 0; index < 2; index++) {
+      const socket = connect(Number(new URL(server.url).port), '127.0.0.1')
+      slowSockets.push(socket); socket.on('error', () => {})
+      await once(socket, 'connect'); socket.pause()
+      socket.write(`GET /v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${b1.token}\r\n\r\n`)
+    }
+    const waitStats = async predicate => {
+      const end = Date.now() + 35000
+      while (Date.now() < end) {
+        const stats = await request(server, '/v1/admin/status', adminToken)
+        if (predicate(stats.runtime.outbound)) return stats.runtime.outbound
+        await delay(100)
+      }
+      throw new Error('Slow response did not reach the expected bounded state')
+    }
+    const held = await waitStats(stats => stats.active === 2)
+    assert.ok(held.bytes <= 16 * 1024 * 1024)
+    await request(server, '/v1/events', b1.token, undefined, 429)
+    await request(server, '/v1/events', b2.token, undefined, 429)
+    const concurrent = await request(server, '/v1/messages', a.token, { clientMessageId: randomUUID(), targetKind: 'direct', targetId: c.userId, text: 'while another receiver is stalled' })
+    const received = await request(server, '/v1/events', c.token)
+    assert.ok(received.events.some(event => event.id === concurrent.messageId))
+    await acknowledge(server, c, received.events.map(event => event.id))
+    console.log('PASS: paused receivers retain bounded responses; another user still receives and ACKs. Waiting for the real 30-second response deadline.')
+    const freed = await waitStats(stats => stats.active === 0 && stats.timeouts >= held.timeouts + 2)
+    assert.equal(freed.bytes, 0)
+    for (const socket of slowSockets.splice(0)) socket.destroy()
+    assertObligations(sent.messageId, [b1, b2])
+    for (const user of [b1, b2]) {
+      const events = await request(server, '/v1/events', user.token)
+      const delivered = events.events.find(event => event.id === sent.messageId)
+      assert.ok(delivered)
+      assert.equal(createHash('sha256').update(Buffer.from(delivered.message.attachment.data, 'base64')).digest('hex'), pack.id)
+      await acknowledge(server, user, events.events.map(event => event.id))
+    }
+    assertPurged([sent.messageId, concurrent.messageId], [pack.data])
+    console.log('PASS: real slow-response deadline freed all reservations without ACK; complete attachments redelivered afterwards')
+  }
+
   if (loadRounds) {
     const started = performance.now(), latencies = [], expectedMessages = new Map(), seen = new Map()
-    let peakQueueBytes = 0, attachmentMessages = 0
+    let peakQueueBytes = 0, attachmentMessages = 0, totalMessages = 0, totalDeliveries = 0, rounds = 0
+    let peakRss = 0, firstRss, lastRss = 0, lastProgress = started
     const pendingFor = user => inspectDatabase(db => Number(db.prepare('SELECT COUNT(*) AS n FROM queue_devices WHERE user_id=? AND device_id=?').get(user.userId, user.deviceId).n))
     const pendingMessages = user => inspectDatabase(db => Number(db.prepare("SELECT COUNT(*) AS n FROM queue_devices d JOIN queue q ON q.id=d.event_id AND q.recipient=d.user_id WHERE d.user_id=? AND d.device_id=? AND json_extract(q.payload,'$.kind')='message'").get(user.userId, user.deviceId).n))
     const record = (user, event) => {
@@ -379,9 +429,19 @@ try {
         }
       }
     }
+    const verifyWindow = () => {
+      for (const user of [a, b1, b2, c]) {
+        const expected = [...expectedMessages].filter(([, item]) => user.deviceId === b2.deviceId || item.sender !== user.userId).map(([id]) => id).sort()
+        assert.deepEqual([...(seen.get(user.deviceId) ?? [])].sort(), expected, 'Per-device delivered set differs from targets')
+      }
+      totalMessages += expectedMessages.size
+      totalDeliveries += [...seen.values()].reduce((n, ids) => n + ids.size, 0)
+      expectedMessages.clear(); seen.clear()
+    }
     // Clear only control notifications left by the earlier recovery scenario.
     await drain([a, b1, b2, c])
-    for (let round = 0; round < loadRounds; round++) {
+    for (let round = 0; round < loadRounds || performance.now() - started < soakSeconds * 1000; round++) {
+      rounds++
       for (const sender of [a, b1, c]) {
         const content = `load-${round}-${randomUUID()}-` + '内容'.repeat(4096)
         let loadAttachment
@@ -397,12 +457,16 @@ try {
         expectedMessages.set(accepted.messageId, { sender: sender.userId, text: content, attachment: loadAttachment })
         assert.equal((await request(server, '/v1/messages', sender.token, payload)).messageId, accepted.messageId, 'Identical send retry must deduplicate under load')
       }
-      // Bob's second registered device intentionally remains offline throughout.
+      // Bob's second device is offline throughout load mode, or until the next
+      // eight-round recovery window in sustained mode.
       await drain([a, b1, c])
       const stats = await request(server, '/v1/admin/status', adminToken)
       peakQueueBytes = Math.max(peakQueueBytes, stats.queue.payloadBytes)
+      firstRss ??= stats.runtime.memory.rssBytes
+      lastRss = stats.runtime.memory.rssBytes; peakRss = Math.max(peakRss, lastRss)
+      assert.ok(stats.runtime.outbound.bytes <= 64 * 1024 * 1024)
       assert.equal(pendingMessages(b2), expectedMessages.size)
-      if (round + 1 === Math.ceil(loadRounds / 2)) {
+      if (!soakSeconds && round + 1 === Math.ceil(loadRounds / 2)) {
         const oldServerId = (await request(server, '/v1/ping')).serverId
         await stop(server)
         server = await start(); await waitForReady(server)
@@ -411,20 +475,29 @@ try {
         b2 = await login(server, b2Identity); c = await login(server, cIdentity)
         assert.equal(pendingMessages(b2), expectedMessages.size, 'Offline obligations changed across hard restart')
       }
+      if (soakSeconds && (round + 1) % 8 === 0) {
+        await drain([b2, a, b1, c]); await drain([a, b1, b2, c]); verifyWindow()
+      }
+      if (soakSeconds) {
+        if (performance.now() - lastProgress >= 30000) {
+          lastProgress = performance.now()
+          console.log(JSON.stringify({ soakProgress: true, seconds: Math.round((lastProgress - started) / 1000), rounds, ...stats.runtime.memory, peakRssBytes: peakRss, responseBytes: stats.runtime.outbound.bytes }))
+        }
+        await delay(500)
+      }
     }
     await drain([b2, a, b1, c])
     await drain([a, b1, b2, c])
-    for (const user of [a, b1, b2, c]) {
-      const expected = [...expectedMessages].filter(([, item]) => user.deviceId === b2.deviceId || item.sender !== user.userId).map(([id]) => id).sort()
-      assert.deepEqual([...(seen.get(user.deviceId) ?? [])].sort(), expected, 'Per-device delivered set differs from targets')
-    }
+    verifyWindow()
     const final = await request(server, '/v1/admin/status', adminToken)
     assert.equal(final.queue.rows, 0)
     assert.equal(final.queue.payloadBytes, 0)
     assert.equal(final.queue.deviceObligations, 0)
+    assert.equal(final.runtime.outbound.bytes, 0)
+    assert.equal(final.runtime.outbound.active, 0)
     inspectDatabase(db => assert.equal(db.prepare('PRAGMA quick_check').get().quick_check, 'ok'))
     latencies.sort((left, right) => left - right)
-    console.log(JSON.stringify({ loadPassed: true, rounds: loadRounds, messages: expectedMessages.size, deviceDeliveries: [...seen.values()].reduce((n, ids) => n + ids.size, 0), attachmentMessages, peakQueueBytes, elapsedMs: Math.round(performance.now() - started), sendP95Ms: Math.round(latencies[Math.ceil(latencies.length * 0.95) - 1]), queueRowsAfterDrain: final.queue.rows }))
+    console.log(JSON.stringify({ loadPassed: true, soakSeconds, rounds, messages: totalMessages, deviceDeliveries: totalDeliveries, attachmentMessages, peakQueueBytes, elapsedMs: Math.round(performance.now() - started), sendP95Ms: Math.round(latencies[Math.ceil(latencies.length * 0.95) - 1]), queueRowsAfterDrain: final.queue.rows, responseBytesAfterDrain: final.runtime.outbound.bytes, firstRssBytes: firstRss, lastRssBytes: lastRss, peakRssBytes: peakRss }))
   }
 
   if (process.platform === 'win32') {
@@ -443,6 +516,7 @@ try {
   assertPurged([group.messageId, direct.messageId], [marker, attachment.data])
   console.log(`Central operations verification passed (${releaseDirectory ? 'standalone release' : 'workspace source'}).`)
 } finally {
+  for (const socket of slowSockets) socket.destroy()
   for (const state of children) {
     try { await stop(state) } catch (error) { cleanupErrors.push(error) }
   }
