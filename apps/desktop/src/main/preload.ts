@@ -9,6 +9,15 @@ interface HostPingResult {
 }
 
 const api = {
+  getDesktopSettings:()=>ipcRenderer.invoke('app:desktop-settings'),
+  configureDesktop:(value:{notifications?:boolean;preview?:boolean;sound?:boolean;closeToTray?:boolean})=>ipcRenderer.invoke('app:desktop-configure',value),
+  testNotification:():Promise<void>=>ipcRenderer.invoke('app:notification-test'),
+  hideToTray:():Promise<void>=>ipcRenderer.invoke('app:hide-to-tray'),
+  quitApp:():Promise<void>=>ipcRenderer.invoke('app:quit'),
+  getPendingNavigation:()=>ipcRenderer.invoke('app:pending-navigation'),
+  navigationApplied:(id:string):Promise<void>=>ipcRenderer.invoke('app:navigation-applied',id),
+  onOpenConversation:(listener:(value:{id:string;conversationId:string})=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:{id:string;conversationId:string})=>listener(value);ipcRenderer.on('app:open-conversation',handler);return()=>ipcRenderer.removeListener('app:open-conversation',handler)},
+  onDesktopSettings:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('app:desktop-changed',handler);return()=>ipcRenderer.removeListener('app:desktop-changed',handler)},
   getIdentityProfiles:()=>ipcRenderer.invoke('identity:profiles'),
   backupIdentity:(password:string):Promise<boolean>=>ipcRenderer.invoke('identity:backup',password),
   restoreIdentity:(password:string):Promise<{id:string}|null>=>ipcRenderer.invoke('identity:restore',password),

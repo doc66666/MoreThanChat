@@ -91,6 +91,7 @@ import { MessageAttachment } from './MessageAttachment'
 import { UiSlot } from './UiSlot'
 import { MessageMarkdown } from './MessageMarkdown'
 import { AppearancePicker } from './AppearancePicker'
+import { DesktopSettings } from './DesktopSettings'
 import { setThemePreference, useAppearance } from './theme'
 import { useChatDraft, clearRetractedDraftQuotes } from './chat-drafts'
 import { useChatReading } from './use-chat-reading'
@@ -164,6 +165,30 @@ export function App() {
   hostStatusRef.current = hostStatus
   const stateRef = useRef(state)
   stateRef.current = state
+  const [navigation,setNavigation]=useState<{id:string;conversationId:string}|null>(null)
+  useEffect(()=>{
+    let changed=false,live=true
+    const stop=window.moreThanChat.onOpenConversation(value=>{changed=true;if(live)setNavigation(value)})
+    void window.moreThanChat.getPendingNavigation().then(value=>{if(live&&!changed)setNavigation(value)}).catch(()=>undefined)
+    return()=>{live=false;stop()}
+  },[])
+  useEffect(()=>{
+    if(!navigation||!state)return
+    const target=state.conversations.find(c=>c.id===navigation.conversationId&&!c.unavailable)
+    if(target&&state.activeConversationId!==target.id){
+      selectConversation(target.id)
+      setShowSettings(false);setShowServer(false);setShowPlugins(false);setShowMessageSearch(false);setShowNewChat(false)
+      setForwardDialog(null);setRetractConfirm(null)
+      return
+    }
+    if(target){
+      setShowSettings(false);setShowServer(false);setShowPlugins(false);setShowMessageSearch(false);setShowNewChat(false)
+      setForwardDialog(null);setRetractConfirm(null)
+      historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false)
+    }
+    void window.moreThanChat.navigationApplied(navigation.id).catch(()=>undefined)
+    setNavigation(null)
+  },[navigation,state])
   const saveTimerRef = useRef<number | undefined>(undefined)
   useLayoutEffect(()=>{
     if(!forwardDialog&&!retractConfirm)return
@@ -2217,6 +2242,7 @@ function ModelSettingsPanel({
           </button>
         </div>
         <AppearancePicker />
+        <DesktopSettings />
         <button
           type="button"
           className="secondary-button"

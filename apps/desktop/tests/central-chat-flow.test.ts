@@ -25,6 +25,9 @@ describe('human chat reliability',()=>{
       await until(()=>Boolean(aStore.load()?.conversations.some(c=>c.targetId===b.identity.userId)))
       const conversation=String(aStore.load()!.conversations.find(c=>c.targetId===b.identity.userId)!.id),id=randomUUID(),save=bStore.save.bind(bStore)
       let blocked=true,failures=0
+      const notices=vi.fn(notice=>{expect(bStore.message(notice.messageId)?.text).toBe('persist-before-ack-body')})
+      b.onIncomingMessage(notices)
+      b.onIncomingMessage(()=>{throw new Error('Injected OS notification failure')})
       vi.spyOn(bStore,'save').mockImplementation((...args)=>{
         const candidate=args[0] as {messages:Record<string,{text:string}[]>}
         if(blocked&&Object.values(candidate.messages).flat().some(m=>m.text==='persist-before-ack-body')){failures++;throw new Error('Injected full disk')}
@@ -33,11 +36,13 @@ describe('human chat reliability',()=>{
       await a.send({conversationId:conversation,clientMessageId:id,text:'persist-before-ack-body'})
       await until(()=>failures>0)
       expect(bStore.messageByClient(app.serverId,a.identity.userId,id)).toBeUndefined()
+      expect(notices).not.toHaveBeenCalled()
       expect(app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE recipient=? AND json_extract(payload,'$.message.clientMessageId')=?").get(b.identity.userId,id).n).toBe(1)
       blocked=false
       await until(()=>Boolean(bStore.messageByClient(app.serverId,a.identity.userId,id)))
       await until(()=>app.db.prepare("SELECT COUNT(*) AS n FROM queue WHERE recipient=? AND json_extract(payload,'$.message.clientMessageId')=?").get(b.identity.userId,id).n===0)
       expect(bStore.searchMessages('persist-before-ack-body')).toHaveLength(1)
+      expect(notices).toHaveBeenCalledOnce()
     }finally{vi.restoreAllMocks();await a.disconnect(false);await b.disconnect(false);await app.close();aStore.close();bStore.close();await rm(root,{recursive:true,force:true})}
   },15000)
   it('drains and deduplicates an old queued message outside the initial history page',async()=>{

@@ -298,6 +298,7 @@ button { color: inherit; }
 .drawer-backdrop, .modal-backdrop { position: fixed; inset: 38px 0 0; z-index: 30; background: var(--backdrop); backdrop-filter: blur(2px); }
 .plugin-drawer { margin-left: auto; width: min(420px, 100%); height: 100%; padding: 26px; overflow-y: auto; background: var(--surface); box-shadow: -15px 0 40px var(--shadow-color); }
 .settings-drawer { display: flex; flex-direction: column; gap: 12px; }
+.settings-drawer > * { flex-shrink: 0; }
 .settings-note { margin: 8px 0 4px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
 .settings-field { display: grid; gap: 6px; }
 .settings-field span { font-size: 11px; font-weight: 700; }
@@ -590,3 +591,11 @@ svg { stroke-width: 1.7; }
 .danger-confirm p { font-size: 12px; line-height: 1.6; margin-top: 0; }
 .danger-confirm small { color: var(--text-secondary); display: block; line-height: 1.6; }
 .danger-confirm > div { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.desktop-settings { margin-block: 24px; }
+.desktop-option { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.desktop-option span { display: grid; gap: 5px; }
+.desktop-option strong { font-size: 13px; font-weight: 600; }
+.desktop-option small { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.desktop-option input[type=checkbox] { width: 17px; height: 17px; flex: 0 0 17px; accent-color: var(--accent); cursor: pointer; }
+.desktop-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.desktop-actions button { display: inline-flex; align-items: center; gap: 6px; }

@@ -127,6 +127,10 @@ export class ChatStore {
   load(): Snapshot | null {
     return this.#loadProjection(false)
   }
+  conversation(id: string): RecordValue | undefined {
+    const row=this.#db.prepare('SELECT payload FROM conversations WHERE id=?').get(id)
+    return row?JSON.parse(String(row.payload)) as RecordValue:undefined
+  }
 
   loadView(): (Snapshot & { history: Record<string, Omit<MessagePage, 'messages'>> }) | null {
     return this.#loadProjection(true) as ReturnType<ChatStore['loadView']>

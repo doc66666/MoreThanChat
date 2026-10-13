@@ -57,10 +57,21 @@ export interface ModelStreamRef {
   assistantMessageId: string
   generation: number
 }
+export interface DesktopPreferences {notifications:boolean;preview:boolean;sound:boolean;closeToTray:boolean}
+export interface DesktopSettings {preferences:DesktopPreferences;trayAvailable:boolean;notificationsSupported:boolean;error:string|null}
 
 declare global {
   interface Window {
     moreThanChat: {
+      getDesktopSettings():Promise<DesktopSettings>
+      configureDesktop(value:Partial<DesktopPreferences>):Promise<DesktopSettings>
+      testNotification():Promise<void>
+      hideToTray():Promise<void>
+      quitApp():Promise<void>
+      getPendingNavigation():Promise<{id:string;conversationId:string}|null>
+      navigationApplied(id:string):Promise<void>
+      onOpenConversation(listener:(value:{id:string;conversationId:string})=>void):()=>void
+      onDesktopSettings(listener:(value:DesktopSettings)=>void):()=>void
       getIdentityProfiles():Promise<{current:string;profiles:{id:string;userId:string}[]}>
       backupIdentity(password:string):Promise<boolean>
       restoreIdentity(password:string):Promise<{id:string}|null>

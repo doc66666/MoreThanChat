@@ -20,6 +20,7 @@ import { AttachmentStore } from './attachments'
 import { ChatStore } from './chat-store'
 import { loadDeviceId } from './device-store'
 import { hostname } from 'node:os'
+import type { IncomingNotice } from './chat-notifications'
 
 export const DEFAULT_CENTRAL_ADDRESS =
   process.env.MTC_DEFAULT_CENTRAL_URL ?? 'http://localhost:8787'
@@ -72,6 +73,7 @@ export class CentralClient {
   #settingsWrites: Promise<void> = Promise.resolve()
   #listeners = new Set<(snapshot: ServerSnapshot) => void>()
   #chatListeners = new Set<(state: unknown) => void>()
+  #incomingListeners = new Set<(notice: IncomingNotice) => void>()
   #pluginListeners = new Set<
     (event: Extract<RelayEvent, { kind: 'plugin' }>) => void
   >()
@@ -121,6 +123,7 @@ export class CentralClient {
   snapshot(): ServerSnapshot {
     return structuredClone(this.#snapshot)
   }
+  get serverId(): string | null { return this.#snapshot.serverId }
   async devices(): Promise<{id:string;name:string;createdAt:number;lastSeen:number;current:boolean}[]> {
     if(!this.#supportsDevices||!this.#token)throw new Error('请连接支持多设备的新版中心服务器')
     const result=await this.#request('devices')
@@ -138,6 +141,10 @@ export class CentralClient {
   onChat(listener: (state: unknown) => void): () => void {
     this.#chatListeners.add(listener)
     return () => this.#chatListeners.delete(listener)
+  }
+  onIncomingMessage(listener: (notice: IncomingNotice) => void): () => void {
+    this.#incomingListeners.add(listener)
+    return () => this.#incomingListeners.delete(listener)
   }
   onPlugin(
     listener: (event: Extract<RelayEvent, { kind: 'plugin' }>) => void,
@@ -579,6 +586,9 @@ export class CentralClient {
     if(message.senderId!==this.identity.userId)conversation.unread=reading?0:Number(conversation.unread)+1
     this.store.save(state,undefined,{authoritative:true,...(reading&&this.#supportsReceipts?{readMessages:[{serverId,messageId:message.id}]}:{})})
     this.#publishChat()
+    if(message.senderId!==this.identity.userId)for(const listener of this.#incomingListeners){
+      try{listener({serverId,conversationId,messageId:message.id})}catch{}
+    }
   }
   #applyRetraction(raw:MessageRetraction):void {
     const notice=parseMessageRetraction(raw),serverId=this.#snapshot.serverId

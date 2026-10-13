@@ -22,6 +22,7 @@ import { ClientIdentity } from './identity-store'
 import { activeProfile, profilePath, listProfiles, restoreProfile, selectProfile } from './identity-profiles'
 import { AttachmentStore } from './attachments'
 import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
+import { DesktopIntegration } from './desktop-integration'
 
 let chatStore: ChatStore | null = null
 let mainWindow: BrowserWindow | null = null
@@ -35,16 +36,34 @@ let attachmentStore: AttachmentStore | null = null
 let centralCleanup: (() => void)[] = []
 let pendingProfile: string | null = null
 let identityBusy = false
-let previousUnread = 0
-function updateUnreadNotice(value: unknown): void {
-  const state=value as {conversations?:{unread?:number;muted?:boolean}[]}|null
-  const count=(state?.conversations??[]).reduce((total,c)=>total+(c.muted?0:Math.max(0,Number(c.unread)||0)),0)
-  if(mainWindow&&!mainWindow.isDestroyed()){
-    mainWindow.setTitle(count ? '('+count+' 条未读) MoreThanChat' : 'MoreThanChat')
-    if(count>previousUnread&&!mainWindow.isFocused())mainWindow.flashFrame(true)
+let desktop: DesktopIntegration | null = null
+let hideRequested = false
+let pendingNavigation: {id:string;conversationId:string} | null = null
+let openingWindow: Promise<void> | null = null
+let desktopReady = false
+let pendingShow = false
+function openChatWindow(conversationId?: string): void {
+  if(quitRequested||quitAfterHostStops)return
+  // A second launch can arrive while identity/store/IPC initialization is still pending.
+  if(!desktopReady){pendingShow=true;return}
+  if(conversationId){
+    const conversation=chatStore?.conversation(conversationId)
+    if(!conversation||conversation.unavailable)return
+    pendingNavigation={id:crypto.randomUUID(),conversationId}
+    centralClient?.setReadingConversation(null)
   }
-  if(process.platform!=='win32')app.setBadgeCount(count)
-  previousUnread=count
+  if(!mainWindow||mainWindow.isDestroyed()){
+    openingWindow ??= createWindow().finally(()=>{openingWindow=null})
+    void openingWindow.catch(()=>dialog.showErrorBox('无法打开窗口','本机数据已保留，请退出后重新启动。'))
+    return
+  }
+  if(pendingNavigation)mainWindow.webContents.send('app:open-conversation',pendingNavigation)
+  if(mainWindow.isMinimized())mainWindow.restore()
+  mainWindow.show();mainWindow.focus()
+}
+function hideChatWindow(): void {
+  if(!desktop?.trayAvailable)throw new Error('系统托盘不可用，窗口保持打开')
+  if(mainWindow&&!mainWindow.isDestroyed()){hideRequested=true;mainWindow.close()}
 }
 
 const systemCipher = {
@@ -65,6 +84,7 @@ if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
 }
 
 if (!app.requestSingleInstanceLock()) app.exit(0)
+if(process.platform==='win32')app.setAppUserModelId('dev.morethanchat.desktop')
 const profileRoot = app.getPath('userData')
 let currentProfile = 'default'
 try {
@@ -74,14 +94,16 @@ try {
   app.exit(1)
 }
 const dataDirectory = profilePath(profileRoot, currentProfile)
-app.on('second-instance', () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.show()
-  mainWindow.focus()
-})
+app.on('second-instance', () => openChatWindow())
 
 function registerIpc(): void {
+  ipcMain.handle('app:desktop-settings',event=>{assertTrustedIpc(event);return desktop?.snapshot()})
+  ipcMain.handle('app:desktop-configure',(event,value:unknown)=>{assertTrustedIpc(event);if(!desktop)throw new Error('设置尚未就绪');return desktop.configure(value)})
+  ipcMain.handle('app:notification-test',event=>{assertTrustedIpc(event);desktop?.testNotification()})
+  ipcMain.handle('app:hide-to-tray',event=>{assertTrustedIpc(event);hideChatWindow()})
+  ipcMain.handle('app:quit',event=>{assertTrustedIpc(event);app.quit()})
+  ipcMain.handle('app:pending-navigation',event=>{assertTrustedIpc(event);return pendingNavigation})
+  ipcMain.handle('app:navigation-applied',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id==='string'&&pendingNavigation?.id===id)pendingNavigation=null})
   ipcMain.handle('identity:profiles', async event => {
     assertTrustedIpc(event)
     return { current: currentProfile, profiles: await listProfiles(profileRoot, systemCipher) }
@@ -136,15 +158,16 @@ function registerIpc(): void {
       await centralClient.removeDevice(id)
     }
   })
-  ipcMain.handle('app:window-focused',event=>{assertTrustedIpc(event);return Boolean(mainWindow?.isFocused())})
+  ipcMain.handle('app:window-focused',event=>{assertTrustedIpc(event);return desktop?.foreground()??false})
   ipcMain.handle('app:focus-window',event=>{
     assertTrustedIpc(event)
-    if(mainWindow&&!mainWindow.isDestroyed()){if(mainWindow.isMinimized())mainWindow.restore();mainWindow.show();mainWindow.focus()}
+    openChatWindow()
   })
   ipcMain.handle('chat:set-reading',(event,id:unknown)=>{
     assertTrustedIpc(event)
     if(id!==null&&(typeof id!=='string'||id.length>200))throw new Error('Invalid conversation')
-    centralClient?.setReadingConversation(mainWindow?.isFocused() && !mainWindow.isMinimized() ? id as string|null : null)
+    centralClient?.setReadingConversation(desktop?.foreground()&&(!pendingNavigation||pendingNavigation.conversationId===id) ? id as string|null : null)
+    desktop?.notifications.reconcile()
   })
   ipcMain.handle('chat:retry-message',(event,id:unknown)=>{
     assertTrustedIpc(event)
@@ -589,12 +612,16 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   })
   mainWindow = window
   window.once('ready-to-show', () => window.show())
   window.on('blur',()=>{centralClient?.setReadingConversation(null);window.webContents.send('app:window-focus-changed',false)})
-  window.on('focus',()=>{window.flashFrame(false);window.webContents.send('app:window-focus-changed',true)})
+  const stopReading=()=>{centralClient?.setReadingConversation(null);window.webContents.send('app:window-focus-changed',false)}
+  window.on('hide',stopReading)
+  window.on('minimize',stopReading)
+  window.on('focus',()=>{window.flashFrame(false);desktop?.notifications.reconcile();window.webContents.send('app:window-focus-changed',true)})
   let allowClose = false
   let flushing = false
   window.on('close', (event) => {
@@ -609,6 +636,12 @@ async function createWindow(): Promise<void> {
     }
     const finish = () => {
       cleanup()
+      if(!quitRequested&&desktop?.trayAvailable&&(hideRequested||desktop.preferences.get().closeToTray)){
+        hideRequested=false;flushing=false
+        if(!window.isDestroyed())window.hide()
+        return
+      }
+      hideRequested=false
       allowClose = true
       if (!window.isDestroyed()) window.close()
     }
@@ -617,6 +650,8 @@ async function createWindow(): Promise<void> {
       flushing = false
       quitRequested = false
       pendingProfile = null
+      hideRequested = false
+      if (!window.isDestroyed()) { window.show(); window.focus() }
     }
     const acknowledged = (event: IpcMainEvent, reply: unknown) => {
       const result = reply as { token?: unknown; ok?: unknown } | null
@@ -638,6 +673,7 @@ async function createWindow(): Promise<void> {
     const timer = setTimeout(() => {
       cleanup()
       if (window.isDestroyed()) return
+      window.show()
       void dialog
         .showMessageBox(window, {
           type: 'warning',
@@ -647,7 +683,7 @@ async function createWindow(): Promise<void> {
           defaultId: 0,
           cancelId: 0,
         })
-        .then((result) => (result.response === 1 ? finish() : stay()))
+        .then((result) => { if(result.response===1){quitRequested=true;finish()}else stay() })
     }, 2500)
     ipcMain.on('chat:state:flushed', acknowledged)
     window.webContents.send('chat:state:flush', token)
@@ -696,6 +732,7 @@ async function createWindow(): Promise<void> {
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
   })
+  desktop?.refresh()
 
   const screenshotPath = process.env.MTC_SCREENSHOT_PATH
   if (screenshotPath) {
@@ -715,6 +752,7 @@ app
   .whenReady()
   .then(async () => {
     chatStore = await ChatStore.open(dataDirectory)
+    desktop = new DesktopIntegration(dataDirectory,{window:()=>mainWindow,store:()=>chatStore,central:()=>centralClient,open:openChatWindow,hide:hideChatWindow})
     attachmentStore = new AttachmentStore(
       path.join(dataDirectory, 'attachments'),
     )
@@ -740,10 +778,9 @@ app
           mainWindow.webContents.send(channel, value)
       }
       centralCleanup = [
-        centralClient.subscribe((snapshot) =>
-          broadcast('central:changed', snapshot),
-        ),
-        centralClient.onChat((state) => {updateUnreadNotice(state);broadcast('central:chat', state)}),
+        centralClient.subscribe((snapshot) => {desktop?.notifications.reconcile();broadcast('central:changed', snapshot)}),
+        centralClient.onChat((state) => {desktop?.update(state);broadcast('central:chat', state)}),
+        centralClient.onIncomingMessage(notice=>desktop?.incoming(notice)),
         centralClient.onPlugin((event) => broadcast('central:plugin', event)),
       ]
     } catch {
@@ -754,10 +791,12 @@ app
     registerIpc()
     startHostSupervisor()
     await createWindow()
+    await desktop.initialize()
+    desktop.publish()
+    desktopReady = true
+    if(pendingShow){pendingShow=false;openChatWindow()}
     void centralClient?.restore()
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) void createWindow()
-    })
+    app.on('activate', () => openChatWindow())
   })
   .catch((error) => {
     console.error('[main] Failed to start:', error)
@@ -773,6 +812,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  desktop?.dispose()
   chatStore?.close()
   chatStore = null
 })
@@ -792,7 +832,8 @@ app.on('before-quit', (event) => {
   hostStatusCleanup = null
   hostEventCleanup?.()
   hostEventCleanup = null
-  void Promise.all([hostSupervisor.stop(), centralClient?.disconnect(false)])
+  desktop?.dispose()
+  void Promise.all([hostSupervisor.stop(), centralClient?.disconnect(false),desktop?.preferences.flush()])
     .catch((error) => {
       console.error('[pc-host] Failed to stop cleanly:', error)
     })

@@ -65,6 +65,9 @@ jobs:
       - name: Verify light and dark appearance, persistence and responsive layout
         if: runner.os == 'Windows'
         run: node scripts/verify-appearance-ui.mjs
+      - name: Verify native background delivery and notification navigation
+        if: runner.os == 'Windows'
+        run: node scripts/verify-background-ui.mjs
       - name: Verify packaged chat and plugin workflow
         if: runner.os == 'Windows'
         shell: pwsh
@@ -77,6 +80,8 @@ jobs:
           node scripts/verify-central-ui.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/verify-appearance-ui.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-background-ui.mjs
       - name: Save Windows application directory
         if: success() && runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -96,12 +101,14 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
-      - name: Save desktop verification screenshots
+      - name: Save desktop verification evidence
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-verification-${{ matrix.os }}
-          path: .artifacts/*.png
+          path: |
+            .artifacts/*.png
+            .artifacts/*acceptance*.json
           include-hidden-files: true
           if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
           retention-days: 14
