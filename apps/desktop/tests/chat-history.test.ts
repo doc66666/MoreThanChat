@@ -103,6 +103,8 @@ describe('bounded SQLite history',()=>{
     const dir=await folder(),store=await open(dir),state=history(100)
     store.save(state);store.close()
     const db=new DatabaseSync(path.join(dir,'chat.sqlite'))
+    // Reconstruct the old schema too, not just its version number.
+    db.exec('DROP INDEX plugin_pending_ack; ALTER TABLE plugin_inbox DROP COLUMN acknowledged;')
     db.exec("DROP TRIGGER message_search_insert;DROP TRIGGER message_search_delete;DROP TRIGGER message_search_update;DROP TABLE message_search;UPDATE conversations SET payload=json_set(payload,'$.archived',1);PRAGMA user_version=3;");db.close()
     const migrated=await open(dir)
     expect(migrated.load()!.conversations[0]!.archived).toBeUndefined()

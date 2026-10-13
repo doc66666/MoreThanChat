@@ -20,6 +20,8 @@ interface Snapshot {
 // This is a per-record safety limit, not a limit on a user's entire history.
 const MAX_RECORD_BYTES = 8 * 1024 * 1024
 const PAGE_BYTES = 512 * 1024
+// Recent plugin transport history, not chat history or authoritative shared state.
+export const PLUGIN_HISTORY_LIMITS = { perPlugin: 1000, total: 10000, bytes: 16 * 1024 * 1024 } as const
 export interface MessagePage {
   messages: RecordValue[]
   before: number | null
@@ -55,7 +57,7 @@ export class ChatStore {
       const version = Number(
         this.#db.prepare('PRAGMA user_version').get()?.user_version,
       )
-      if (version > 5)
+      if (version > 6)
         throw new Error('Chat database belongs to a newer application version.')
       this.#db.exec(`
         BEGIN IMMEDIATE;
@@ -79,12 +81,15 @@ export class ChatStore {
         CREATE TABLE IF NOT EXISTS central_state (server_id TEXT PRIMARY KEY, directory TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS server_origins (server_id TEXT PRIMARY KEY,address TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS plugin_inbox (server_id TEXT NOT NULL,id TEXT NOT NULL,group_id TEXT NOT NULL,plugin_id TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(server_id,id));
+        ${version < 6 ? 'ALTER TABLE plugin_inbox ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0;' : ''}
+        CREATE INDEX IF NOT EXISTS plugin_pending_ack ON plugin_inbox(server_id,acknowledged);
+        CREATE INDEX IF NOT EXISTS plugin_history_scope ON plugin_inbox(server_id,group_id,plugin_id);
         CREATE TABLE IF NOT EXISTS central_outbox (client_id TEXT PRIMARY KEY, server_id TEXT NOT NULL, conversation_id TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS central_outbox_server_time ON central_outbox(server_id,created_at);
         CREATE TABLE IF NOT EXISTS read_outbox (server_id TEXT NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(server_id,message_id));
         ${version<4?"INSERT INTO message_search(rowid,text) SELECT rowid,json_extract(payload,'$.text') FROM messages;":''}
         UPDATE conversations SET payload=json_remove(payload,'$.archived') WHERE json_type(payload,'$.archived') IS NOT NULL;
-        PRAGMA user_version=5;
+        PRAGMA user_version=6;
         COMMIT;
       `)
     } catch (error) {
@@ -523,7 +528,7 @@ export class ChatStore {
   ): boolean {
     this.#assertOpen()
     const result=this.#db
-      .prepare('INSERT OR IGNORE INTO plugin_inbox VALUES (?,?,?,?,?,?)')
+      .prepare('INSERT OR IGNORE INTO plugin_inbox(server_id,id,group_id,plugin_id,payload,created_at) VALUES (?,?,?,?,?,?)')
       .run(
         serverId,
         event.id,
@@ -533,6 +538,41 @@ export class ChatStore {
         Date.now(),
       )
     return Number(result.changes)>0
+  }
+
+  /** Retry receipts after lost responses/restarts, including conservative v5 migration. */
+  pendingPluginAcks(serverId: string): string[] {
+    this.#assertOpen()
+    return this.#db.prepare('SELECT id FROM plugin_inbox WHERE server_id=? AND acknowledged=0 ORDER BY rowid LIMIT 100').all(serverId).map(row => String(row.id))
+  }
+
+  /** Call only after this device's relay ACK succeeds. Never evict uncertain deliveries. */
+  confirmPluginAcks(serverId: string, ids: string[]): void {
+    this.#assertOpen()
+    if (!ids.length) return
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      const mark = this.#db.prepare('UPDATE plugin_inbox SET acknowledged=1 WHERE server_id=? AND id=?')
+      for (const id of ids) mark.run(serverId, id)
+      // rowid records arrival order even when the system clock moves backwards.
+      this.#db.prepare(`DELETE FROM plugin_inbox WHERE rowid IN (
+        SELECT rowid FROM (
+          SELECT rowid,ROW_NUMBER() OVER (PARTITION BY server_id,group_id,plugin_id ORDER BY rowid DESC) AS n
+          FROM plugin_inbox WHERE acknowledged=1
+        ) WHERE n>?
+      )`).run(PLUGIN_HISTORY_LIMITS.perPlugin)
+      this.#db.prepare(`DELETE FROM plugin_inbox WHERE rowid IN (
+        SELECT rowid FROM (
+          SELECT rowid,ROW_NUMBER() OVER (ORDER BY rowid DESC) AS n,
+            SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY rowid DESC ROWS UNBOUNDED PRECEDING) AS bytes
+          FROM plugin_inbox WHERE acknowledged=1
+        ) WHERE n>? OR bytes>?
+      )`).run(PLUGIN_HISTORY_LIMITS.total, PLUGIN_HISTORY_LIMITS.bytes)
+      this.#db.exec('COMMIT')
+    } catch (error) {
+      this.#db.exec('ROLLBACK')
+      throw error
+    }
   }
   outbox(serverId: string): OutboxEntry[] {
     this.#assertOpen()
@@ -588,7 +628,7 @@ export class ChatStore {
     this.#assertOpen()
     return this.#db
       .prepare(
-        'SELECT payload FROM plugin_inbox WHERE server_id=? AND group_id=? AND plugin_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1000',
+        'SELECT payload FROM plugin_inbox WHERE server_id=? AND group_id=? AND plugin_id=? ORDER BY rowid DESC LIMIT 1000',
       )
       .all(serverId, groupId, pluginId)
       .reverse()

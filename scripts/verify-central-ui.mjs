@@ -443,7 +443,7 @@ try {
   )
   await poll(
     a,
-    `document.querySelector('[data-group-plugin="${chain.pack.id}"]').innerText.includes('B 的接龙内容')`,
+    `document.querySelector('[data-group-plugin="${chain.pack.id}"]')?.innerText.includes('B 的接龙内容')`,
   )
   const channelId = 'gplugin_' + crypto.randomUUID()
   await evaluate(

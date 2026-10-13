@@ -362,6 +362,16 @@ export class CentralClient {
   async #loop(epoch: number, signal: AbortSignal): Promise<void> {
     while (!signal.aborted && epoch === this.#epoch) {
       try {
+        const serverId = this.#snapshot.serverId!
+        // A lost ACK response must not retain payloads forever. ACK is idempotent:
+        // replay durable pending receipts before requesting another event batch.
+        const pending = this.store.pendingPluginAcks(serverId)
+        if (pending.length) {
+          await this.#request('ack', 'POST', { ids: pending }, signal)
+          if (epoch !== this.#epoch || signal.aborted) return
+          this.store.confirmPluginAcks(serverId, pending)
+          continue
+        }
         const result = (await this.#request(
           'events',
           'GET',
@@ -374,6 +384,7 @@ export class CentralClient {
         this.#projectDirectory(result.directory)
         const events = result.events.map(parseRelayEvent)
         for (const event of events) {
+          if (epoch !== this.#epoch || signal.aborted) return
           if (event.kind === 'message') await this.#receive(event.message)
           else if (event.kind === 'directory') {
             if(event.read&&this.store.applyDeviceRead(this.#snapshot.serverId!,event.read.messageId,event.read.readAt))this.#publishChat()
@@ -388,7 +399,7 @@ export class CentralClient {
           }
           else if (event.kind === 'plugin') {
             const fresh = this.store.savePluginEvent(
-              this.#snapshot.serverId!,
+              serverId,
               event,
             )
             if (fresh)
@@ -400,13 +411,17 @@ export class CentralClient {
           }
         }
         // Message files and SQLite are committed before the delivery receipt.
-        if (events.length)
+        if (epoch !== this.#epoch || signal.aborted) return
+        if (events.length) {
           await this.#request(
             'ack',
             'POST',
             { ids: events.map((event) => event.id) },
             signal,
           )
+          if (epoch !== this.#epoch || signal.aborted) return
+          this.store.confirmPluginAcks(serverId, events.filter(event => event.kind === 'plugin').map(event => event.id))
+        }
         this.#snapshot.status = 'connected'
         this.#snapshot.error = null
         this.#emit()
