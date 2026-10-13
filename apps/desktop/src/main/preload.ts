@@ -9,6 +9,14 @@ interface HostPingResult {
 }
 
 const api = {
+  getHistoryTransferStatus:async()=>parseHistoryTransferStatus(await ipcRenderer.invoke('history:status')),
+  onHistoryTransferStatus:(listener:(value:{busy:boolean;stage:string})=>void)=>{
+    const handler=(_event:Electron.IpcRendererEvent,value:unknown)=>listener(parseHistoryTransferStatus(value))
+    ipcRenderer.on('history:status-changed',handler)
+    return()=>ipcRenderer.removeListener('history:status-changed',handler)
+  },
+  exportChatHistory:async(password:string)=>parseHistoryCounts(await ipcRenderer.invoke('history:export',password),['conversations','messages','attachments'] as const),
+  importChatHistory:async(password:string)=>parseHistoryCounts(await ipcRenderer.invoke('history:import',password),['conversationsAdded','messagesAdded','messagesSkipped','retractionsApplied','attachments'] as const),
   getDesktopSettings:()=>ipcRenderer.invoke('app:desktop-settings'),
   configureDesktop:(value:{notifications?:boolean;preview?:boolean;sound?:boolean;closeToTray?:boolean})=>ipcRenderer.invoke('app:desktop-configure',value),
   testNotification:():Promise<void>=>ipcRenderer.invoke('app:notification-test'),
@@ -345,6 +353,21 @@ function redactBridgeText(value: string): string {
 function asRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(message)
   return value as Record<string, unknown>
+}
+
+function parseHistoryTransferStatus(value:unknown):{busy:boolean;stage:string} {
+  const record=asRecord(value,'Invalid history transfer status.')
+  assertExactKeys(record,['busy','stage'],'Invalid history transfer status.')
+  if(typeof record.busy!=='boolean'||typeof record.stage!=='string'||record.stage.length>200)throw new Error('Invalid history transfer status.')
+  return {busy:record.busy,stage:record.stage}
+}
+
+function parseHistoryCounts<T extends string>(value:unknown,fields:readonly T[]):(Record<T,number>&{cleanupWarning?:true})|null {
+  if(value===null)return null
+  const record=asRecord(value,'Invalid history transfer result.')
+  assertExactKeys(record,record.cleanupWarning===true?[...fields,'cleanupWarning']:fields,'Invalid history transfer result.')
+  for(const field of fields)if(!Number.isSafeInteger(record[field])||Number(record[field])<0)throw new Error('Invalid history transfer result.')
+  return record as Record<T,number>
 }
 
 function assertExactKeys(value: Record<string, unknown>, keys: readonly string[], message: string): void {

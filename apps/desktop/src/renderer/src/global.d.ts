@@ -59,10 +59,17 @@ export interface ModelStreamRef {
 }
 export interface DesktopPreferences {notifications:boolean;preview:boolean;sound:boolean;closeToTray:boolean}
 export interface DesktopSettings {preferences:DesktopPreferences;trayAvailable:boolean;notificationsSupported:boolean;error:string|null}
+export interface HistoryTransferStatus {busy:boolean;stage:string}
+export interface HistoryExportResult {conversations:number;messages:number;attachments:number;cleanupWarning?:true}
+export interface HistoryImportResult {conversationsAdded:number;messagesAdded:number;messagesSkipped:number;retractionsApplied:number;attachments:number;cleanupWarning?:true}
 
 declare global {
   interface Window {
     moreThanChat: {
+      getHistoryTransferStatus():Promise<HistoryTransferStatus>
+      onHistoryTransferStatus(listener:(value:HistoryTransferStatus)=>void):()=>void
+      exportChatHistory(password:string):Promise<HistoryExportResult|null>
+      importChatHistory(password:string):Promise<HistoryImportResult|null>
       getDesktopSettings():Promise<DesktopSettings>
       configureDesktop(value:Partial<DesktopPreferences>):Promise<DesktopSettings>
       testNotification():Promise<void>

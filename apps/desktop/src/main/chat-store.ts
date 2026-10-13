@@ -1,13 +1,15 @@
-import { copyFile, mkdir, readFile, unlink } from 'node:fs/promises'
+import { copyFile, mkdir, open, readFile, unlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { backup, DatabaseSync } from 'node:sqlite'
 import { redactSecretFields } from './secret-redaction'
 import { parseModelTokenUsage } from '@more-than-chat/protocol'
-import { parseMessageReference, parseMessageRetraction, type MessageRetraction } from '@more-than-chat/central-protocol'
+import { parseMessageReference, parseMessageRetraction, validGroupId, validUid, type MessageRetraction } from '@more-than-chat/central-protocol'
 
 type RecordValue = Record<string, unknown>
+export type HistoryRecord = { type: 'conversation'; value: RecordValue } | { type: 'message'; value: RecordValue } | { type: 'retraction'; serverId: string; value: MessageRetraction }
+export interface HistoryMergeResult { conversationsAdded: number; messagesAdded: number; messagesSkipped: number; retractionsApplied: number }
 interface Snapshot {
   version: 1
   profile: RecordValue
@@ -38,8 +40,13 @@ interface MainCommit {
 export class ChatStore {
   readonly #db: DatabaseSync
   #closed = false
+  readonly #historyStaging: boolean
+  readonly #stagedConversations = new Set<string>()
+  readonly #stagedMessages = new Set<string>()
+  readonly #stagedRetractions = new Set<string>()
 
-  private constructor(file: string) {
+  private constructor(file: string, historyStaging = false) {
+    this.#historyStaging = historyStaging
     this.#db = new DatabaseSync(file)
     try {
       this.#db.exec(
@@ -60,6 +67,7 @@ export class ChatStore {
         CREATE INDEX IF NOT EXISTS message_sender_client ON messages(json_extract(payload,'$.serverId'),json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
         CREATE INDEX IF NOT EXISTS message_quote ON messages(json_extract(payload,'$.serverId'),json_extract(payload,'$.quote.messageId'));
         CREATE TABLE IF NOT EXISTS message_retractions(server_id TEXT NOT NULL,message_id TEXT NOT NULL,sender_id TEXT NOT NULL,client_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(server_id,message_id));
+        CREATE INDEX IF NOT EXISTS retraction_message_id ON message_retractions(message_id);
         CREATE INDEX IF NOT EXISTS retraction_client ON message_retractions(server_id,sender_id,client_id);
         CREATE INDEX IF NOT EXISTS message_unread ON messages(conversation_id,position) WHERE json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL;
         CREATE INDEX IF NOT EXISTS message_interrupted ON messages(json_extract(payload,'$.status')) WHERE json_extract(payload,'$.serverId') IS NULL AND json_extract(payload,'$.status') IN ('streaming','sending');
@@ -85,11 +93,14 @@ export class ChatStore {
     }
   }
 
-  static async open(directory: string): Promise<ChatStore> {
+  static async open(directory: string, options: { historyStaging?: boolean } = {}): Promise<ChatStore> {
     await mkdir(directory, { recursive: true, mode: 0o700 })
-    const store = new ChatStore(path.join(directory, 'chat.sqlite'))
+    const file = path.join(directory, 'chat.sqlite')
+    // Staging must never accidentally open or modify an existing real profile.
+    if (options.historyStaging) await (await open(file, 'wx', 0o600)).close()
+    const store = new ChatStore(file, options.historyStaging)
     try {
-      if (!store.#db.prepare("SELECT 1 FROM chat_meta WHERE key='state'").get()) {
+      if (!options.historyStaging && !store.#db.prepare("SELECT 1 FROM chat_meta WHERE key='state'").get()) {
         const legacy = path.join(directory, 'chat-state.json')
         let raw: string | undefined
         try {
@@ -127,9 +138,164 @@ export class ChatStore {
   load(): Snapshot | null {
     return this.#loadProjection(false)
   }
+
+  /** An online SQLite backup is coherent even when incoming messages keep committing. */
+  async createHistorySnapshot(targetFile: string): Promise<{ records(): Iterable<HistoryRecord>; close(): void }> {
+    this.#assertOpen()
+    // backup() overwrites its destination; reserve a new file first, in the caller's private directory.
+    await (await open(targetFile, 'wx', 0o600)).close()
+    await backup(this.#db, targetFile)
+    const db = new DatabaseSync(targetFile, { readOnly: true })
+    let closed = false
+    return {
+      *records() {
+        if (closed) throw new Error('History snapshot is closed.')
+        for (const row of db.prepare('SELECT payload FROM conversations ORDER BY position,rowid').iterate())
+          yield checkedHistoryRecord({ type: 'conversation', value: historyConversation(JSON.parse(String(row.payload))) })
+        for (const row of db.prepare('SELECT server_id,payload FROM message_retractions ORDER BY rowid').iterate())
+          yield checkedHistoryRecord({ type: 'retraction', serverId: id(row.server_id), value: parseMessageRetraction(JSON.parse(String(row.payload))) })
+        for (const row of db.prepare('SELECT m.payload,c.payload AS conversation FROM messages m JOIN conversations c ON c.id=m.conversation_id ORDER BY c.position,m.position,m.rowid').iterate())
+          yield checkedHistoryRecord({ type: 'message', value: historyMessage(JSON.parse(String(row.payload)), historyConversation(JSON.parse(String(row.conversation)))) })
+      },
+      close() { if (!closed) { closed = true; db.close() } },
+    }
+  }
+
+  /** Validate untrusted archive rows into a separate, new database; never into the live store. */
+  stageHistoryRecord(value: unknown): void {
+    this.#assertOpen()
+    if (!this.#historyStaging) throw new Error('History records require a new staging store.')
+    checkHistoryValue(value)
+    const record = object(value)
+    if (record.type === 'conversation') {
+      const conversation = historyConversation(record.value), key = String(conversation.id)
+      if (this.#stagedConversations.has(key)) throw new Error('Duplicate history conversation.')
+      const position = Number(this.#db.prepare('SELECT COALESCE(MAX(position),-1)+1 AS n FROM conversations').get()!.n)
+      this.#db.prepare('INSERT INTO conversations VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(key, position, JSON.stringify(conversation))
+      this.#stagedConversations.add(key)
+    } else if (record.type === 'message') {
+      const raw = object(record.value), conversationId = id(raw.conversationId)
+      if (!this.#stagedConversations.has(conversationId)) throw new Error('History conversation must precede its messages.')
+      const message = historyMessage(raw, this.conversation(conversationId)!), key = String(message.id)
+      if (this.#stagedMessages.has(key)) throw new Error('Duplicate history message.')
+      this.#assertRetractionNamespace(message.serverId, key)
+      if (typeof message.serverId === 'string') {
+        const duplicate = this.messageByClient(message.serverId, String(message.senderId), String(message.clientMessageId))
+        if (duplicate) throw new Error('Duplicate history client message.')
+        const tombstone = this.retraction(message.serverId, key, String(message.senderId), String(message.clientMessageId))
+        if (tombstone) assertRetractionMessage(message.serverId, tombstone, message)
+        if (message.retractedAt !== undefined && !tombstone) throw new Error('Retracted history is missing its tombstone.')
+      }
+      const position = Number(this.#db.prepare('SELECT COALESCE(MAX(position),-1)+1 AS n FROM messages WHERE conversation_id=?').get(conversationId)!.n)
+      // The temporary seed is not archive content; only explicitly staged IDs may be merged.
+      this.#db.prepare('INSERT INTO messages VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET conversation_id=excluded.conversation_id,position=excluded.position,payload=excluded.payload').run(key, conversationId, position, JSON.stringify(message))
+      this.#stagedMessages.add(key)
+    } else if (record.type === 'retraction') {
+      const serverId = id(record.serverId), notice = parseMessageRetraction(record.value), key = serverId + ':' + notice.messageId
+      const conversationId = serverId + ':' + notice.conversationId
+      if (!this.#stagedConversations.has(conversationId)) throw new Error('Retraction conversation is missing.')
+      assertRetractionConversation(serverId, notice, this.conversation(conversationId)!)
+      this.#assertRetractionNamespace(serverId, notice.messageId)
+      if (this.#stagedRetractions.has(key) || this.retraction(serverId, notice.messageId, notice.senderId, notice.clientMessageId)) throw new Error('Duplicate history retraction.')
+      const original = this.message(notice.messageId) ?? this.messageByClient(serverId, notice.senderId, notice.clientMessageId)
+      if (original) assertRetractionMessage(serverId, notice, original)
+      this.#db.prepare('INSERT INTO message_retractions VALUES (?,?,?,?,?)').run(serverId, notice.messageId, notice.senderId, notice.clientMessageId, JSON.stringify(notice))
+      this.#stagedRetractions.add(key)
+    } else throw new Error('Unsupported history record.')
+  }
+
+  /** Add historical facts atomically, never replaying sends, receipts, memberships or settings. */
+  mergeHistory(source: ChatStore): HistoryMergeResult {
+    this.#assertOpen(); source.#assertOpen()
+    if (source === this || !source.#historyStaging || this.#historyStaging) throw new Error('Invalid history staging store.')
+    const result: HistoryMergeResult = { conversationsAdded: 0, messagesAdded: 0, messagesSkipped: 0, retractionsApplied: 0 }
+    const reordered = new Set<string>(), now = Date.now()
+    this.#db.exec('BEGIN IMMEDIATE')
+    try {
+      let conversationPosition = Number(this.#db.prepare('SELECT COALESCE(MAX(position),-1)+1 AS n FROM conversations').get()!.n)
+      for (const row of source.#db.prepare('SELECT id,payload FROM conversations ORDER BY position,rowid').iterate()) {
+        if (!source.#stagedConversations.has(String(row.id))) continue
+        const conversation = historyConversation(JSON.parse(String(row.payload))), existing = this.conversation(String(row.id))
+        if (existing) assertConversationIdentity(existing, conversation)
+        else {
+          conversation.unread = 0
+          if (conversation.serverId) conversation.unavailable = true
+          this.#db.prepare('INSERT INTO conversations VALUES (?,?,?)').run(String(row.id), conversationPosition++, JSON.stringify(conversation))
+          result.conversationsAdded++
+        }
+      }
+      // Tombstones precede bodies, and also redact original messages already on this device.
+      for (const row of source.#db.prepare('SELECT server_id,payload FROM message_retractions ORDER BY rowid').iterate()) {
+        const serverId = String(row.server_id), notice = parseMessageRetraction(JSON.parse(String(row.payload)))
+        assertRetractionConversation(serverId, notice, this.conversation(serverId + ':' + notice.conversationId)!)
+        this.#assertRetractionNamespace(serverId, notice.messageId)
+        const byId = this.message(notice.messageId), byClient = this.messageByClient(serverId, notice.senderId, notice.clientMessageId)
+        for (const original of [byId, byClient]) if (original) assertRetractionMessage(serverId, notice, original)
+        const old = this.retraction(serverId, notice.messageId, notice.senderId, notice.clientMessageId)
+        if (old) assertRetractionIdentity(old, notice)
+        else {
+          this.#db.prepare('INSERT INTO message_retractions VALUES (?,?,?,?,?)').run(serverId, notice.messageId, notice.senderId, notice.clientMessageId, JSON.stringify(notice))
+          result.retractionsApplied++
+        }
+        const effective = old ?? notice, original = byId ?? byClient
+        if (original) {
+          const oldId = String(original.id), unread = original.role === 'peer' && original.readAt === undefined && original.retractedAt === undefined
+          redactRetractedMessage(original, effective)
+          this.#db.prepare('UPDATE messages SET id=?,payload=? WHERE id=?').run(effective.messageId, JSON.stringify(original), oldId)
+          if (unread) this.#db.prepare("UPDATE conversations SET payload=json_set(payload,'$.unread',max(0,COALESCE(json_extract(payload,'$.unread'),0)-1)) WHERE id=?").run(String(original.conversationId))
+          if (original.role === 'self') this.#db.prepare('DELETE FROM central_outbox WHERE server_id=? AND client_id=?').run(serverId, effective.clientMessageId)
+        }
+        this.#db.prepare('DELETE FROM read_outbox WHERE server_id=? AND message_id=?').run(serverId, effective.messageId)
+        this.#db.prepare("DELETE FROM chat_events WHERE ((entity_id=? OR entity_id=?) AND json_extract(payload,'$.serverId')=?) OR entity_id IN (SELECT id FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.quote.messageId')=?) OR entity_id IN (SELECT json_extract(payload,'$.clientMessageId') FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.quote.messageId')=?)").run(effective.messageId, effective.clientMessageId, serverId, serverId, effective.messageId, serverId, effective.messageId)
+        this.#db.prepare("UPDATE messages SET payload=json_remove(json_set(payload,'$.quote.text','引用的消息已撤回','$.quote.retracted',json('true')),'$.quote.attachmentName') WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.quote.messageId')=?").run(serverId, effective.messageId)
+      }
+      for (const row of source.#db.prepare('SELECT id,conversation_id,payload FROM messages ORDER BY conversation_id,position,rowid').iterate()) {
+        if (!source.#stagedMessages.has(String(row.id))) continue
+        const conversationId = String(row.conversation_id)
+        if (!source.#stagedConversations.has(conversationId)) throw new Error('History conversation is missing.')
+        const message = historyMessage(JSON.parse(String(row.payload)), this.conversation(conversationId)!)
+        this.#assertRetractionNamespace(message.serverId, String(message.id))
+        const byId = this.message(String(message.id)), byClient = typeof message.serverId === 'string' ? this.messageByClient(message.serverId, String(message.senderId), String(message.clientMessageId)) : undefined
+        for (const existing of [byId, byClient]) if (existing) assertMessageIdentity(existing, message)
+        if (byId || byClient) { result.messagesSkipped++; continue }
+        if (typeof message.serverId === 'string') {
+          const tombstone = this.retraction(message.serverId, String(message.id), String(message.senderId), String(message.clientMessageId))
+          if (tombstone) { assertRetractionMessage(message.serverId, tombstone, message); redactRetractedMessage(message, tombstone) }
+          if (message.quote) {
+            const quote = message.quote as RecordValue
+            if (this.retraction(message.serverId, String(quote.messageId))) { message.quote = { ...quote, text: '引用的消息已撤回', retracted: true }; delete (message.quote as RecordValue).attachmentName }
+          }
+        }
+        if (message.role === 'peer' && message.readAt === undefined) message.readAt = now
+        if (message.status === 'queued' || message.status === 'sending') message.status = 'failed'
+        if (message.status === 'streaming') message.status = 'cancelled'
+        const position = Number(this.#db.prepare('SELECT COALESCE(MAX(position),-1)+1 AS n FROM messages WHERE conversation_id=?').get(conversationId)!.n)
+        this.#db.prepare('INSERT INTO messages VALUES (?,?,?,?)').run(String(message.id), conversationId, position, JSON.stringify(message))
+        reordered.add(conversationId); result.messagesAdded++
+      }
+      // Merging older pages must not make them the newest timeline page. Callers clear UI cursors.
+      const setPosition = this.#db.prepare('UPDATE messages SET position=? WHERE id=?')
+      for (const conversationId of reordered) {
+        let position = 0
+        for (const row of this.#db.prepare("SELECT id FROM messages WHERE conversation_id=? ORDER BY json_extract(payload,'$.createdAt'),position,rowid").iterate(conversationId)) setPosition.run(position++, String(row.id))
+      }
+      this.#db.exec('COMMIT')
+    } catch (error) { this.#db.exec('ROLLBACK'); throw error }
+    if (result.retractionsApplied) { try { this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE)') } catch {} }
+    return result
+  }
+  #assertRetractionNamespace(serverId: unknown, messageId: string): void {
+    // Message IDs are globally unique in the projection, even when only a tombstone remains.
+    if (this.#db.prepare('SELECT 1 FROM message_retractions WHERE message_id=? AND server_id IS NOT ? LIMIT 1').get(messageId, typeof serverId === 'string' ? serverId : null))
+      throw new Error('History retraction server identity conflict.')
+  }
   conversation(id: string): RecordValue | undefined {
     const row=this.#db.prepare('SELECT payload FROM conversations WHERE id=?').get(id)
     return row?JSON.parse(String(row.payload)) as RecordValue:undefined
+  }
+  hasActiveLocalTurns(): boolean {
+    this.#assertOpen()
+    return Boolean(this.#db.prepare("SELECT 1 FROM messages WHERE json_extract(payload,'$.serverId') IS NULL AND json_extract(payload,'$.status') IN ('streaming','sending') LIMIT 1").get())
   }
 
   loadView(): (Snapshot & { history: Record<string, Omit<MessagePage, 'messages'>> }) | null {
@@ -447,6 +613,80 @@ function object(value: unknown): RecordValue {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid chat snapshot.')
   return value as RecordValue
+}
+const HISTORY_CONVERSATION_FIELDS = ['id','title','subtitle','avatar','accent','kind','unread','pinned','updatedAt','transportId','serverId','targetId','remoteId','muted','unavailable']
+const HISTORY_MESSAGE_FIELDS = ['id','clientMessageId','conversationId','senderId','senderName','senderAvatar','role','type','text','createdAt','status','authorNotes','errorMessage','replyToId','retryOfId','supersededById','usage','serverId','receipt','readAt','attachment','quote','forwarded','actionsSupported','retractedAt']
+function pickHistory(value: unknown, fields: string[]): RecordValue {
+  const source = object(value), result: RecordValue = {}
+  for (const key of fields) if (Object.hasOwn(source, key)) result[key] = source[key]
+  return result
+}
+function checkHistoryValue(value: unknown): void {
+  const pending: { value: unknown; depth: number }[] = [{ value, depth: 0 }]
+  while (pending.length) {
+    const { value: item, depth } = pending.pop()!
+    if (depth > 32) throw new Error('History record is too deeply nested.')
+    if (item && typeof item === 'object') {
+      if (!Array.isArray(item) && ![Object.prototype, null].includes(Object.getPrototypeOf(item))) throw new Error('Invalid history object.')
+      for (const [key, child] of Object.entries(item)) {
+        if (['__proto__','prototype','constructor'].includes(key)) throw new Error('Unsafe history field.')
+        pending.push({ value: child, depth: depth + 1 })
+      }
+    } else if (item !== null && !['string','number','boolean'].includes(typeof item)) throw new Error('Invalid history value.')
+  }
+  if (Buffer.byteLength(JSON.stringify(value)) > MAX_RECORD_BYTES) throw new Error('History record exceeds the per-record storage limit.')
+}
+function checkedHistoryRecord(record: HistoryRecord): HistoryRecord { checkHistoryValue(record); return record }
+function historyConversation(value: unknown): RecordValue {
+  checkHistoryValue(value)
+  const item = pickHistory(value, HISTORY_CONVERSATION_FIELDS)
+  validateSnapshot({ version: 1, profile: { id: 'history', displayName: '', avatar: '' }, activeConversationId: item.id, conversations: [item], messages: {} })
+  if (Number(item.unread) < 0 || !Number.isSafeInteger(item.updatedAt) || Number(item.updatedAt) < 0) throw new Error('Invalid history conversation time.')
+  if (item.serverId !== undefined) {
+    const serverId = id(item.serverId), remoteId = id(item.remoteId)
+    if (item.id !== serverId + ':' + remoteId || item.transportId !== 'builtin.central' || !['direct','group'].includes(String(item.kind)) ||
+      (item.kind === 'group' ? !validGroupId(item.targetId) || remoteId !== item.targetId : !validUid(item.targetId) || !/^dm_[a-f0-9]{64}$/.test(remoteId))) throw new Error('Invalid history server namespace.')
+  } else if (item.targetId !== undefined || item.remoteId !== undefined || item.transportId === 'builtin.central') throw new Error('Missing history server namespace.')
+  return item
+}
+function historyMessage(value: unknown, conversation: RecordValue): RecordValue {
+  checkHistoryValue(value)
+  const item = pickHistory(value, HISTORY_MESSAGE_FIELDS)
+  if (item.serverId !== conversation.serverId) throw new Error('Message server does not match its conversation.')
+  for (const field of ['clientMessageId','senderId']) id(item[field])
+  if (!Number.isSafeInteger(item.createdAt) || Number(item.createdAt) < 0) throw new Error('Invalid history message time.')
+  if (item.serverId && (!validUid(item.senderId) || String(item.clientMessageId).length > 80 || item.role === 'system')) throw new Error('Invalid network message identity.')
+  if (!item.serverId && item.retractedAt !== undefined) throw new Error('Invalid local retraction.')
+  if (item.attachment !== undefined) {
+    const attachment = pickHistory(item.attachment, ['id','name','mime','size','durationMs'])
+    if (typeof attachment.name !== 'string' || attachment.name.length > 200 || typeof attachment.mime !== 'string' || attachment.mime.length > 100 ||
+      (attachment.durationMs !== undefined && (!Number.isFinite(attachment.durationMs) || Number(attachment.durationMs) < 0 || Number(attachment.durationMs) > 60000))) throw new Error('Invalid historical attachment.')
+    item.attachment = attachment
+  }
+  if (item.receipt !== undefined) item.receipt = pickHistory(item.receipt, ['recipientCount','deliveredCount','readCount'])
+  if (Array.isArray(item.authorNotes)) item.authorNotes = item.authorNotes.map(value => {
+    const note = pickHistory(value, ['phase','tool','ok','summary','pendingInstall','draft'])
+    if (note.draft !== null) note.draft = pickHistory(note.draft, ['id','displayName','revision','ok'])
+    return note
+  })
+  validateSnapshot({ version: 1, profile: { id: 'history', displayName: '', avatar: '' }, activeConversationId: conversation.id, conversations: [conversation], messages: { [String(conversation.id)]: [item] } })
+  return item
+}
+function assertConversationIdentity(left: RecordValue, right: RecordValue): void {
+  for (const field of ['id','serverId','remoteId','targetId','kind','transportId']) if (left[field] !== right[field]) throw new Error('History conversation identity conflict.')
+}
+function assertMessageIdentity(left: RecordValue, right: RecordValue): void {
+  for (const field of ['conversationId','serverId','senderId','clientMessageId','role','type']) if (left[field] !== right[field]) throw new Error('History message identity conflict.')
+}
+function assertRetractionConversation(serverId: string, notice: MessageRetraction, conversation: RecordValue): void {
+  if (!conversation || conversation.serverId !== serverId || conversation.remoteId !== notice.conversationId || conversation.kind !== notice.targetKind ||
+    (notice.targetKind === 'group' && conversation.targetId !== notice.targetId)) throw new Error('Retraction conversation identity conflict.')
+}
+function assertRetractionMessage(serverId: string, notice: MessageRetraction, message: RecordValue): void {
+  if (message.serverId !== serverId || message.conversationId !== serverId + ':' + notice.conversationId || message.senderId !== notice.senderId || message.clientMessageId !== notice.clientMessageId) throw new Error('Retraction message identity conflict.')
+}
+function assertRetractionIdentity(left: MessageRetraction, right: MessageRetraction): void {
+  for (const field of ['messageId','senderId','clientMessageId','conversationId','targetKind','targetId'] as const) if (left[field] !== right[field]) throw new Error('Retraction identity conflict.')
 }
 function redactRetractedMessage(message:RecordValue,notice:MessageRetraction):void {
   message.id=notice.messageId;message.createdAt=notice.createdAt;message.text='';message.status='sent';message.retractedAt=notice.retractedAt

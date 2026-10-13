@@ -599,3 +599,14 @@ svg { stroke-width: 1.7; }
 .desktop-option input[type=checkbox] { width: 17px; height: 17px; flex: 0 0 17px; accent-color: var(--accent); cursor: pointer; }
 .desktop-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .desktop-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.history-settings { margin-block: 4px 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+.history-settings .settings-section-heading { flex-wrap: wrap; }
+.history-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.history-transfer-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.history-transfer-panel { display: grid; gap: 12px; margin: 16px 0; padding: 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-muted); }
+.history-transfer-panel h4 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.history-transfer-panel .history-transfer-actions { margin: 0; }
+.history-transfer-panel input[aria-invalid=true] { border-color: var(--danger-border); }
+.history-transfer-progress, .history-transfer-result { margin: 12px 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text-secondary); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.history-transfer-progress small { display: block; color: var(--muted); font-size: 11px; }
+.history-transfer-help { margin-top: 14px; }

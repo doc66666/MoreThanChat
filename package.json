@@ -20,6 +20,7 @@
     "verify:chat-ui": "pnpm build && node scripts/verify-chat-core-ui.mjs",
     "verify:central-ui": "pnpm build && node scripts/verify-central-ui.mjs",
     "verify:background-ui": "pnpm build && node scripts/verify-background-ui.mjs",
+    "verify:history-ui": "pnpm build && node scripts/verify-history-ui.mjs",
     "verify:appearance-ui": "pnpm build && node scripts/verify-appearance-ui.mjs",
     "test:live-ai": "pnpm build:host && node scripts/test-live-ai.mjs",
     "verify:protocol": "pnpm --filter @more-than-chat/protocol build && node scripts/verify-protocol-schema.mjs",

@@ -8,6 +8,7 @@ import {
   interruptStreamingMessages,
   normalizeState,
   mergeCentralProjection,
+  mergeHistoryProjection,
   redactMessageForRetraction,
   planAssistantRetry,
   toModelTranscript,
@@ -17,6 +18,65 @@ import {
 } from '../src/index.js'
 
 describe('model chat updates', () => {
+  it('imports new local conversations and older messages without replacing local settings or selection',()=>{
+    const state=createSeedState(),id=state.activeConversationId,template=state.messages[id]![0]!
+    state.conversations[0]={...state.conversations[0]!,title:'Current title',pinned:true,muted:true}
+    state.messages[id]=[{...template,id:'current',clientMessageId:'current',createdAt:100,text:'current local text'}]
+    const importedId='imported-assistant'
+    const projection:ChatState={...state,activeConversationId:importedId,conversations:[{...state.conversations[0]!,title:'Old title',pinned:false,muted:false},{...state.conversations[0]!,id:importedId,title:'Recovered assistant'}],messages:{
+      [id]:[{...template,id:'older',clientMessageId:'older',createdAt:20,text:'recovered older text'},{...state.messages[id]![0]!,text:'stale snapshot text'}],
+      [importedId]:[{...template,id:'new-history',clientMessageId:'new-history',conversationId:importedId,text:'recovered conversation'}],
+    },history:{[id]:{before:0,after:1,hasOlder:false,hasNewer:false},[importedId]:{before:0,after:0,hasOlder:false,hasNewer:false}}}
+    const merged=mergeHistoryProjection(state,projection)
+    expect(merged.activeConversationId).toBe(id)
+    expect(merged.conversations.find(c=>c.id===id)).toMatchObject({title:'Current title',pinned:true,muted:true})
+    expect(merged.conversations.find(c=>c.id===importedId)?.title).toBe('Recovered assistant')
+    expect(merged.messages[id]!.map(m=>m.text)).toEqual(['recovered older text','current local text'])
+    expect(merged.messages[importedId]![0]!.text).toBe('recovered conversation')
+    expect(state.messages[id]).toHaveLength(1)
+  })
+  it('keeps local in-flight text and unsaved messages while bounding completed old history',()=>{
+    const state=createSeedState(),id=state.activeConversationId,template=state.messages[id]![0]!
+    state.messages[id]=Array.from({length:100},(_,i)=>({...template,id:'local-'+i,clientMessageId:'local-'+i,createdAt:i}))
+    const live={...template,id:'streaming-local',clientMessageId:'streaming-client',createdAt:5,status:'streaming' as const,text:'latest live AI text'}
+    const unsaved={...template,id:'unsaved',clientMessageId:'unsaved',createdAt:101,text:'new UI message'}
+    state.messages[id]!.push(live,unsaved)
+    const baseline=state.messages[id]!.slice(50,100).map(message=>({...message,text:'snapshot'}))
+    baseline[49]={...baseline[49]!,id:'saved-alias',clientMessageId:'local-99'}
+    const projection:ChatState={...state,messages:{[id]:baseline},history:{[id]:{before:50,after:99,hasOlder:true,hasNewer:false}}}
+    const merged=mergeHistoryProjection(state,projection)
+    expect(merged.messages[id]).toHaveLength(52)
+    expect(merged.messages[id]!.find(m=>m.id===live.id)).toBe(live)
+    expect(merged.messages[id]!.find(m=>m.id===unsaved.id)).toBe(unsaved)
+    expect(merged.messages[id]!.some(m=>m.id==='local-49')).toBe(false)
+    expect(merged.messages[id]!.filter(m=>m.clientMessageId==='local-99')).toHaveLength(1)
+    expect(merged.messages[id]!.find(m=>m.clientMessageId==='local-99')!.id).toBe('local-99')
+    expect(merged.history?.[id]).toEqual(projection.history?.[id])
+    expect(state.messages[id]).toHaveLength(102)
+  })
+  it('applies authoritative imported network redactions and read-only membership without switching chats',()=>{
+    const state=withAssistant('streaming','current AI text'),id='server:friend',assistant=state.activeConversationId
+    const conversation={...state.conversations[0]!,id,kind:'direct' as const,serverId:'server',transportId:'builtin.central'}
+    state.conversations.push(conversation);state.activeConversationId=id
+    const message={...state.messages[assistant]![0]!,id:'network-message',clientMessageId:'network-message',conversationId:id,serverId:'server',text:'withdrawn secret',attachment:{id:'a'.repeat(64),name:'secret.txt',mime:'text/plain',size:2}}
+    state.messages[id]=[message]
+    const {attachment:_attachment,...redacted}=message
+    const projection:ChatState={...state,conversations:state.conversations.map(c=>c.id===id?{...c,unavailable:true}:c),messages:{[id]:[{...redacted,text:'',retractedAt:200}]},history:{[id]:{before:0,after:0,hasOlder:false,hasNewer:false}}}
+    const merged=mergeHistoryProjection(state,projection)
+    expect(merged.activeConversationId).toBe(id)
+    expect(merged.conversations.find(c=>c.id===id)?.unavailable).toBe(true)
+    expect(merged.messages[id]![0]).toMatchObject({text:'',retractedAt:200})
+    expect(merged.messages[id]![0]!.attachment).toBeUndefined()
+    expect(merged.messages[assistant]!.find(m=>m.id==='assistant-1')).toMatchObject({status:'streaming',text:'current AI text'})
+    expect(state.messages[id]![0]!.text).toBe('withdrawn secret')
+  })
+  it('keeps the latest same-message AI delta instead of a stale imported local snapshot',()=>{
+    const state=withAssistant('streaming','latest renderer text'),id=state.activeConversationId
+    const projection:ChatState={...state,messages:{[id]:state.messages[id]!.map(m=>m.id==='assistant-1'?{...m,text:'earlier disk text',status:'cancelled'}:m)},history:{[id]:{before:0,after:2,hasOlder:false,hasNewer:false}}}
+    const merged=mergeHistoryProjection(state,projection)
+    expect(merged.messages[id]!.filter(m=>m.id==='assistant-1')).toHaveLength(1)
+    expect(merged.messages[id]!.find(m=>m.id==='assistant-1')).toMatchObject({status:'streaming',text:'latest renderer text'})
+  })
   it('redacts historical message windows and references without changing other servers or independent copies',()=>{
     const seed=createSeedState(),template=seed.messages[seed.activeConversationId]![0]!,id='canonical',notice={serverId:'server',messageId:id,clientMessageId:'pending',senderId:'sender',retractedAt:21,createdAt:20}
     const source={...template,id:'pending',clientMessageId:'pending',senderId:'sender',serverId:'server',text:'secret',attachment:{id:'a'.repeat(64),name:'file.txt',mime:'text/plain',size:2}}

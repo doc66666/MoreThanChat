@@ -68,6 +68,9 @@ jobs:
       - name: Verify native background delivery and notification navigation
         if: runner.os == 'Windows'
         run: node scripts/verify-background-ui.mjs
+      - name: Verify encrypted history backup and same-identity restore
+        if: runner.os == 'Windows'
+        run: node scripts/verify-history-ui.mjs
       - name: Verify packaged chat and plugin workflow
         if: runner.os == 'Windows'
         shell: pwsh
@@ -82,6 +85,8 @@ jobs:
           node scripts/verify-appearance-ui.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/verify-background-ui.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-history-ui.mjs
       - name: Save Windows application directory
         if: success() && runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -166,6 +166,43 @@ export function mergeCentralProjection(current: ChatState, projection: ChatState
   return next
 }
 
+/** Import refreshes Main's bounded history without rolling back newer local UI work. */
+export function mergeHistoryProjection(current: ChatState, projection: ChatState): ChatState {
+  const next=mergeCentralProjection(current,projection)
+  for(const conversation of projection.conversations.filter(item=>!item.serverId)) {
+    const index=next.conversations.findIndex(item=>item.id===conversation.id)
+    if(index<0)next.conversations.push({...conversation})
+    else next.conversations[index]={...next.conversations[index]!,updatedAt:Math.max(next.conversations[index]!.updatedAt,conversation.updatedAt)}
+    const incoming=projection.messages[conversation.id]??[],old=current.messages[conversation.id]??[]
+    const byId=new Map(old.map(message=>[message.id,message]))
+    const clientKey=(message:ChatMessage)=>JSON.stringify([message.senderId,message.clientMessageId])
+    const byClient=new Map(old.map(message=>[clientKey(message),message]))
+    const seenIds=new Set<string>(),seenClients=new Set<string>(),merged:ChatMessage[]=[]
+    const append=(message:ChatMessage)=>{
+      const client=clientKey(message)
+      if(seenIds.has(message.id)||seenClients.has(client))return
+      seenIds.add(message.id);seenClients.add(client);merged.push(message)
+    }
+    // Main has already flushed local state and reordered imported history by time.
+    // Overlay current same-record values in case a local completion or delta raced
+    // the notification. Network contents remain entirely Main-owned above.
+    for(const message of incoming)append(byId.get(message.id)??byClient.get(clientKey(message))??message)
+    const bounded=projection.history?.[conversation.id]?.hasOlder===true
+    const firstTimestamp=incoming[0]?.createdAt??-Infinity
+    for(const message of old) {
+      const inFlight=['streaming','sending','queued'].includes(message.status)
+      // Do not accumulate the previous history page. Only retain not-yet-projected
+      // newer local work (and in-flight turns even when they began before this page).
+      if(!bounded||message.createdAt>=firstTimestamp||inFlight)append(message)
+    }
+    next.messages[conversation.id]=merged.sort((a,b)=>a.createdAt-b.createdAt)
+  }
+  // Import is not a live membership-removal action: keep the user's selected entry,
+  // including a now read-only relationship, rather than jumping to another chat.
+  if(next.conversations.some(conversation=>conversation.id===current.activeConversationId))next.activeConversationId=current.activeConversationId
+  return next
+}
+
 export class TransportRegistry {
   readonly #plugins = new Map<string, ChatTransportPlugin>()
 

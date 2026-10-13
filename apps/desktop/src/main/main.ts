@@ -23,6 +23,7 @@ import { activeProfile, profilePath, listProfiles, restoreProfile, selectProfile
 import { AttachmentStore } from './attachments'
 import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
 import { DesktopIntegration } from './desktop-integration'
+import { exportHistory, restoreHistory } from './history-transfer'
 
 let chatStore: ChatStore | null = null
 let mainWindow: BrowserWindow | null = null
@@ -42,6 +43,28 @@ let pendingNavigation: {id:string;conversationId:string} | null = null
 let openingWindow: Promise<void> | null = null
 let desktopReady = false
 let pendingShow = false
+let windowClosing = false
+let historyTransferStatus = {busy:false,stage:''}
+function setHistoryTransferStatus(busy:boolean,stage:string):void {
+  historyTransferStatus={busy,stage}
+  if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send('history:status-changed',historyTransferStatus)
+}
+async function flushHistorySource():Promise<void> {
+  const window=mainWindow
+  if(!window||window.isDestroyed())throw new Error('聊天窗口尚未就绪')
+  await new Promise<void>((resolve,reject)=>{
+    const token=crypto.randomUUID(),timer=setTimeout(()=>{cleanup();reject(new Error('聊天保存尚未完成，请稍后重试'))},10000)
+    const cleanup=()=>{clearTimeout(timer);ipcMain.removeListener('chat:state:flushed',acknowledged)}
+    const acknowledged=(event:IpcMainEvent,reply:unknown)=>{
+      const result=reply as {token?:unknown;ok?:unknown}|null
+      if(event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||result?.token!==token)return
+      cleanup();if(result.ok===true)resolve();else reject(new Error('本机保存失败，历史操作已取消，原数据保留'))
+    }
+    ipcMain.on('chat:state:flushed',acknowledged)
+    window.webContents.send('chat:state:flush',token)
+  })
+  if(chatStore?.hasActiveLocalTurns())throw new Error('请先等待当前 AI 回复结束或停止生成，再备份/恢复聊天记录')
+}
 function openChatWindow(conversationId?: string): void {
   if(quitRequested||quitAfterHostStops)return
   // A second launch can arrive while identity/store/IPC initialization is still pending.
@@ -97,6 +120,40 @@ const dataDirectory = profilePath(profileRoot, currentProfile)
 app.on('second-instance', () => openChatWindow())
 
 function registerIpc(): void {
+  const historyTask=async<T,>(password:unknown,work:(password:string)=>Promise<T>):Promise<T>=>{
+    if(typeof password!=='string'||password.length<12||password.length>256||!password.trim())throw new Error('备份密码需要 12–256 个字符')
+    if(historyTransferStatus.busy||identityBusy||quitRequested||windowClosing)throw new Error('已有历史、身份或窗口关闭操作正在进行，请稍后重试')
+    if(!chatStore||!centralClient||!attachmentStore||!mainWindow)throw new Error('本机身份与聊天存储尚未就绪')
+    setHistoryTransferStatus(true,'保存当前聊天…')
+    try{await flushHistorySource();return await work(password)}finally{setHistoryTransferStatus(false,'')}
+  }
+  const historyContext=()=>({directory:dataDirectory,store:chatStore!,identity:centralClient!.identity,attachments:attachmentStore!,progress:(stage:string)=>setHistoryTransferStatus(true,stage),beforeCommit:flushHistorySource})
+  ipcMain.handle('history:status',event=>{assertTrustedIpc(event);return historyTransferStatus})
+  ipcMain.handle('history:export',async(event,password:unknown)=>{
+    assertTrustedIpc(event)
+    return historyTask(password,async password=>{
+      const chosen=await dialog.showSaveDialog(mainWindow!,{title:'保存加密聊天记录备份',defaultPath:`MoreThanChat-history-${centralClient!.identity.userId.slice(-8)}-${new Date().toISOString().slice(0,10)}.mtchistory`,filters:[{name:'加密聊天记录',extensions:['mtchistory']}]})
+      if(chosen.canceled||!chosen.filePath)return null
+      return exportHistory(historyContext(),chosen.filePath,password)
+    })
+  })
+  ipcMain.handle('history:import',async(event,password:unknown)=>{
+    assertTrustedIpc(event)
+    return historyTask(password,async password=>{
+      const chosen=await dialog.showOpenDialog(mainWindow!,{title:'选择本身份的聊天记录备份',properties:['openFile'],filters:[{name:'加密聊天记录',extensions:['mtchistory']}]})
+      if(chosen.canceled||!chosen.filePaths[0])return null
+      const result=await restoreHistory(historyContext(),chosen.filePaths[0],password,async info=>{
+        const choice=await dialog.showMessageBox(mainWindow!,{type:'question',message:'合并这些聊天记录？',detail:`备份时间：${new Date(info.createdAt).toLocaleString()}\n${info.conversations} 个会话，${info.messages} 条消息，${info.attachments} 个附件。\n\n现有记录优先，撤回状态优先，不新增好友或群，不自动重发旧消息。身份、API 密钥、插件和当前设备设置保持不变。`,buttons:['取消','合并历史记录'],defaultId:0,cancelId:0})
+        return choice.response===1
+      })
+      if(result){
+        const state=chatStore!.loadView()
+        desktop?.update(state)
+        mainWindow!.webContents.send('central:chat',{...state,historyImported:true})
+      }
+      return result
+    })
+  })
   ipcMain.handle('app:desktop-settings',event=>{assertTrustedIpc(event);return desktop?.snapshot()})
   ipcMain.handle('app:desktop-configure',(event,value:unknown)=>{assertTrustedIpc(event);if(!desktop)throw new Error('设置尚未就绪');return desktop.configure(value)})
   ipcMain.handle('app:notification-test',event=>{assertTrustedIpc(event);desktop?.testNotification()})
@@ -109,7 +166,7 @@ function registerIpc(): void {
     return { current: currentProfile, profiles: await listProfiles(profileRoot, systemCipher) }
   })
   const identityTask = async <T,>(fn:()=>Promise<T>):Promise<T> => {
-    if(identityBusy)throw new Error('身份操作正在进行')
+    if(identityBusy||historyTransferStatus.busy)throw new Error('身份或历史操作正在进行')
     identityBusy=true
     try{return await fn()}finally{identityBusy=false}
   }
@@ -456,6 +513,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('host:model:chat-start', (event, payload: unknown) => {
     assertTrustedIpc(event)
+    if(historyTransferStatus.busy)throw new Error('聊天记录备份/恢复进行中，请完成后再开始 AI 回复')
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
       createHostRequest('model.chat.start', 'ipc', payload as never),
@@ -625,10 +683,16 @@ async function createWindow(): Promise<void> {
   let allowClose = false
   let flushing = false
   window.on('close', (event) => {
+    if(historyTransferStatus.busy){
+      event.preventDefault();quitRequested=false;hideRequested=false;window.show();window.focus()
+      dialog.showErrorBox('历史操作正在进行','请等待备份或恢复完成后再关闭窗口，现有数据会保留。')
+      return
+    }
     if (allowClose) return
     event.preventDefault()
     if (flushing) return
     flushing = true
+    windowClosing = true
     const token = crypto.randomUUID()
     const cleanup = () => {
       clearTimeout(timer)
@@ -637,7 +701,7 @@ async function createWindow(): Promise<void> {
     const finish = () => {
       cleanup()
       if(!quitRequested&&desktop?.trayAvailable&&(hideRequested||desktop.preferences.get().closeToTray)){
-        hideRequested=false;flushing=false
+        hideRequested=false;flushing=false;windowClosing=false
         if(!window.isDestroyed())window.hide()
         return
       }
@@ -648,6 +712,7 @@ async function createWindow(): Promise<void> {
     const stay = () => {
       cleanup()
       flushing = false
+      windowClosing = false
       quitRequested = false
       pendingProfile = null
       hideRequested = false
@@ -730,7 +795,7 @@ async function createWindow(): Promise<void> {
   }
 
   window.on('closed', () => {
-    if (mainWindow === window) mainWindow = null
+    if (mainWindow === window) {mainWindow = null;windowClosing = false}
   })
   desktop?.refresh()
 

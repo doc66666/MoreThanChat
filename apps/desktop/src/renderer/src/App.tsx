@@ -46,6 +46,7 @@ import {
   interruptStreamingMessages,
   normalizeState,
   mergeCentralProjection,
+  mergeHistoryProjection,
   redactMessageForRetraction,
   planAssistantRetry,
   toModelTranscript,
@@ -92,6 +93,7 @@ import { UiSlot } from './UiSlot'
 import { MessageMarkdown } from './MessageMarkdown'
 import { AppearancePicker } from './AppearancePicker'
 import { DesktopSettings } from './DesktopSettings'
+import { HistorySettings } from './HistorySettings'
 import { setThemePreference, useAppearance } from './theme'
 import { useChatDraft, clearRetractedDraftQuotes } from './chat-drafts'
 import { useChatReading } from './use-chat-reading'
@@ -126,6 +128,7 @@ export function App() {
   const [showMessageSearch,setShowMessageSearch] = useState(false)
   const [highlightMessage,setHighlightMessage] = useState<string|null>(null)
   const [quotedMessage,setQuotedMessage]=useState<ChatMessage|null>(null)
+  const [historyRevision,setHistoryRevision]=useState(0)
   const [forwardDialog,setForwardDialog]=useState<{message:ChatMessage;clientMessageId:string}|null>(null)
   const [retractConfirm,setRetractConfirm]=useState<ChatMessage|null>(null)
   const [messageActionBusy,setMessageActionBusy]=useState(false)
@@ -245,9 +248,16 @@ export function App() {
       setServerState(snapshot)
     })
     const chatDispose = window.moreThanChat.onCentralChat((value) => {
+      const imported=(value as {historyImported?:boolean})?.historyImported===true
       setState((current) =>
-        current ? mergeCentralProjection(current, value as ChatState) : current,
+        current ? (imported?mergeHistoryProjection:mergeCentralProjection)(current, value as ChatState) : current,
       )
+      if(imported){
+        historyRequestRef.current++
+        setHistoryWindow(null);setHistoryBusy(false);setHighlightMessage(null)
+        setForwardDialog(null);setRetractConfirm(null);setShowMessageSearch(false)
+        setQuotedMessage(null);setHistoryRevision(revision=>revision+1)
+      }
       const change=(value as {retraction?:import('@more-than-chat/central-protocol').MessageRetraction&{serverId:string}})?.retraction
       if(change){
         clearRetractedDraftQuotes(change.serverId,change.messageId)
@@ -471,7 +481,7 @@ export function App() {
       else chatDraft.setQuoteMessageId(null)
     }).catch(()=>{if(!cancelled)chatDraft.setQuoteMessageId(null)})
     return()=>{cancelled=true}
-  },[active?.id,chatDraft.quoteMessageId])
+  },[active?.id,chatDraft.quoteMessageId,historyRevision])
   const historic=historyWindow?.conversationId===active?.id ? historyWindow : null
   const visibleMessages=historic?.messages ?? messages
   const reading = useChatReading(active?.id,visibleMessages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(forwardDialog) || Boolean(retractConfirm))
@@ -2243,6 +2253,7 @@ function ModelSettingsPanel({
         </div>
         <AppearancePicker />
         <DesktopSettings />
+        <HistorySettings />
         <button
           type="button"
           className="secondary-button"
