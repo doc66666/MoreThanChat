@@ -185,6 +185,13 @@ async function approve(pluginId) {
     `[data-group-plugin-review="${pluginId}"] [data-approve-group-plugin]`,
   )
   await click(a, '.network-drawer .drawer-header button')
+  // Approval distributes metadata/content; neither client may execute before opting in.
+  for (const session of [a,b]) {
+    await poll(session,`document.querySelector('[data-group-plugin-gate="${pluginId}"]')?.dataset.consent==='pending'`)
+    assert.equal(await evaluate(session.client,`Boolean(document.querySelector('[data-group-plugin="${pluginId}"]'))`),false)
+    await click(session,`[data-group-plugin-gate="${pluginId}"] [data-enable-group-plugin]`)
+    await poll(session,`document.querySelector('[data-group-plugin-gate="${pluginId}"]')?.dataset.consent==='loaded'`)
+  }
 }
 async function verifyMessageActions(aid,bid,group) {
   const agroup=(await evaluate(a.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===group.id).id
@@ -424,15 +431,15 @@ try {
   await poll(b, 'document.body.innerText.includes("A 的接龙内容")')
   await click(
     a,
-    `[data-group-plugin="${chain.pack.id}"] [data-disable-group-plugin]`,
+    `[data-group-plugin-gate="${chain.pack.id}"] [data-disable-group-plugin]`,
   )
   await poll(
     a,
-    `Boolean(document.querySelector('[data-group-plugin="${chain.pack.id}"] [data-enable-group-plugin]'))`,
+    `Boolean(document.querySelector('[data-group-plugin-gate="${chain.pack.id}"] [data-enable-group-plugin]'))`,
   )
   await click(
     a,
-    `[data-group-plugin="${chain.pack.id}"] [data-enable-group-plugin]`,
+    `[data-group-plugin-gate="${chain.pack.id}"] [data-enable-group-plugin]`,
   )
   await poll(
     a,

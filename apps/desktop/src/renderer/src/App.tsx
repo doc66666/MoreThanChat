@@ -87,6 +87,7 @@ import {
   type UiSlot as UiSlotName,
 } from '@more-than-chat/central-protocol'
 import { NetworkPanel, GroupPluginView } from './NetworkPanel'
+import { GroupDraftSubmission } from './GroupDraftSubmission'
 import { ChatComposer } from './ChatComposer'
 import { MessageAttachment } from './MessageAttachment'
 import { UiSlot } from './UiSlot'
@@ -548,9 +549,10 @@ export function App() {
         .filter((plugin) => plugin.pack.slot === name)
         .map((plugin) => (
           <GroupPluginView
-            key={plugin.pack.id}
+            key={`${serverState?.serverId}:${serverState?.userId}:${plugin.groupId}:${plugin.pack.id}:${plugin.digest}`}
             plugin={plugin}
             userId={serverState?.userId ?? ''}
+            members={serverState?.directory?.groups.find(g=>g.id===plugin.groupId)?.members.map(m=>m.id)??[]}
             onError={setToast}
           />
         ))}
@@ -1491,6 +1493,8 @@ export function App() {
               <div className="group-plugin-controls">
                 <h3>本群插件</h3>
                 <p>提交申请后由群管理员批准并分发。</p>
+                <button onClick={()=>setShowPlugins(true)}>提交 AI 创作的群插件</button>
+                <p>在 More AI 中描述插件需求，创建并校验草稿后，在插件面板选择本群提交。下面是内置演示模板，并非 AI 创作。</p>
                 <label>
                   插件显示位置{' '}
                   <select
@@ -1548,6 +1552,7 @@ export function App() {
       )}
       {showPlugins && (
         <PluginPanel
+          serverSnapshot={serverState}
           plugins={plugins}
           hostPlugins={hostPlugins}
           hostBusy={hostPluginBusy}
@@ -1850,6 +1855,7 @@ function DetailsPanel({
 }
 
 function PluginPanel({
+  serverSnapshot,
   plugins,
   hostPlugins,
   hostBusy,
@@ -1862,6 +1868,7 @@ function PluginPanel({
   onToggle,
   onClose,
 }: {
+  serverSnapshot: ServerSnapshot | null
   plugins: readonly PluginSnapshot[]
   hostPlugins: readonly HostPluginSnapshot[]
   hostBusy: boolean
@@ -1974,7 +1981,7 @@ function PluginPanel({
           </div>
           <p className="settings-note">
             让 More AI
-            为你创建快捷文本或文本处理动作。确认后即可使用和停用，重启后仍保留；更新失败会恢复原版。这些插件只操作输入框，不访问网络或文件。
+            为你创建文本动作或实时群插件。文本动作可本机安装；群插件先选择群聊提交审批，成员收到后自主载入，不授予文件或系统权限。
           </p>
           {(drafts?.drafts ?? []).map((item) => {
             const installed = hostPlugins.some(
@@ -2004,7 +2011,7 @@ function PluginPanel({
                   >
                     诊断
                   </button>
-                  {confirmId === item.id ? (
+                  {item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : confirmId === item.id ? (
                     <div className="draft-confirm" data-draft-confirm={item.id}>
                       <p>
                         {installed

@@ -51,6 +51,9 @@ const api = {
   connectServer:(address:string,displayName:string)=>ipcRenderer.invoke('central:connect',{address,displayName}),
   disconnectServer:()=>ipcRenderer.invoke('central:disconnect'),
   serverAction:(route:string,data:unknown)=>ipcRenderer.invoke('central:action',{route,data}),
+  groupPluginConsent:(input:unknown)=>ipcRenderer.invoke('central:plugin-consent',input),
+  onGroupPluginConsentChanged:(listener:()=>void)=>{const handler=()=>listener();ipcRenderer.on('central:plugin-consent-changed',handler);return()=>ipcRenderer.removeListener('central:plugin-consent-changed',handler)},
+  submitGroupDraft:(input:unknown)=>ipcRenderer.invoke('central:submit-draft',input),
   sendCentralMessage:(input:unknown)=>ipcRenderer.invoke('central:send',input),
   chooseAttachment:()=>ipcRenderer.invoke('attachment:choose'),
   recordVoice:(input:unknown)=>ipcRenderer.invoke('attachment:voice',input),
@@ -464,7 +467,7 @@ function parseDraftDiagnosis(record: Record<string, unknown>) {
 
 function parseDraftSummary(value: unknown) {
   const record = asRecord(value, 'Invalid plugin draft.')
-  assertExactKeys(record, ['id', 'revision', 'displayName', 'version', 'updatedAt', 'ok'], 'Invalid plugin draft.')
+  assertExactKeys(record, ['id', 'revision', 'displayName', 'version', 'updatedAt', 'ok', ...(record.distribution==='group'?['distribution']:[])], 'Invalid plugin draft.')
   if (typeof record.revision !== 'number' || !Number.isSafeInteger(record.revision) || record.revision < 1) throw new Error('Invalid plugin draft.')
   if (typeof record.updatedAt !== 'number' || !Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) throw new Error('Invalid plugin draft.')
   if (typeof record.ok !== 'boolean') throw new Error('Invalid plugin draft.')
@@ -475,6 +478,7 @@ function parseDraftSummary(value: unknown) {
     version: requiredBounded(record.version, 32, 'Invalid plugin draft.'),
     updatedAt: record.updatedAt,
     ok: record.ok,
+    ...(record.distribution==='group'?{distribution:'group' as const}:{}),
   }
 }
 

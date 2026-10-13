@@ -1,3 +1,5 @@
+import { parseGroupArtifact, validateProgramState, type GroupArtifact } from './group-program.js'
+export * from './group-program.js'
 export const CENTRAL_PROTOCOL_VERSION = 1
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 export const UI_SLOTS = [
@@ -82,8 +84,9 @@ export interface GroupPluginPack {
   id: string
   version: number
   displayName: string
-  kind: 'chain' | 'tic-tac-toe' | 'channel'
+  kind: 'chain' | 'tic-tac-toe' | 'channel' | 'declarative'
   slot: UiSlot
+  artifact?: GroupArtifact
 }
 export interface GroupPlugin {
   groupId: string
@@ -163,13 +166,13 @@ export function parseGroupPluginPack(value: unknown): GroupPluginPack {
     typeof v.displayName !== 'string' ||
     !v.displayName.trim() ||
     v.displayName.length > 80 ||
-    !['chain', 'tic-tac-toe', 'channel'].includes(v.kind) ||
+    !['chain', 'tic-tac-toe', 'channel', 'declarative'].includes(v.kind) ||
     !UI_SLOTS.includes(v.slot)
   )
     throw new Error('Invalid plugin package')
   if (
     Object.keys(value).some(
-      (key) => !['id', 'version', 'displayName', 'kind', 'slot'].includes(key),
+      (key) => !['id', 'version', 'displayName', 'kind', 'slot', ...(v.kind === 'declarative' ? ['artifact'] : [])].includes(key),
     )
   )
     throw new Error('Unsupported executable plugin package')
@@ -179,6 +182,7 @@ export function parseGroupPluginPack(value: unknown): GroupPluginPack {
     displayName: v.displayName.trim(),
     kind: v.kind,
     slot: v.slot,
+    ...(v.kind === 'declarative' ? { artifact: parseGroupArtifact(v.artifact) } : {}),
   }
 }
 export function validateWireAttachment(value: WireAttachment): void {
@@ -261,6 +265,7 @@ export function parseDirectory(value: unknown): Directory {
       JSON.stringify(state).length > 32000
     )
       throw new Error('Invalid group plugin')
+    if (p.status === 'approved' && pack.kind === 'declarative') validateProgramState(state)
     if (p.status === 'approved' && pack.kind === 'chain')
       for (const item of list(state.entries, 20)) {
         const entry = record(item)

@@ -18,6 +18,7 @@ import { responseBudget, writeResponse, RESPONSE_LIMIT } from './response-flow.m
 import { statementCache } from './statement-cache.mjs'
 import {
   parseGroupPluginPack,
+  transition,
   validUid,
   validateWireAttachment,
   parseMessageReference,
@@ -323,7 +324,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
     enqueue([sender],{id:randomUUID(),kind:'directory',receipt},false,undefined,deliveryControlBudget)
     return sender
   }
-  const directoryFor = (uid) => {
+  const directoryFor = (uid, supportsGroupPrograms = false) => {
     const friends = db
       .prepare(
         "SELECT a,b FROM friends WHERE (a=? OR b=?) AND status='accepted'",
@@ -371,7 +372,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       groups,
       groupRequests,
       plugins: groups.flatMap((group) =>
-        pluginRows(group.id).filter(
+        pluginRows(group.id).filter(plugin => supportsGroupPrograms || plugin.pack.kind !== 'declarative').filter(
           (plugin) =>
             plugin.status === 'approved' ||
             plugin.submittedBy === uid ||
@@ -458,7 +459,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       if (!isControlRequest(request.method, route) && lifecycle.activeRequests > 224)
         fail(429, '服务器请求繁忙，请稍后重试')
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1'] })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1'] })
       if ((route === '/v1/admin/access' && request.method === 'POST') || (route === '/v1/admin/status' && request.method === 'GET')) {
         const received = Buffer.from(
             (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -575,13 +576,14 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           token,
           serverId,
           mode,
-          directory: directoryFor(challenge.uid),
+          directory: directoryFor(challenge.uid,challenge.features.includes('group-program-v1')),
         })
       }
       const uid = auth(request, trafficClass(request.method, route))
       requestIdentity.set(request, uid)
       const deviceId=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.deviceId
       const supportsActions=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('message-actions-v1')??false
+      const supportsGroupPrograms=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('group-program-v1')??false
       if (route === '/v1/devices' && request.method === 'GET') return json(response,200,{devices:delivery.list(uid,deviceId)})
       if (route === '/v1/devices/remove' && request.method === 'POST') {
         const data=await body(request)
@@ -599,7 +601,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         return json(response, 200, { ok: true })
       }
       if (route === '/v1/directory' && request.method === 'GET')
-        return json(response, 200, directoryFor(uid))
+        return json(response, 200, directoryFor(uid,supportsGroupPrograms))
       if (route === '/v1/users' && request.method === 'GET') {
         const found = user(url.searchParams.get('id'))
         if (!found || !allowed(found.id)) fail(404, '此用户不在当前服务器')
@@ -919,6 +921,8 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         const data = await body(request)
         member(uid, text(data.groupId))
         const pack = clientValue(() => parseGroupPluginPack(data.pack))
+        if (pack.kind === 'declarative' && !supportsGroupPrograms) fail(400,'请使用支持群插件的新版客户端')
+        const original = db.prepare('SELECT submitter FROM plugins WHERE group_id=? AND id=? ORDER BY version LIMIT 1').get(data.groupId,pack.id)
         if (
           Number(
             db
@@ -934,6 +938,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
             )
             .get(data.groupId, pack.id).version ?? 0
         if (pack.version !== previous + 1) fail(409, '插件必须追加下一个版本')
+        if (original && original.submitter !== uid) fail(403, '只有原作者可以提交该插件的新版本')
         const serialized = JSON.stringify(pack),
           digest = createHash('sha256').update(serialized).digest('hex')
         notify(groupUsers(data.groupId), () => db.prepare(
@@ -957,6 +962,8 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           fail(409, '待审批版本已改变')
         const pack = JSON.parse(row.pack),
           members = groupUsers(data.groupId)
+        if (pack.kind === 'declarative' && !supportsGroupPrograms) fail(400,'请使用支持群插件的新版客户端')
+        if (data.approve && db.prepare("SELECT 1 FROM plugins WHERE group_id=? AND id=? AND status='approved' AND version>=?").get(data.groupId,pack.id,pack.version)) fail(409,'不能批准比当前版本更旧的申请')
         const previous = db
           .prepare(
             "SELECT state,revision FROM plugins WHERE group_id=? AND id=? AND status='approved' ORDER BY version DESC LIMIT 1",
@@ -969,7 +976,10 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           .get(data.groupId, pack.id)
         if (previousPack && JSON.parse(previousPack.pack).kind !== pack.kind)
           fail(409, '更新不能改变同步状态类型，请使用新插件 ID')
-        const state = previous
+        // Declarative upgrades explicitly start a fresh state; arbitrary migrations are not executed.
+        const state = pack.kind === 'declarative'
+          ? structuredClone(pack.artifact.program.initial)
+          : previous
           ? JSON.parse(previous.state)
           : pack.kind === 'chain'
             ? { entries: [] }
@@ -1013,11 +1023,21 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           fail(413, '插件事件过大')
         const pack = JSON.parse(row.pack),
           state = JSON.parse(row.state)
+        if (pack.kind === 'declarative') {
+          if (!supportsGroupPrograms) fail(400,'请使用支持群插件的新版客户端')
+          if (channel !== 'state' || data.digest !== row.digest) fail(409, '插件版本已改变，请重新确认载入')
+        }
         if (channel === 'state') {
           if (data.expectedRevision !== row.revision)
             fail(409, '状态已被其他成员更新，请重试')
           const payload = object(data.payload)
-          if (pack.kind === 'chain') {
+          if (pack.kind === 'declarative') {
+            const next = clientValue(() => transition(pack.artifact.program, {
+              state, actor: uid, members: groupUsers(data.groupId), event: object(payload.input ?? {}),
+            }, text(payload.action,48)))
+            for (const key of Object.keys(state)) delete state[key]
+            Object.assign(state,next)
+          } else if (pack.kind === 'chain') {
             const entries = Array.isArray(state.entries) ? state.entries : []
             if (entries.some((entry) => entry.userId === uid))
               fail(409, '你已参与接龙')
@@ -1124,7 +1144,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         auth(request)
         if (!allowed(uid)) fail(403, '身份已被服务器禁止')
         events = pending()
-        return json(response, 200, { events, directory: directoryFor(uid) })
+        return json(response, 200, { events, directory: directoryFor(uid,supportsGroupPrograms) })
       }
       if (route === '/v1/read' && request.method === 'POST') {
         const data = await body(request)

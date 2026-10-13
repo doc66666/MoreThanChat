@@ -1,5 +1,7 @@
 # AI 插件创作 MVP（2026-10-09）
 
+2026-10-13 补充：新增受限声明式实时群插件链路，见 [群插件创作阶段记录](group-plugin-authoring-stage-2026-10-13.md)。下文保留原文本插件 MVP 的历史说明；任意 JS/TS 执行仍未开放。当前模型单请求输出上限已提升至 8192 token，以容纳群插件规则。
+
 ## 用户流程
 
 1. 打开模型设置，选择兼容 API，填写 Base URL、模型与自己的 Key。DeepSeek 当前默认 `https://api.deepseek.com` / `deepseek-flash`。

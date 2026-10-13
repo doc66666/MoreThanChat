@@ -209,6 +209,10 @@ export class HostSupervisor {
     return this.#request('pluginDrafts.inspect', {})
   }
 
+  exportGroupDraft(draftId: string, revision: number): Promise<HostResponsePayloadMap['pluginDrafts.exportGroup']> {
+    return this.#request('pluginDrafts.exportGroup', { draftId, revision })
+  }
+
   createPluginDraft(payload: HostRequestPayloadMap['pluginDrafts.create']): Promise<HostResponsePayloadMap['pluginDrafts.create']> {
     return this.#request('pluginDrafts.create', payload)
   }

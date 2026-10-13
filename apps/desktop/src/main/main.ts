@@ -24,6 +24,9 @@ import { AttachmentStore } from './attachments'
 import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
 import { DesktopIntegration } from './desktop-integration'
 import { exportHistory, restoreHistory } from './history-transfer'
+import { createHash } from 'node:crypto'
+import { parseGroupArtifact, parseGroupPluginPack, UI_SLOTS, type UiSlot } from '@more-than-chat/central-protocol'
+import { GroupPluginConsentStore } from './group-plugin-consent'
 
 let chatStore: ChatStore | null = null
 let mainWindow: BrowserWindow | null = null
@@ -117,6 +120,7 @@ try {
   app.exit(1)
 }
 const dataDirectory = profilePath(profileRoot, currentProfile)
+const groupConsent = new GroupPluginConsentStore(dataDirectory)
 app.on('second-instance', () => openChatWindow())
 
 function registerIpc(): void {
@@ -312,7 +316,7 @@ function registerIpc(): void {
   })
   ipcMain.handle(
     'central:action',
-    (event, input: { route: string; data: unknown }) => {
+    async (event, input: { route: string; data: unknown }) => {
       assertTrustedIpc(event)
       if (
         !centralClient ||
@@ -339,9 +343,41 @@ function registerIpc(): void {
         ].includes(input.route)
       )
         throw new Error('不允许的中心服务操作')
-      return centralClient.action(input.route, input.data)
+      const client=centralClient, snapshot=client.snapshot()
+      if (input.route==='plugins/event') {
+        const data=input.data as {groupId?:string;pluginId?:string;digest?:string}|null
+        const plugin=snapshot.directory?.plugins.find(p=>p.groupId===data?.groupId&&p.pack.id===data?.pluginId&&p.status==='approved')
+        if (!plugin || !snapshot.serverId || await groupConsent.get(snapshot,plugin.groupId,plugin.pack.id,plugin.digest)!=='loaded') throw new Error('请先确认在本机载入此版本的群插件')
+        if (plugin.pack.kind==='declarative'&&data?.digest!==plugin.digest) throw new Error('插件版本已改变')
+        if (client!==centralClient||client.serverId!==snapshot.serverId) throw new Error('中心服务器已切换')
+      }
+      return client.action(input.route, input.data)
     },
   )
+  ipcMain.handle('central:plugin-consent', async (event, input) => {
+    assertTrustedIpc(event)
+    if (!centralClient||!input||typeof input.groupId!=='string'||typeof input.pluginId!=='string'||typeof input.digest!=='string') throw new Error('无效插件授权')
+    const client=centralClient, snapshot=client.snapshot()
+    if (input.decision!==undefined) await groupConsent.set(snapshot,input.groupId,input.pluginId,input.digest,input.decision)
+    if (client!==centralClient||client.serverId!==snapshot.serverId) throw new Error('中心服务器已切换')
+    const decision=await groupConsent.get(client.snapshot(),input.groupId,input.pluginId,input.digest)
+    if (input.decision!==undefined&&mainWindow&&!mainWindow.isDestroyed()) mainWindow.webContents.send('central:plugin-consent-changed',{groupId:input.groupId,pluginId:input.pluginId,digest:input.digest})
+    return decision
+  })
+  ipcMain.handle('central:submit-draft', async (event, input) => {
+    assertTrustedIpc(event)
+    if (!centralClient||!hostSupervisor||!input||input.confirmed!==true||typeof input.groupId!=='string'||typeof input.draftId!=='string'||!Number.isSafeInteger(input.revision)||!UI_SLOTS.includes(input.slot)) throw new Error('请明确确认要提交的草稿、版本和群聊')
+    const client=centralClient, snapshot=client.snapshot()
+    if (snapshot.status!=='connected'||snapshot.serverId!==input.serverId||!snapshot.directory?.groups.some(g=>g.id===input.groupId)) throw new Error('请先连接目标群所在的中心服务器')
+    const draft=await hostSupervisor.exportGroupDraft(input.draftId,input.revision)
+    const artifact=parseGroupArtifact({manifest:JSON.parse(draft.manifestJson),program:JSON.parse(draft.source)})
+    if (client!==centralClient||client.serverId!==snapshot.serverId) throw new Error('中心服务器已切换，提交已取消')
+    const hex=createHash('sha256').update(snapshot.userId+':'+artifact.manifest.id).digest('hex').slice(0,32)
+    const id='gplugin_'+[hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-')
+    const prior=client.snapshot().directory?.plugins.filter(p=>p.groupId===input.groupId&&p.pack.id===id)??[]
+    const pack=parseGroupPluginPack({id,version:1+Math.max(0,...prior.map(p=>p.pack.version)),displayName:artifact.manifest.displayName,kind:'declarative',slot:input.slot as UiSlot,artifact})
+    return client.action('plugins/submit',{groupId:input.groupId,pack})
+  })
   ipcMain.handle(
     'central:send',
     (

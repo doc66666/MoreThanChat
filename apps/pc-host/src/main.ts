@@ -151,6 +151,9 @@ async function handleRequest(request: HostRequest): Promise<void> {
     case 'pluginDrafts.inspect':
       parentPort.postMessage(createHostSuccessResponse(request, await drafts.inspect()))
       return
+    case 'pluginDrafts.exportGroup':
+      parentPort.postMessage(createHostSuccessResponse(request, await drafts.exportGroup(request.payload.draftId, request.payload.revision)))
+      return
     case 'pluginDrafts.create':
       parentPort.postMessage(createHostSuccessResponse(request, await drafts.create(request.payload)))
       return

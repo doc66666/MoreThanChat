@@ -94,6 +94,9 @@ importers:
 
   apps/pc-host:
     dependencies:
+      '@more-than-chat/central-protocol':
+        specifier: workspace:*
+        version: link:../../packages/central-protocol
       '@more-than-chat/plugin-runtime':
         specifier: workspace:*
         version: link:../../packages/plugin-runtime

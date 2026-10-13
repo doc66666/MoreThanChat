@@ -600,6 +600,12 @@ svg { stroke-width: 1.7; }
 .desktop-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .desktop-actions button { display: inline-flex; align-items: center; gap: 6px; }
 .history-settings { margin-block: 4px 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+.group-plugin-gate, .group-draft-submit { display: grid; gap: 10px; padding: 14px; margin-block: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-muted); min-width: 0; }
+.group-draft-submit label { display: grid; gap: 6px; }
+.group-draft-submit select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+.group-plugin-gate p, .group-draft-submit p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); overflow-wrap: anywhere; }
+.group-plugin-gate pre, .draft-card pre { max-height: 260px; overflow: auto; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.group-plugin-gate code { overflow-wrap: anywhere; font-size: 10px; }
 .history-settings .settings-section-heading { flex-wrap: wrap; }
 .history-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .history-transfer-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }

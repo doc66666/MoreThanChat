@@ -25,32 +25,25 @@ import { slotDemoManifest, slotDemoPlugin } from './slot-demo'
 export const transportRegistry = new TransportRegistry()
 export const composerActionRegistry = new ContributionRegistry<ComposerAction>()
 export const uiSlotRegistry = new ContributionRegistry<UiSlotContribution>()
+/** Narrow group transport shared by trusted UI plugins and the data-only runtime. */
+export const chatNetworkService = {
+  forPlugin: (pluginId: string) => ({
+    send: (groupId: string, channel: string, payload: unknown, stateVersion?: {digest:string;expectedRevision:number}) =>
+      window.moreThanChat.serverAction('plugins/event', {groupId,pluginId,channel,payload,...stateVersion}).then(() => undefined),
+    history: (groupId: string) => window.moreThanChat.getPluginInbox(groupId, pluginId),
+    subscribe: (groupId: string, listener: (event: unknown) => void) =>
+      window.moreThanChat.onPluginEvent((event) => {
+        if (event.pluginId === pluginId && event.groupId === groupId) listener(event)
+      }),
+  }),
+}
 export const pluginRuntime = new PluginRuntime({
   target: 'pc-ui',
   services: {
     [chatTransportsServiceId]: transportRegistry,
     [composerActionsServiceId]: composerActionRegistry,
     [uiSlotsServiceId]: uiSlotRegistry,
-    'chat.network': {
-      forPlugin: (pluginId: string) => ({
-        send: (groupId: string, channel: string, payload: unknown) =>
-          window.moreThanChat
-            .serverAction('plugins/event', {
-              groupId,
-              pluginId,
-              channel,
-              payload,
-            })
-            .then(() => undefined),
-        history: (groupId: string) =>
-          window.moreThanChat.getPluginInbox(groupId, pluginId),
-        subscribe: (groupId: string, listener: (event: unknown) => void) =>
-          window.moreThanChat.onPluginEvent((event) => {
-            if (event.pluginId === pluginId && event.groupId === groupId)
-              listener(event)
-          }),
-      }),
-    },
+    'chat.network': chatNetworkService,
   },
 })
 

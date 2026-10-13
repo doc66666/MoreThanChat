@@ -10,6 +10,7 @@ import type {
   PluginDraftSummary,
 } from '@more-than-chat/protocol'
 import { isStaticTextToolManifest, parseDeclarativeInstall, type DeclarativeComposerAction, type DeclarativeTextTool } from './static-text-tool'
+import { parseGroupArtifact } from '@more-than-chat/central-protocol'
 
 export class PluginDraftError extends Error {
   constructor(readonly code: 'DRAFT_NOT_FOUND', message: string) {
@@ -97,6 +98,18 @@ export class PluginDraftService {
 
   diagnose(draftId: string): Promise<PluginDraftReport> {
     return this.#report(draftId, 'diagnose')
+  }
+
+  /** Export only a validated, immutable revision selected by the user. No installation. */
+  exportGroup(draftId: string, revision: number): Promise<{ manifestJson: string; source: string }> {
+    return this.#enqueue(async () => {
+      const stored = await this.#readLatest(draftId)
+      if (stored.revision !== revision) throw new Error('草稿已更新，请重新查看并确认提交')
+      const assessed = assessDraft(JSON.stringify(stored.manifest), stored.source, this.#installedPlugins())
+      if (!assessed.ok) throw new Error('群插件草稿校验未通过')
+      const artifact = parseGroupArtifact({manifest:stored.manifest,program:JSON.parse(stored.source)})
+      return {manifestJson:JSON.stringify(artifact.manifest),source:JSON.stringify(artifact.program)}
+    })
   }
 
   /** Plans a declarative install. The returned tool text is data; the source is not executable code. */
@@ -296,6 +309,10 @@ function assessDraft(manifestJson: string, source: string, installed: readonly I
   else if (manifestError) issues.push(finding('error', 'MANIFEST_INVALID', manifestError))
   if (manifest && source.trim().length === 0) issues.push(finding('error', 'EMPTY_SOURCE', '草稿源码是空的。'))
   if (manifest) {
+    if (manifest.targets.includes('pc-ui')) {
+      try { parseGroupArtifact({manifest,program:JSON.parse(source)}) }
+      catch (error) { issues.push(finding('error','NOT_DECLARATIVE',error instanceof Error ? error.message : '群插件必须满足 group-state-machine 契约；不执行 JS 或外部代码。')) }
+    }
     for (const name of findDangerousApis(source)) {
       issues.push(finding('error', 'DANGEROUS_API', `草稿引用了未允许的 API：${name}。`))
     }
@@ -319,6 +336,7 @@ function summaryOf(manifest: PluginManifestV1, revision: number, updatedAt: numb
     version: clamp(manifest.version, 32, '0.0.0'),
     updatedAt,
     ok,
+    ...(manifest.targets.includes('pc-ui') ? { distribution: 'group' as const } : {}),
   }
 }
 

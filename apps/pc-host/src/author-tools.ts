@@ -47,8 +47,8 @@ const PROGRESS: Record<AuthorToolPublicName, string> = {
   unknown: '正在处理作者工具…',
 }
 
-const MAX_ARGUMENTS = 20_000
-const MAX_RESULT = 4_000
+const MAX_ARGUMENTS = 40_000
+const MAX_RESULT = 16_000
 
 export const AUTHOR_TOOL_DEFINITIONS = [
   {
@@ -121,7 +121,11 @@ export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorTool
         const result = await dispatch(drafts, call.name, call.arguments)
         let notice = noticeFrom(call.name, result, source)
         let installationIssues: readonly PluginDraftIssue[] = []
-        if (notice.pendingInstall && notice.draft) {
+        const groupDraft = 'draft' in result && result.draft?.distribution === 'group'
+        if (groupDraft) {
+          notice = { ...notice, pendingInstall: false, summary: result.ok ? '群插件草稿已校验。请用户在插件面板选择群聊并确认提交，等待管理员审批和成员本机载入。' : result.summary }
+        }
+        if (!groupDraft && notice.pendingInstall && notice.draft) {
           const plan = await drafts.planInstall(notice.draft.id, false, { ignoreInstalledId: true })
           const installable = !plan.installable && plan.issues.length === 1 && plan.issues[0]?.code === 'CONFIRMATION_REQUIRED'
           if (!plan.installable) installationIssues = plan.issues.filter(issue => issue.code !== 'CONFIRMATION_REQUIRED')

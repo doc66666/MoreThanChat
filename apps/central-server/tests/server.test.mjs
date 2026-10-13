@@ -5,6 +5,7 @@ import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCentralServer, publicUserId } from '../src/server.mjs'
 import { createMessageReference } from '@more-than-chat/central-protocol'
+import { groupGameArtifact } from '../../../scripts/fixtures/group-game.mjs'
 const fixtures = []
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
@@ -39,7 +40,7 @@ async function request(f, route, token, body) {
   })
   return { status: r.status, data: await r.json() }
 }
-async function login(f, id, name,features=['message-actions-v1'],deviceId) {
+async function login(f, id, name,features=['message-actions-v1','group-program-v1'],deviceId) {
   const challenge = await request(f, 'challenge', null, {
     publicKey: id.publicKey,
     displayName: name,
@@ -74,6 +75,59 @@ async function befriend(f, a, b) {
 }
 
 describe('central relay contracts', () => {
+  it('distributes complete authored artifacts only after approval and enforces identity, versions, atomic state and reconnect',async()=>{
+    const f=await fixture(),a=await login(f,identity(),'Admin'),b=await login(f,identity(),'Author'),cKey=identity(),c=await login(f,cKey,'Player'),outsider=await login(f,identity(),'Outsider')
+    await befriend(f,a,b);await befriend(f,a,c)
+    const group=(await request(f,'groups',a.token,{name:'Authored game',memberIds:[b.userId,c.userId]})).data.groupId
+    const pack={id:'gplugin_'+randomUUID(),version:1,displayName:'Authored',kind:'declarative',slot:'chat.details',artifact:structuredClone(groupGameArtifact)}
+    const submitted=await request(f,'plugins/submit',b.token,{groupId:group,pack});expect(submitted.status).toBe(200)
+    const digest=submitted.data.digest,base={groupId:group,pluginId:pack.id,channel:'state',digest}
+    const send=(u,action,revision,input={})=>request(f,'plugins/event',u.token,{...base,expectedRevision:revision,payload:{action,input}})
+    expect((await send(b,'join',0)).status).toBe(403)
+    expect((await request(f,'directory',c.token)).data.plugins).toEqual([])
+    const review={groupId:group,pluginId:pack.id,version:1,digest,approve:true}
+    expect((await request(f,'plugins/review',b.token,review)).status).toBe(403)
+    expect((await request(f,'plugins/review',a.token,{...review,digest:'bad'})).status).toBe(409)
+    expect((await request(f,'plugins/review',a.token,review)).status).toBe(200)
+    const received=(await request(f,'directory',c.token)).data.plugins[0];expect(received.pack.artifact).toEqual(pack.artifact)
+    const legacy=await login(f,cKey,'Legacy',['message-actions-v1'])
+    expect((await request(f,'directory',legacy.token)).data.plugins).toEqual([])
+    expect((await send(outsider,'join',0)).status).toBe(403)
+    expect((await send(b,'join',0)).status).toBe(200)
+    expect((await send(c,'join',1)).status).toBe(200)
+    // The owner is merely a spectator; an event cannot spoof the authenticated actor.
+    expect((await send(a,'move',2,{cell:0,actor:b.userId})).status).toBe(400)
+    expect((await send(c,'move',2,{cell:0})).status).toBe(400)
+    const concurrent=await Promise.all([send(b,'move',2,{cell:0}),send(b,'move',2,{cell:1})])
+    expect(concurrent.map(x=>x.status).sort()).toEqual([200,409])
+    const current=(await request(f,'directory',b.token)).data.plugins[0]
+    expect(current.revision).toBe(3);expect(current.state.board.filter(Boolean)).toHaveLength(1)
+    expect((await send(c,'move',3,{cell:current.state.board.indexOf('X')})).status).toBe(400)
+    // A new authenticated session restores authoritative state and the full package.
+    const reconnected=await login(f,cKey,'Player reconnected')
+    expect((await request(f,'directory',reconnected.token)).data.plugins[0]).toEqual(current)
+    const next={...pack,version:2,artifact:structuredClone(pack.artifact)};next.artifact.manifest.version='0.2.0'
+    expect((await request(f,'plugins/submit',a.token,{groupId:group,pack:next})).status).toBe(403)
+    const update=await request(f,'plugins/submit',b.token,{groupId:group,pack:next});expect(update.status).toBe(200)
+    expect((await request(f,'plugins/review',a.token,{...review,version:2,digest:update.data.digest})).status).toBe(200)
+    expect((await send(b,'move',3,{cell:5})).status).toBe(409)
+    const updated=(await request(f,'directory',reconnected.token)).data.plugins[0]
+    expect(updated.pack.version).toBe(2);expect(updated.state).toEqual(pack.artifact.program.initial)
+    expect((await request(f,'plugins/event',b.token,{...base,digest:update.data.digest,channel:'bypass',payload:{}})).status).toBe(409)
+    const broken={...next,id:'gplugin_'+randomUUID(),version:1,artifact:structuredClone(next.artifact)}
+    broken.artifact.program.actions.join.guard={op:'exec',args:[]}
+    expect((await request(f,'plugins/submit',b.token,{groupId:group,pack:broken})).status).toBe(400)
+    const rejected=await request(f,'plugins/submit',b.token,{groupId:group,pack:{...next,version:3}})
+    expect((await request(f,'plugins/review',a.token,{...review,version:3,digest:rejected.data.digest,approve:false})).status).toBe(200)
+    expect((await request(f,'directory',reconnected.token)).data.plugins[0].pack.version).toBe(2)
+    expect((await request(f,'plugins/event',b.token,{...base,digest:update.data.digest,expectedRevision:3,payload:{action:'join',input:{}}})).status).toBe(200)
+    await f.app.close()
+    f.app=createCentralServer({directory:f.dir,mode:'public',adminToken:f.adminToken})
+    f.url='http://127.0.0.1:'+(await f.app.listen(0)).port
+    const restored=await login(f,cKey,'Restored')
+    const persisted=(await request(f,'directory',restored.token)).data.plugins[0]
+    expect(persisted.pack).toEqual(next);expect(persisted.state.players).toEqual([b.userId]);expect(persisted.revision).toBe(4)
+  })
   it('synchronizes historical reads after receipt expiry without retaining or re-sending bodies',async()=>{
     const f=await fixture(),a=await login(f,identity(),'A'),bKey=identity()
     const b1=await login(f,bKey,'B',['message-actions-v1','device-delivery-v1'],randomUUID())

@@ -72,7 +72,7 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
             messages: request.messages.map(toApiMessage),
             tools: AUTHOR_TOOL_DEFINITIONS,
             tool_choice: 'auto',
-            max_tokens: 2048,
+            max_tokens: 8192,
             // Official DeepSeek enables thinking by default. Our compact author
             // loop uses non-thinking mode; no provider-specific field elsewhere.
             ...(new URL(request.baseUrl).hostname === 'api.deepseek.com' ? { thinking: { type: 'disabled' } } : {}),
@@ -237,7 +237,10 @@ function absorbPart(part: unknown, into: Map<number, MutableToolCall>): void {
       const name = (fn as { name?: unknown }).name
       const args = (fn as { arguments?: unknown }).arguments
       if (typeof name === 'string' && current.name.length < 80) current.name = `${current.name}${name}`.slice(0, 80)
-      if (typeof args === 'string' && current.arguments.length < 20_000) current.arguments = `${current.arguments}${args}`.slice(0, 20_000)
+      if (typeof args === 'string') {
+        if (current.arguments.length + args.length > 40_000) throw new ModelServiceError('MODEL_REQUEST_FAILED', '模型工具参数超过安全上限。', false)
+        current.arguments += args
+      }
     }
     into.set(index, current)
   }

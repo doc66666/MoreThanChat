@@ -104,6 +104,9 @@ declare global {
       connectServer(address:string,displayName:string):Promise<ServerSnapshot>
       disconnectServer():Promise<void>
       serverAction(route:string,data:unknown):Promise<ServerSnapshot>
+      groupPluginConsent(input:{groupId:string;pluginId:string;digest:string;decision?:'loaded'|'declined'}):Promise<'pending'|'loaded'|'declined'>
+      onGroupPluginConsentChanged(listener:()=>void):()=>void
+      submitGroupDraft(input:{serverId:string;groupId:string;draftId:string;revision:number;slot:string;confirmed:true}):Promise<ServerSnapshot>
       sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string}):Promise<{eventId:string;acceptedAt:number;queued?:boolean}>
       chooseAttachment():Promise<AttachmentRef|null>
       recordVoice(input:{data:string;mime:string;durationMs:number}):Promise<AttachmentRef>

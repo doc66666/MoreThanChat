@@ -199,9 +199,19 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(41);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(43);
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.handshakeRequest).toBeDefined();
+  });
+  it('validates pinned group export requests and preserves group draft routing',()=>{
+    const req=createHostRequest('pluginDrafts.exportGroup','group-export',{draftId:'test.game',revision:2});
+    expect(parseHostMessage(req)).toEqual(req);
+    expectProtocolError({...req,payload:{draftId:'test.game',revision:0}},'INVALID_PAYLOAD');
+    const reply=createHostSuccessResponse(req,{manifestJson:'{}',source:'{}'});
+    expect(parseHostMessage(reply)).toEqual(reply);
+    const inspect=createHostRequest('pluginDrafts.inspect','inspect',{});
+    const response=createHostSuccessResponse(inspect,{installed:[],drafts:[{id:'test.game',revision:2,displayName:'Game',version:'0.1.0',updatedAt:1,ok:true,distribution:'group'}]});
+    expect(parseHostMessage(response)).toEqual(response);
   });
 
   it('validates host plugin control and serializable tool results', () => {

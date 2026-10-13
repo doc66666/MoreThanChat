@@ -126,6 +126,12 @@
     },
     {
       "$ref": "#/$defs/pluginDraftInstallResponse"
+    },
+    {
+      "$ref": "#/$defs/pluginDraftExportGroupRequest"
+    },
+    {
+      "$ref": "#/$defs/pluginDraftExportGroupResponse"
     }
   ],
   "$defs": {
@@ -532,6 +538,7 @@
             "pluginDrafts.validate",
             "pluginDrafts.diagnose",
             "pluginDrafts.install",
+            "pluginDrafts.exportGroup",
             "credentials.read",
             "credentials.write"
           ]
@@ -1815,13 +1822,39 @@
             "usage": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["inputTokens", "outputTokens", "totalTokens", "reportedRequests", "requestCount"],
+              "required": [
+                "inputTokens",
+                "outputTokens",
+                "totalTokens",
+                "reportedRequests",
+                "requestCount"
+              ],
               "properties": {
-                "inputTokens": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
-                "outputTokens": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
-                "totalTokens": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
-                "reportedRequests": { "type": "integer", "minimum": 1, "maximum": 6 },
-                "requestCount": { "type": "integer", "minimum": 1, "maximum": 6 }
+                "inputTokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "outputTokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "totalTokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "reportedRequests": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 6
+                },
+                "requestCount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 6
+                }
               }
             }
           }
@@ -2155,6 +2188,9 @@
                   "ok"
                 ],
                 "properties": {
+                  "distribution": {
+                    "const": "group"
+                  },
                   "id": {
                     "type": "string",
                     "minLength": 1,
@@ -2251,6 +2287,9 @@
                     "ok"
                   ],
                   "properties": {
+                    "distribution": {
+                      "const": "group"
+                    },
                     "id": {
                       "type": "string",
                       "minLength": 1,
@@ -2393,6 +2432,9 @@
                 "ok"
               ],
               "properties": {
+                "distribution": {
+                  "const": "group"
+                },
                 "id": {
                   "type": "string",
                   "minLength": 1,
@@ -2530,6 +2572,9 @@
                 "ok"
               ],
               "properties": {
+                "distribution": {
+                  "const": "group"
+                },
                 "id": {
                   "type": "string",
                   "minLength": 1,
@@ -2719,6 +2764,9 @@
                 "ok"
               ],
               "properties": {
+                "distribution": {
+                  "const": "group"
+                },
                 "id": {
                   "type": "string",
                   "minLength": 1,
@@ -2914,6 +2962,109 @@
                   }
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    "pluginDraftExportGroupRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "pluginDrafts.exportGroup"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "draftId",
+            "revision"
+          ],
+          "properties": {
+            "draftId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 128
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "pluginDraftExportGroupResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "pluginDrafts.exportGroup"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifestJson",
+            "source"
+          ],
+          "properties": {
+            "manifestJson": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 20000
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 24000
             }
           }
         }

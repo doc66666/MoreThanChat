@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { IdentitySettings } from './IdentitySettings'
+import { GeneratedGroupPlugin, GroupPluginGate } from './GeneratedGroupPlugin'
 import type {
   GroupPlugin,
   ServerSnapshot,
@@ -271,6 +272,8 @@ export function NetworkPanel({
               {plugin.pack.displayName} · v{plugin.pack.version}
             </strong>
             <small>{plugin.digest}</small>
+            <p>申请人：{plugin.submittedBy}</p>
+            {plugin.pack.artifact&&<><p>{plugin.pack.artifact.manifest.description} · 更新会重置共享状态，成员需重新确认载入。</p><details><summary>审阅完整插件包</summary><pre>{JSON.stringify(plugin.pack,null,2)}</pre></details></>}
             <p>
               界面位置：{plugin.pack.slot}；可向本群发送同步事件，无任意 URL
               或文件权限。
@@ -311,7 +314,11 @@ export function NetworkPanel({
   )
 }
 
-export function GroupPluginView({
+export function GroupPluginView(props:{plugin:GroupPlugin;userId:string;members:string[];onError:(s:string)=>void}) {
+  return <GroupPluginGate plugin={props.plugin} onError={props.onError}>{props.plugin.pack.kind==='declarative'?<GeneratedGroupPlugin {...props}/>:<BundledGroupPluginView {...props}/>}</GroupPluginGate>
+}
+
+function BundledGroupPluginView({
   plugin,
   userId,
   onError,
@@ -322,33 +329,6 @@ export function GroupPluginView({
 }) {
   const [entry, setEntry] = useState(''),
     [busy, setBusy] = useState(false)
-  const disabledKey =
-    'group-plugin-disabled:' + plugin.groupId + ':' + plugin.pack.id
-  const [disabled, setDisabled] = useState(() => {
-    try {
-      return localStorage.getItem(disabledKey) === 'true'
-    } catch {
-      return false
-    }
-  })
-  const toggle = (value: boolean) => {
-    setDisabled(value)
-    try {
-      localStorage.setItem(disabledKey, String(value))
-    } catch {}
-  }
-  if (disabled)
-    return (
-      <section
-        className="group-plugin-widget"
-        data-group-plugin={plugin.pack.id}
-      >
-        <strong>{plugin.pack.displayName} · 本机已停用</strong>
-        <button data-enable-group-plugin onClick={() => toggle(false)}>
-          启用本机界面
-        </button>
-      </section>
-    )
   const send = async (payload: unknown) => {
     setBusy(true)
     try {
@@ -380,9 +360,6 @@ export function GroupPluginView({
           v{plugin.pack.version} · r{plugin.revision}
         </small>
       </h3>
-      <button data-disable-group-plugin onClick={() => toggle(true)}>
-        停用本机界面
-      </button>
       {plugin.pack.kind === 'chain' ? (
         <>
           <ol>
