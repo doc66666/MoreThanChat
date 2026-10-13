@@ -11,7 +11,7 @@ import {
   type ModelTokenUsage,
 } from '@more-than-chat/protocol'
 import { authorToolStarted, type AuthorToolCall, type AuthorToolExecutor, type AuthorToolNotice } from './author-tools'
-import { PLUGIN_AUTHOR_CONTRACT } from './author-contract'
+import { buildModelTranscript } from './model-context'
 import { MemoryModelCredentials, type ModelCredentials } from './credential-client'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
 import {
@@ -26,7 +26,6 @@ export const DEFAULT_MODEL_BASE_URL = 'https://api.deepseek.com'
 export const DEFAULT_MODEL_NAME = 'deepseek-flash'
 const MAX_REPLY_CHARS = 500_000
 const MAX_DELTA_CHARS = 100_000
-const SYSTEM_PROMPT = '你是 MoreThanChat 的桌面助手。用户要求插件时实际调用作者工具创建和校验，不要仅描述方案。不要索取或复述 API key。安装由用户确认。不要在聊天正文输出源码。插件契约：' + JSON.stringify(PLUGIN_AUTHOR_CONTRACT)
 const MAX_TOOL_ROUNDS = 6
 const MAX_TOOL_CALLS = 4
 
@@ -197,7 +196,7 @@ export class ModelService {
       }
       const provider = this.#providers[stream.settings.providerMode]
       if (!provider) throw new ModelServiceError('MODEL_NOT_CONFIGURED', '模型提供方不可用。', false)
-      const transcript: ProviderMessage[] = providerMessages(stream.messages)
+      const transcript: ProviderMessage[] = buildModelTranscript(stream.messages)
       const usage: ModelTokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, requestCount: 0, reportedRequests: 0 }
       let unresolvedTools = false
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -393,11 +392,6 @@ function publishDraft(draft: AuthorToolNotice['draft'], secret: string): AuthorT
   const displayName = redactSecret(draft.displayName, secret).trim().slice(0, 80)
   if (!id || !displayName || !Number.isSafeInteger(draft.revision) || draft.revision < 0) return null
   return { id, displayName, revision: draft.revision, ok: draft.ok }
-}
-
-function providerMessages(messages: readonly ModelChatMessage[]): ProviderMessage[] {
-  if (messages.some(message => message.role === 'system')) return [...messages]
-  return [{ role: 'system', content: SYSTEM_PROMPT }, ...messages]
 }
 
 function parseStoredSettings(value: unknown): StoredSettings | undefined {
