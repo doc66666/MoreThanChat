@@ -340,6 +340,12 @@ button { color: inherit; }
 .forward-targets { display: grid; gap: 8px; max-height: 320px; overflow: auto; }
 .forward-targets button { display: flex; justify-content: space-between; gap: 16px; text-align: left; }
 .forward-targets small { color: var(--muted); }
+.forward-targets span { min-width: 0; overflow-wrap: anywhere; }
+.forward-targets small { flex-shrink: 0; }
+.history-notice { flex-shrink: 0; margin: 8px auto; padding: 12px; width: min(540px, calc(100% - 32px)); box-sizing: border-box; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-secondary); text-align: center; font-size: 13px; }
+.history-notice p { margin: 0 0 10px; overflow-wrap: anywhere; }
+.history-notice > div { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.message-actions button:disabled { opacity: .6; cursor: wait; }
 .composer-quote { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; padding: 10px 12px; border-left: 3px solid var(--accent-border); border-radius: 8px; background: var(--surface-muted); color: var(--text-secondary); }
 .composer-quote > div { flex: 1; min-width: 0; }
 .composer-quote strong { font-size: 12px; font-weight: 600; }

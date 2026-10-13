@@ -102,6 +102,9 @@ import { useChatDraft, clearRetractedDraftQuotes } from './chat-drafts'
 import { useChatReading } from './use-chat-reading'
 import { MessageSearch } from './MessageSearch'
 import { GroupManager } from './GroupManager'
+import { MessageActionDialog } from './MessageActionDialog'
+import { MessageActionGate } from './message-actions'
+import { HistoryNotice } from './HistoryNotice'
 
 function uid(): string {
   return crypto.randomUUID()
@@ -132,12 +135,15 @@ export function App() {
   const [highlightMessage,setHighlightMessage] = useState<string|null>(null)
   const [quotedMessage,setQuotedMessage]=useState<ChatMessage|null>(null)
   const [historyRevision,setHistoryRevision]=useState(0)
-  const [forwardDialog,setForwardDialog]=useState<{message:ChatMessage;clientMessageId:string}|null>(null)
+  const [forwardDialog,setForwardDialog]=useState<{message:ChatMessage}|null>(null)
   const [retractConfirm,setRetractConfirm]=useState<ChatMessage|null>(null)
-  const [messageActionBusy,setMessageActionBusy]=useState(false)
+  const resendGate=useRef(new MessageActionGate())
+  const [resending,setResending]=useState<Set<string>>(()=>new Set())
   type HistoryPage = Awaited<ReturnType<Window['moreThanChat']['getChatHistory']>>
+  type HistoryInput = {before?:number;after?:number;around?:string}
   const [historyWindow,setHistoryWindow] = useState<(HistoryPage & {conversationId:string})|null>(null)
   const [historyBusy,setHistoryBusy] = useState(false)
+  const [historyFailure,setHistoryFailure]=useState<{conversationId:string;input:HistoryInput;error:string}|null>(null)
   const historyRequestRef=useRef(0)
   const [showDetails, setShowDetails] = useState(() => window.innerWidth > 1080)
   const [showPlugins, setShowPlugins] = useState(false)
@@ -190,36 +196,17 @@ export function App() {
     if(target){
       setShowSettings(false);setShowServer(false);setShowPlugins(false);setShowMessageSearch(false);setShowNewChat(false)
       setForwardDialog(null);setRetractConfirm(null)
-      historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false)
+      historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null)
     }
     void window.moreThanChat.navigationApplied(navigation.id).catch(()=>undefined)
     setNavigation(null)
   },[navigation,state])
   const saveTimerRef = useRef<number | undefined>(undefined)
-  useLayoutEffect(()=>{
-    if(!forwardDialog&&!retractConfirm)return
-    const dialog=document.querySelector<HTMLElement>('[data-forward-dialog], [data-retract-dialog]')
-    if(!dialog)return
-    dialog.tabIndex=-1
-    const focusable=()=>[...dialog.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
-    ;(focusable()[0]??dialog).focus()
-    const trap=(event:globalThis.KeyboardEvent)=>{
-      if(event.key!=='Tab')return
-      const controls=focusable(),first=controls[0],last=controls.at(-1)
-      if(!first){event.preventDefault();dialog.focus();return}
-      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}
-      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}
-    }
-    dialog.addEventListener('keydown',trap)
-    return()=>dialog.removeEventListener('keydown',trap)
-  },[forwardDialog,retractConfirm,messageActionBusy])
-
   useEffect(() => {
     const escape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('.composer-menu')) return
-      if(forwardDialog){if(!messageActionBusy)setForwardDialog(null)}
-      else if(retractConfirm){if(!messageActionBusy)setRetractConfirm(null)}
-      else if (showMessageSearch) setShowMessageSearch(false)
+      if(forwardDialog||retractConfirm)return // The mounted dialog owns Escape and its synchronous action lock.
+      if (showMessageSearch) setShowMessageSearch(false)
       else if (showServer) setShowServer(false)
       else if (showSettings) setShowSettings(false)
       else if (showPlugins) setShowPlugins(false)
@@ -228,7 +215,7 @@ export function App() {
     }
     document.addEventListener('keydown', escape)
     return () => document.removeEventListener('keydown', escape)
-  }, [showServer, showSettings, showPlugins, showNewChat, showMessageSearch, forwardDialog,retractConfirm,messageActionBusy])
+  }, [showServer, showSettings, showPlugins, showNewChat, showMessageSearch, forwardDialog,retractConfirm])
 
   useEffect(() => {
     const dispose = uiSlotRegistry.subscribe(() =>
@@ -257,7 +244,7 @@ export function App() {
       )
       if(imported){
         historyRequestRef.current++
-        setHistoryWindow(null);setHistoryBusy(false);setHighlightMessage(null)
+        setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null);setHighlightMessage(null)
         setForwardDialog(null);setRetractConfirm(null);setShowMessageSearch(false)
         setQuotedMessage(null);setHistoryRevision(revision=>revision+1)
       }
@@ -487,7 +474,7 @@ export function App() {
   },[active?.id,chatDraft.quoteMessageId,historyRevision])
   const historic=historyWindow?.conversationId===active?.id ? historyWindow : null
   const visibleMessages=historic?.messages ?? messages
-  const reading = useChatReading(active?.id,visibleMessages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(forwardDialog) || Boolean(retractConfirm))
+  const reading = useChatReading(active?.id,visibleMessages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(historyFailure) || Boolean(forwardDialog) || Boolean(retractConfirm))
   useLayoutEffect(()=>{
     if(!highlightMessage)return
     reading.pauseReading()
@@ -562,7 +549,7 @@ export function App() {
   )
 
   function selectConversation(id: string) {
-    historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHighlightMessage(null)
+    historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null);setHighlightMessage(null)
     void window.moreThanChat.focusChatWindow?.().catch(()=>undefined)
     setState((current) =>
       current
@@ -583,9 +570,9 @@ export function App() {
     } catch(error){setToast(errorText(error))}
   }
 
-  async function loadHistory(conversationId:string,input:{before?:number;after?:number;around?:string}={}) {
+  async function loadHistory(conversationId:string,input:HistoryInput={}) {
     const request=++historyRequestRef.current
-    setHistoryBusy(true);reading.pauseReading()
+    setHistoryBusy(true);setHistoryFailure(null);reading.pauseReading()
     try {
       // Flush local AI edits before reading SQLite; network messages are already durable.
       if(stateRef.current)await window.moreThanChat.saveState(stateRef.current)
@@ -593,24 +580,20 @@ export function App() {
       if(request!==historyRequestRef.current)return
       setHistoryWindow({...page,conversationId});setHighlightMessage(input.around??null)
       if(!input.around)requestAnimationFrame(()=>{if(request===historyRequestRef.current&&reading.scrollRef.current)reading.scrollRef.current.scrollTop=0})
-    }catch(error){if(request===historyRequestRef.current)setToast(errorText(error))}
+    }catch(error){if(request===historyRequestRef.current)setHistoryFailure({conversationId,input,error:errorText(error)})}
     finally{if(request===historyRequestRef.current)setHistoryBusy(false)}
   }
   function returnToLatest() {
-    historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHighlightMessage(null)
+    historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null);setHighlightMessage(null)
     requestAnimationFrame(()=>reading.jumpToLatest())
   }
-  async function forwardTo(conversationId:string) {
-    if(!forwardDialog||messageActionBusy)return
-    setMessageActionBusy(true)
-    try{await window.moreThanChat.forwardChatMessage({messageId:forwardDialog.message.id,conversationId,clientMessageId:forwardDialog.clientMessageId});setForwardDialog(null);setToast('转发已加入发送队列')}
-    catch(error){setToast(errorText(error))}finally{setMessageActionBusy(false)}
-  }
-  async function confirmRetraction() {
-    if(!retractConfirm||messageActionBusy)return
-    setMessageActionBusy(true)
-    try{await window.moreThanChat.retractChatMessage(retractConfirm.id);setRetractConfirm(null);setToast('消息已撤回')}
-    catch(error){setToast(errorText(error))}finally{setMessageActionBusy(false)}
+  async function resendMessage(message:ChatMessage) {
+    await resendGate.current.run(message.id,async()=>{
+      setResending(current=>new Set(current).add(message.id))
+      try {await window.moreThanChat.retryChatMessage(message.id);setToast('消息已重新加入发送队列，连接可用时自动发送')}
+      catch(error){setToast(errorText(error))}
+      finally{setResending(current=>{const next=new Set(current);next.delete(message.id);return next})}
+    })
   }
 
   async function sendMessage(voiceAttachment?: AttachmentRef) {
@@ -1311,7 +1294,10 @@ export function App() {
             </button>
           </div>
         </header>
-        <div className="chat-header-plugins">{renderSlot('chat.header')}</div>
+        <div className="chat-header-plugins">
+          <HistoryNotice busy={historyBusy} error={historyFailure?.conversationId===active.id?historyFailure.error:''} onRetry={()=>{if(historyFailure)void loadHistory(historyFailure.conversationId,historyFailure.input)}} onLatest={returnToLatest}/>
+          {renderSlot('chat.header')}
+        </div>
 
         <section className="message-scroll" aria-live="polite" ref={reading.scrollRef} onScroll={reading.onScroll}>
           {(historic?.hasOlder ?? state.history?.[active.id]?.hasOlder)&&<button className="history-more" data-history-older disabled={historyBusy} onClick={()=>void loadHistory(active.id,{before:(historic?.before ?? state.history?.[active.id]?.before)!})}>{historyBusy?'加载中…':'查看更早的消息'}</button>}
@@ -1334,9 +1320,10 @@ export function App() {
                   compact={visible[index - 1]?.senderId === message.senderId}
                   highlighted={highlightMessage===message.id}
                   onCopy={()=>void window.moreThanChat.copyChatMessage(message.id).then(()=>setToast('已复制')).catch(e=>setToast(e.message))}
-                  onResend={message.serverId && message.role==='self' && ['failed','queued'].includes(message.status) ? ()=>void window.moreThanChat.retryChatMessage(message.id).catch(e=>setToast(e.message)) : undefined}
+                  resending={resending.has(message.id)}
+                  onResend={message.serverId && !active.unavailable && message.role==='self' && ['failed','queued'].includes(message.status) ? ()=>void resendMessage(message) : undefined}
                   onQuote={message.serverId&&message.actionsSupported&&message.status==='sent'&&!active.unavailable?()=>{chatDraft.setQuoteMessageId(message.id);requestAnimationFrame(()=>document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus())}:undefined}
-                  onForward={message.serverId&&message.actionsSupported&&message.status==='sent'?()=>setForwardDialog({message,clientMessageId:uid()}):undefined}
+                  onForward={message.serverId&&message.actionsSupported&&message.status==='sent'?()=>setForwardDialog({message}):undefined}
                   onRetract={message.serverId&&message.actionsSupported&&message.role==='self'&&message.status==='sent'&&Date.now()-message.createdAt<=120000?()=>setRetractConfirm(message):undefined}
                   onLocateQuote={message.quote&&!message.quote.retracted?()=>void loadHistory(active.id,{around:message.quote!.messageId}):undefined}
                   onRetry={
@@ -1590,8 +1577,8 @@ export function App() {
           />
         </>
       )}
-      {forwardDialog&&<div className="modal-backdrop" onMouseDown={()=>{if(!messageActionBusy)setForwardDialog(null)}}><section className="new-chat-modal message-action-modal" data-forward-dialog role="dialog" aria-modal="true" aria-label="转发消息" onMouseDown={e=>e.stopPropagation()}><div className="drawer-header"><h2>转发消息</h2><button className="icon-button" disabled={messageActionBusy} onClick={()=>setForwardDialog(null)} aria-label="关闭转发"><X size={18}/></button></div><p className="settings-note">作为独立新消息发送，只能选择同一中心服务器的好友或群。</p><p className="forward-preview">{forwardDialog.message.text.slice(0,160)||forwardDialog.message.attachment?.name}</p><div className="forward-targets">{state.conversations.filter(c=>c.serverId===forwardDialog.message.serverId&&!c.unavailable&&c.kind!=='assistant').map(c=><button className="secondary-button" key={c.id} data-forward-target={c.id} disabled={messageActionBusy} onClick={()=>void forwardTo(c.id)}><span>{c.title}</span><small>{c.kind==='group'?'群聊':'好友'}</small></button>)}</div></section></div>}
-      {retractConfirm&&<div className="modal-backdrop" onMouseDown={()=>{if(!messageActionBusy)setRetractConfirm(null)}}><section className="new-chat-modal message-action-modal" data-retract-dialog role="dialog" aria-modal="true" aria-label="确认撤回" onMouseDown={e=>e.stopPropagation()}><h2>撤回这条消息？</h2><p className="settings-note">仅本人两分钟内的消息可以撤回。离线成员上线后会收到撤回通知；已经转发、下载或复制的内容无法保证删除。</p><div className="modal-actions"><button className="secondary-button" disabled={messageActionBusy} onClick={()=>setRetractConfirm(null)}>取消</button><button className="primary-button" data-confirm-retract disabled={messageActionBusy} onClick={()=>void confirmRetraction()}>{messageActionBusy?'正在撤回…':'确认撤回'}</button></div></section></div>}
+      {forwardDialog&&<MessageActionDialog key={'forward:'+forwardDialog.message.id} kind="forward" message={forwardDialog.message} conversations={state.conversations} onClose={()=>setForwardDialog(null)} onComplete={notice=>{setForwardDialog(null);setToast(notice)}}/>}
+      {retractConfirm&&<MessageActionDialog key={'retract:'+retractConfirm.id} kind="retract" message={retractConfirm} conversations={state.conversations} onClose={()=>setRetractConfirm(null)} onComplete={notice=>{setRetractConfirm(null);setToast(notice)}}/>}
       {showMessageSearch&&<MessageSearch conversationId={active.id} title={active.title} conversationTitles={Object.fromEntries(state.conversations.map(c=>[c.id,c.title]))} onClose={()=>setShowMessageSearch(false)} onSelect={row=>{selectConversation(row.conversationId);setShowMessageSearch(false);void loadHistory(row.conversationId,{around:row.messageId})}}/>}
       {showServer && (
         <NetworkPanel
@@ -1694,12 +1681,13 @@ function Avatar({
   )
 }
 
-const MessageBubble = memo(function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   compact,
   onRetry,
   onCopy,
   onResend,
+  resending = false,
   highlighted,
   onQuote,
   onForward,
@@ -1711,6 +1699,7 @@ const MessageBubble = memo(function MessageBubble({
   onRetry: (() => void) | undefined
   onCopy: () => void
   onResend?: (() => void) | undefined
+  resending?: boolean
   highlighted?: boolean
   onQuote?:(()=>void)|undefined
   onForward?:(()=>void)|undefined
@@ -1758,7 +1747,7 @@ const MessageBubble = memo(function MessageBubble({
             </ul>
           )}
           <span className="bubble-meta">{messageMeta(message)}</span>
-          <div className="message-actions"><button className="message-copy" title="复制消息" onClick={onCopy}><Copy size={13}/></button>{onQuote&&<button title="引用回复" data-quote-message={message.id} onClick={onQuote}><Reply size={13}/></button>}{onForward&&<button title="转发消息" data-forward-message={message.id} onClick={onForward}><Forward size={13}/></button>}{onRetract&&<button title="撤回消息" data-retract-message={message.id} onClick={onRetract}><Undo2 size={13}/></button>}{onResend&&<button className="message-resend" onClick={onResend}>{message.status==='queued'?'立即重试':'重新发送'}</button>}</div>
+          <div className="message-actions"><button className="message-copy" title="复制消息" aria-label="复制消息" onClick={onCopy}><Copy size={13}/></button>{onQuote&&<button title="引用回复" aria-label="引用回复" data-quote-message={message.id} onClick={onQuote}><Reply size={13}/></button>}{onForward&&<button title="转发消息" aria-label="转发消息" data-forward-message={message.id} onClick={onForward}><Forward size={13}/></button>}{onRetract&&<button title="撤回消息" aria-label="撤回消息" data-retract-message={message.id} onClick={onRetract}><Undo2 size={13}/></button>}{onResend&&<button className="message-resend" disabled={resending} aria-busy={resending} onClick={onResend}>{resending?'正在加入队列…':message.status==='queued'?'立即重试':'重新发送'}</button>}</div>
           {message.usage && (
             <span
               className="message-usage"

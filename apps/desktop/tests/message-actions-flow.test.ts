@@ -9,6 +9,7 @@ import { ClientIdentity } from '../src/main/identity-store'
 import { AttachmentStore } from '../src/main/attachments'
 import { CentralClient } from '../src/main/central-client'
 import { createCentralServer } from '../../central-server/src/server.mjs'
+import { ForwardAttemptIds } from '../src/renderer/src/message-actions'
 
 const cleanups:(()=>Promise<void>)[]=[]
 afterEach(async()=>{vi.restoreAllMocks();for(const cleanup of cleanups.splice(0))await cleanup()})
@@ -25,6 +26,27 @@ async function fixture(){
   return{a,b,aid,bid,server,url}
 }
 describe('chat message action integration',()=>{
+  it('retries a forwarding destination without duplicate messages and allows another destination',async()=>{
+    const {a,b,aid,bid,server}=await fixture(),clientId=randomUUID()
+    await a.client.send({conversationId:aid,clientMessageId:clientId,text:'forward-retry-original'})
+    await until(()=>Boolean(b.store.messageByClient(server.serverId,a.uid,clientId)?.actionsSupported))
+    const original=b.store.messageByClient(server.serverId,a.uid,clientId)!
+    const grouped=await a.client.action('groups',{name:'Forward retry group',memberIds:[b.uid]}),group=grouped.directory!.groups[0]!.id
+    await until(()=>Boolean(b.store.load()?.conversations.some(c=>c.targetId===group)))
+    const bgroup=String(b.store.load()!.conversations.find(c=>c.targetId===group)!.id)
+    const ids=new ForwardAttemptIds(randomUUID)
+    // A renderer can lose its reply after the first request was durably queued.
+    await b.client.forwardMessage(String(original.id),bid,ids.forTarget(bid))
+    await b.client.forwardMessage(String(original.id),bid,ids.forTarget(bid))
+    await b.client.forwardMessage(String(original.id),bgroup,ids.forTarget(bgroup))
+    await until(()=>Boolean(a.store.messageByClient(server.serverId,b.uid,ids.forTarget(bid))&&a.store.messageByClient(server.serverId,b.uid,ids.forTarget(bgroup))))
+    for(const store of [a.store,b.store]){
+      for(const target of [bid,bgroup]){
+        const copies=Object.values(store.load()!.messages).flat().filter(m=>m.senderId===b.uid&&m.clientMessageId===ids.forTarget(target))
+        expect(copies).toHaveLength(1)
+      }
+    }
+  })
   it('uses the accepted sender name when an offline queue is sent after changing nickname',async()=>{
     const {a,b,aid,server,url}=await fixture(),clientId=randomUUID()
     await a.client.disconnect(false);await a.client.send({conversationId:aid,clientMessageId:clientId,text:'queued-before-rename'})
