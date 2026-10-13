@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,6 +18,114 @@ afterEach(async () => {
 })
 
 describe('plugin author tool loop', () => {
+  it('pages summaries and reads the latest complete draft after reopening its store', async () => {
+    const directory = await tempDir()
+    const options = { dataDir: directory, installedPlugins: () => [] }
+    const drafts = new PluginDraftService(options)
+    for (let n = 0; n < 7; n++) await drafts.create({ manifestJson: manifest(`example.item-${n}`), source })
+    const largeSource = JSON.stringify({ kind: 'host-text-tool', toolId: 'note', label: '保留', text: '原规则'.repeat(6_000) })
+    await drafts.create({ manifestJson: manifest('example.item-6'), source: largeSource })
+    const executor = createAuthorToolExecutor(new PluginDraftService(options))
+    const inspect = (args: unknown) => executor.execute({ id: 'read', name: 'inspect_drafts', arguments: JSON.stringify(args) })
+    const first = JSON.parse((await inspect({})).content)
+    expect(first.drafts).toHaveLength(4)
+    expect(first.pagination.nextOffset).toBe(4)
+    const second = JSON.parse((await inspect({ offset: first.pagination.nextOffset })).content)
+    expect(second.drafts.map((item: { id: string }) => item.id)).toEqual(['example.item-4', 'example.item-5', 'example.item-6'])
+    expect(second.pagination.nextOffset).toBeNull()
+    const snapshot = await inspect({ draftId: 'example.item-6' })
+    expect(snapshot.content.length).toBeGreaterThan(16_000)
+    expect(JSON.parse(snapshot.content)).toMatchObject({ source: largeSource, draft: { revision: 2 }, untrustedData: true, installable: false })
+    expect(snapshot.notice).toMatchObject({ ok: true, pendingInstall: false, draft: null })
+    expect(JSON.stringify(snapshot.notice)).not.toContain('原规则')
+    expect(JSON.stringify([first, second])).not.toContain('原规则')
+  })
+
+  it.each(['null', '[]', '{', '{"offset":-1}', '{"offset":1.5}', '{"offset":101}', '{"offset":null}',
+    '{"path":"../secret"}', '{"draftId":"../secret"}', '{"draftId":"example.note","offset":0}'])('refuses invalid inspection arguments %s', async raw => {
+    const drafts = new PluginDraftService({ dataDir: await tempDir(), installedPlugins: () => [] })
+    const result = await createAuthorToolExecutor(drafts).execute({ id: 'bad', name: 'inspect_drafts', arguments: raw })
+    expect(result.notice).toMatchObject({ ok: false, pendingInstall: false, draft: null })
+  })
+
+  it.each(['secret', 'json-secret', 'wrong-id', 'wrong-revision', 'invalid', 'oversize'])('does not disclose or fall back from a tampered latest draft: %s', async kind => {
+    const directory = await tempDir()
+    const drafts = new PluginDraftService({ dataDir: directory, installedPlugins: () => [] })
+    await drafts.create({ manifestJson: manifest('example.note'), source })
+    await drafts.create({ manifestJson: manifest('example.note'), source })
+    const file = path.join(directory, 'plugin-drafts', 'example.note', 'revision-2.json')
+    const record = JSON.parse(await readFile(file, 'utf8'))
+    if (kind === 'secret') record.source = secret
+    if (kind === 'json-secret') record.source = JSON.stringify({ apiKey: 'fake-credential-value' })
+    if (kind === 'wrong-id') record.manifest.id = 'example.other'
+    if (kind === 'wrong-revision') record.revision = 1
+    if (kind === 'invalid') record.v = 999
+    if (kind === 'oversize') record.source = 'x'.repeat(40_001)
+    await writeFile(file, JSON.stringify(record))
+    const result = await createAuthorToolExecutor(drafts).execute({ id: 'read', name: 'inspect_drafts', arguments: '{"draftId":"example.note"}' })
+    expect(result.notice.ok).toBe(false)
+    expect(result.content).not.toContain(secret)
+    expect(result.content).not.toContain('fake-credential-value')
+    expect(result.content).not.toContain(source)
+  })
+
+  it('refuses a draft directory junction outside the private store', async () => {
+    const directory = await tempDir()
+    const outside = await tempDir()
+    const drafts = new PluginDraftService({ dataDir: directory, installedPlugins: () => [] })
+    await drafts.create({ manifestJson: manifest('example.note'), source })
+    await writeFile(path.join(outside, 'revision-1.json'), JSON.stringify({ v: 1, revision: 1, createdAt: 1, manifest: JSON.parse(manifest('example.link')), source }))
+    await symlink(outside, path.join(directory, 'plugin-drafts', 'example.link'), process.platform === 'win32' ? 'junction' : 'dir')
+    await expect(drafts.readForAuthor('example.link')).rejects.toThrow()
+  })
+
+  it('allows repair of invalid non-secret source without executing it', async () => {
+    const drafts = new PluginDraftService({ dataDir: await tempDir(), installedPlugins: () => [] })
+    const invalidSource = 'globalThis.__mtcAuthorToolRan = true; fetch("https://example.invalid")'
+    await drafts.create({ manifestJson: manifest('example.note'), source: invalidSource })
+    const result = await createAuthorToolExecutor(drafts).execute({ id: 'read', name: 'inspect_drafts', arguments: '{"draftId":"example.note"}' })
+    expect(JSON.parse(result.content)).toMatchObject({ source: invalidSource, draft: { ok: false }, installable: false })
+    expect(result.notice).toMatchObject({ ok: true, pendingInstall: false })
+    expect((globalThis as { __mtcAuthorToolRan?: boolean }).__mtcAuthorToolRan).toBeUndefined()
+  })
+
+  it('rejects an oversized serialized snapshot instead of returning truncated JSON', async () => {
+    const drafts = new PluginDraftService({ dataDir: await tempDir(), installedPlugins: () => [] })
+    await drafts.create({ manifestJson: manifest('example.note'), source: '\u0000'.repeat(20_000) })
+    const result = await createAuthorToolExecutor(drafts).execute({ id: 'read', name: 'inspect_drafts', arguments: '{"draftId":"example.note"}' })
+    expect(result.notice.ok).toBe(false)
+    expect(result.content).toContain('未返回部分源码')
+  })
+
+  it('revises an existing draft in a fresh conversation without leaking source into progress', async () => {
+    const original = JSON.stringify({ kind: 'composer-text-action', actionId: 'keep-me', label: '原按钮', text: 'private-draft-marker' })
+    const provider: ChatModelProvider = {
+      async stream(request, onDelta) {
+        const results = request.messages.filter(message => message.role === 'tool')
+        if (!results.length) return { toolCalls: [{ id: 'read', name: 'inspect_drafts', arguments: '{"draftId":"example.note"}' }] }
+        if (results.length === 1) {
+          const snapshot = JSON.parse(results[0]!.content!)
+          expect(snapshot.source).toBe(original)
+          const program = JSON.parse(snapshot.source)
+          program.label = '新按钮'
+          return { toolCalls: [{ id: 'edit', name: 'create_draft', arguments: JSON.stringify({ manifestJson: snapshot.manifestJson, source: JSON.stringify(program) }) }] }
+        }
+        if (results.length === 2) return { toolCalls: [{ id: 'check', name: 'validate_draft', arguments: '{"draftId":"example.note"}' }] }
+        onDelta('草稿修改完成，等待用户确认')
+        return { toolCalls: [] }
+      },
+    }
+    const { service, drafts, events } = await createLoop(provider)
+    await drafts.create({ manifestJson: manifest('example.note'), source: original })
+    service.start(startInput(), event => events.push(event))
+    await waitFor(() => events.some(event => event.event === 'model.chat.completed'))
+    const revised = await drafts.readForAuthor('example.note')
+    expect(revised.draft.revision).toBe(2)
+    expect(JSON.parse(revised.source)).toMatchObject({ actionId: 'keep-me', label: '新按钮', text: 'private-draft-marker' })
+    expect(JSON.stringify(events)).not.toContain('private-draft-marker')
+    expect(events.filter(event => event.event === 'model.authorTool' && event.payload.tool === 'inspect_drafts').every(event => event.event === 'model.authorTool' && !event.payload.pendingInstall)).toBe(true)
+  })
+
   it('creates a draft from a model tool call without executing its source', async () => {
     const seen: string[] = []
     const provider: ChatModelProvider = {

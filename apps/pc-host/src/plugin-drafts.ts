@@ -1,4 +1,4 @@
-import { chmod, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { validatePluginManifest, type PluginManifestV1 } from '@more-than-chat/plugin-runtime'
 import type {
@@ -100,6 +100,23 @@ export class PluginDraftService {
     return this.#report(draftId, 'diagnose')
   }
 
+  /** Model-only snapshot, never part of chat-visible progress or the public Host RPC. */
+  readForAuthor(draftId: string) {
+    return this.#enqueue(async () => {
+      const stored = await this.#readLatest(draftId)
+      const manifestJson = JSON.stringify(stored.manifest)
+      // Recheck disk contents, not the stored validation flag. Invalid non-secret drafts
+      // remain readable as untrusted data so the author can repair them.
+      if (containsSecret(manifestJson) || containsSecret(stored.source)) throw new Error('Unsafe draft')
+      if (manifestJson.length > 8_000 || stored.source.length > 40_000) throw new Error('Draft too large')
+      const assessed = assessDraft(manifestJson, stored.source, this.#installedPlugins())
+      return {
+        draft: summaryOf(stored.manifest, stored.revision, stored.createdAt, assessed.ok),
+        manifestJson, source: stored.source, issues: assessed.issues.slice(0, 6),
+      }
+    })
+  }
+
   /** Export only a validated, immutable revision selected by the user. No installation. */
   exportGroup(draftId: string, revision: number): Promise<{ manifestJson: string; source: string }> {
     return this.#enqueue(async () => {
@@ -168,7 +185,7 @@ export class PluginDraftService {
       throw error
     }
     const summaries: PluginDraftSummary[] = []
-    for (const name of names) {
+    for (const name of names.sort()) {
       if (!isDraftId(name)) continue
       try {
         const stored = await this.#readLatest(name)
@@ -204,6 +221,9 @@ export class PluginDraftService {
     const directory = this.#draftDirectory(id)
     let names: string[]
     try {
+      for (const target of [this.#root, directory]) {
+        if (!(await lstat(target)).isDirectory()) throw new Error('Not a private draft directory')
+      }
       names = await readdir(directory)
     }
     catch {
@@ -217,9 +237,12 @@ export class PluginDraftService {
     for (const revision of revisions) {
       const file = path.join(directory, `revision-${revision}.json`)
       try {
+        const info = await lstat(file)
+        if (!info.isFile() || info.size > 512_000) throw new Error('Invalid draft file')
         const parsed = JSON.parse(await readFile(file, 'utf8')) as unknown
         const stored = parseStoredRevision(parsed)
-        if (stored) return stored
+        if (!stored || stored.manifest.id !== id || stored.revision !== revision) throw new Error('Invalid draft revision')
+        return stored
       }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
@@ -391,7 +414,7 @@ function findDangerousApis(source: string): string[] {
 function containsSecret(value: string): boolean {
   return /bearer\s+\S+/i.test(value)
     || /\bsk-[A-Za-z0-9_-]{8,}/.test(value)
-    || /api[_-]?key\s*[:=]\s*['"][^'"]{4,}['"]/i.test(value)
+    || /api[_-]?key['"]?\s*[:=]\s*['"][^'"]{4,}['"]/i.test(value)
 }
 
 function redactSensitive(value: string): string {
