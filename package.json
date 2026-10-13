@@ -9,6 +9,8 @@
     "central:serve": "pnpm --filter @more-than-chat/central-protocol build && pnpm --filter @more-than-chat/central-server start",
     "central:dev": "pnpm --filter @more-than-chat/central-protocol build && node scripts/run-central-dev.mjs",
     "central:package": "pnpm --filter @more-than-chat/central-protocol build && node scripts/stage-central-release.mjs",
+    "central:status": "node scripts/central-status.mjs",
+    "verify:central-ops": "pnpm central:package && node scripts/verify-central-ops.mjs && node scripts/verify-central-ops.mjs --release .artifacts/central-release",
     "demo:clients": "pnpm build && node scripts/start-test-clients.mjs",
     "build": "pnpm build:host && pnpm --filter @more-than-chat/desktop build && node scripts/stage-host-resources.mjs && node scripts/package-dir.mjs --if-ci",
     "stage:host": "node scripts/stage-host-resources.mjs",

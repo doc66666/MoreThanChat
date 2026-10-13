@@ -1,0 +1,31 @@
+[Unit]
+Description=MoreThanChat central relay
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=more-than-chat
+Group=more-than-chat
+WorkingDirectory=/opt/more-than-chat/current
+EnvironmentFile=/etc/more-than-chat/server.env
+LoadCredential=admin-token:/etc/more-than-chat/admin-token
+Environment=MTC_SERVER_ADMIN_TOKEN_FILE=%d/admin-token
+ExecStart=/usr/bin/node /opt/more-than-chat/current/server.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGTERM
+StateDirectory=more-than-chat
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

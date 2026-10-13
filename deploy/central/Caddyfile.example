@@ -1,0 +1,16 @@
+# Replace with your real domain; DNS and ports 80/443 must reach Caddy.
+chat.example.com {
+    # Keep administration on loopback (operator CLI over SSH), not the public edge.
+    respond /v1/admin/* 404
+    request_body {
+        max_size 8MiB
+    }
+    reverse_proxy 127.0.0.1:8787 {
+        transport http {
+            dial_timeout 3s
+            # Client long-poll lasts 25 seconds. Do not use a shorter proxy timeout.
+            response_header_timeout 35s
+        }
+    }
+    # Access logs are intentionally not enabled: URLs may contain user/group IDs.
+}

@@ -102,7 +102,7 @@ node central-access.mjs allow usr_用户完整全局ID https://私服地址
 node central-access.mjs deny usr_用户完整全局ID https://私服地址
 ```
 
-本机开发脚本的管理员密钥保存在 `.artifacts/central-dev/admin-token`，CLI 可读取该文件，源码及客户端设置不包含密钥。远端配置必须使用 HTTPS 反向代理；直接远端 HTTP 被客户端拒绝。
+本机开发脚本的管理员密钥保存在 `.artifacts/central-dev/admin-token`，CLI 可读取该文件，源码及客户端设置不包含密钥。远端配置必须使用 HTTPS 反向代理；直接远端 HTTP 被客户端拒绝。Linux 服务管理与安全配置见本文末尾的运维阶段，支持 `MTC_SERVER_ADMIN_TOKEN_FILE`，不必把令牌放入环境变量。
 
 首版限制：每用户最多 500 个好友/申请、40 个群，每群最多 20 人、50 个包版本；单个自定义事件最多 32000 字符，服务器暂存预算 512 MiB。尚未实现公网运营所需的集群、端到端加密、完整限流/账号恢复、群多管理员与安全可执行插件沙箱。
 
@@ -177,3 +177,53 @@ node central-access.mjs deny usr_用户完整全局ID https://私服地址
 - 上限为 1 GiB 编码内容、100 万条历史记录、8 MiB 单条聊天记录、5 MiB 单附件；Base64 计入总量。暂不提供定时备份、云同步、跨身份合并和 Android 历史格式；未进行公网部署、上限规模压力或断电耐久验证。
 - `pnpm verify:history-ui` 用临时中心和独立 Electron 用户空间验收；只在测试进程 Main inspector 中替代系统文件选择/确认，不增加生产测试 IPC。开发版和 Windows 目录版均验证导出 3 会话/89 消息/1 附件，新身份空间保留原 2 条并恢复到 91 条；重复恢复新增 0、跳过 89；导入、接服、打开及重启均不重发消息或已读回执。还覆盖密码不一致、错密码、取消、忙态重开设置、首屏外历史搜索/附件保存、分页失效和重启持久化。
 - 本轮全仓类型检查、217 项单测通过（Windows 符号链接测试跳过 1 项），构建及 Windows 目录包校验通过；白天/夜间迁移界面截图已检查。目录版完整中心聊天/群插件流程、后台收件与通知、AI 插件生成/确认/热更新/重启恢复也回归通过；AI 使用本地模拟 API，未消耗真实额度。结果为 `.artifacts/history-acceptance.json` / `history-acceptance-packaged.json`，截图为 `.artifacts/history-transfer-*.png`。CI 已加入开发版和目录版迁移流程；本轮未推送，远端 CI 状态不据此作保证。
+
+### 中心服务器部署与故障恢复（2026-10-13 后续阶段）
+
+发布目录现在同时包含独立 Node 服务、管理员 `central-access.mjs` / `central-status.mjs`、Linux systemd/Caddy 模板和本文 `OPERATIONS.md`。默认仍为 localhost；没有替用户部署公网服务、购买域名或打开防火墙。运行时基线为 Node 24.12.0 / Node 24 LTS，升级 Node 补丁后应重跑验收。
+
+#### 启动、停机与诊断
+
+- 服务用独立 SQLite 锁文件持有操作系统锁，同一数据目录只能运行一个支持此锁的新版本实例；崩溃后锁自动释放。不要手动删除 `server.lock.sqlite`、SQLite WAL/SHM 文件，不要让旧版本、其它脚本或多个容器绕过锁共用数据目录。数据必须放在可靠的本机文件系统，不支持共享网络文件系统或多节点同时写入。
+- 参数错误、数据占用、监听失败会退出非零并留下固定错误码日志，不回显令牌、请求正文、URL 查询、UID 或磁盘路径。`MTC_SERVER_ADMIN_TOKEN` 与 `MTC_SERVER_ADMIN_TOKEN_FILE` 二选一；令牌为 24–8192 个可见 ASCII 字符，令牌文件是至多 8 KiB 的普通文件，可有一个末尾换行。不要把令牌放进客户端、命令行参数或仓库。
+- 环境中的白/黑名单只给**尚无管理记录的 UID**添加启动种子，不覆盖管理员后来设置的 allow/deny。改名单请用管理 CLI；已有数据目录不能切换 public/private 模式。私服空白名单拒绝所有身份。
+- `GET /healthz` 仅报告进程存活；`GET /readyz` 检查运行状态及数据库中的服务器身份。它们不返回私有统计，也不等于磁盘可写、完整数据库校验或容量充足。关停先停止接入、结束长轮询，再等待已接收操作；默认 10 秒后中止未读完请求，所有处理结束后才关闭数据库。`MTC_SERVER_SHUTDOWN_TIMEOUT_MS` 可设 1–60000；systemd 停机超时应更长。[Node HTTP 关闭语义](https://nodejs.org/docs/latest-v24.x/api/http.html#serverclosecallback)
+- `GET /v1/admin/status` 要求管理员 Bearer 令牌，仅返回用户/群/设备计数、待收行数、UTF-8 队列载荷字节、设备投递义务数、最老排队时长与运行聚合。`payloadBytes` 包括 JSON 和附件 Base64，并非原始附件大小。无消息正文、用户/设备标识、IP、令牌。`node central-status.mjs http://127.0.0.1:8787` 查询本机服务；仓库中可用 `pnpm central:status`。
+- 基础保护为 1024 个连接、256 个活跃请求（包括长轮询），每身份/设备最多 2 个等待收件请求；拥堵返回带 `Retry-After` 的 429。内部故障返回脱敏 500，参数错误仍是 400。这不是完整的按身份速率限制或抗 DDoS 系统，公网仍需边缘防护和容量监控。
+- 好友、群和插件审批的变化与目录通知入队为同一事务；配额或数据库写入失败会一起回滚，不再出现“操作成功但 API 报失败”的状态。512 MiB 是**新业务入队预算**；可信 ACK 衍生的、小型且按消息合并/按首次已读生成的控制通知不受该预算阻挡，避免满队列时 ACK 无法推进。实际总量可能暂时超预算，管理统计不会隐藏它；物理磁盘写满仍会明确失败，不能承诺零磁盘空间下继续服务。
+
+#### Linux 单机部署模板
+
+模板位于仓库 `deploy/central/`，发布包中为 `deploy/`。下面是供管理员执行的示例，不是已在用户远端完成的部署；将版本目录、Node 路径和域名换成实际值。使用非 root 服务账户，将代码与 `/var/lib/more-than-chat` 数据分开。
+
+```sh
+# 一次性创建账户与配置目录；若已存在，不要重复创建或覆盖原配置。
+sudo useradd --system --home-dir /var/lib/more-than-chat --shell /usr/sbin/nologin more-than-chat
+sudo install -d -m 0700 /etc/more-than-chat
+# 将完整发布包放到 /opt/more-than-chat/releases/<版本>，current 指向该版本。
+sudo install -m 0644 deploy/more-than-chat.service /etc/systemd/system/more-than-chat.service
+sudo install -m 0600 deploy/server.env.example /etc/more-than-chat/server.env
+# 独占创建随机令牌；文件已存在时会失败，绝不覆盖旧令牌。
+sudo /usr/bin/node --input-type=module -e 'import{randomBytes}from"node:crypto";import{writeFileSync}from"node:fs";writeFileSync("/etc/more-than-chat/admin-token",randomBytes(32).toString("base64url")+"\n",{flag:"wx",mode:0o600})'
+sudo systemd-analyze verify /etc/systemd/system/more-than-chat.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now more-than-chat
+curl --fail http://127.0.0.1:8787/readyz
+sudo journalctl -u more-than-chat -n 50 --no-pager
+```
+
+先检查 `/usr/bin/node --version`，按实际安装路径调整 `ExecStart`。systemd 使用 `LoadCredential` 把 root 私有令牌提供给非 root 服务；`StateDirectory` 创建服务拥有的数据目录，`ProtectSystem` 等限制其它写入，`Restart=on-failure` 限定异常重启。服务启用不代表已就绪，应单独检查 `/readyz`。[systemd 服务定义](https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.service.xml)、[执行隔离与凭据](https://raw.githubusercontent.com/systemd/systemd/main/man/systemd.exec.xml)
+
+默认 Caddy 模板通过 HTTPS 转发至 loopback，并在公网入口拒绝 `/v1/admin/*`。管理 CLI 请 SSH 登录服务器后运行，使用原始令牌文件，例如 `sudo env MTC_SERVER_ADMIN_TOKEN_FILE=/etc/more-than-chat/admin-token /usr/bin/node /opt/more-than-chat/current/central-status.mjs`。私服先用同样的环境执行 `central-access.mjs allow usr_<完整ID>`。反代的响应头超时设为 35 秒，长于 25 秒收件等待；不启用包含 URL 标识的访问日志。合并配置后先执行 `caddy validate --config <配置文件>` 再启用；域名、证书、真实反代与防火墙需要管理员实际验收。[Caddy 代理配置](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)
+
+#### 升级与恢复规则
+
+1. 把新包放进新的版本目录，不覆盖正在运行的代码或数据；先在测试数据上验收。
+2. 停止旧服务并确认进程退出，再切换 `current`；不要双开共用数据。启动后检查同一服务器 ID、名单、关系与待收义务。
+3. 进程崩溃时复用原数据目录重启，客户端重新认证并重试未完成发送。同一个客户端消息 ID 去重；每个目标设备独立 ACK，最后一个完成后清除暂存正文。
+4. 数据库损坏、磁盘/目录权限错误时，停止盲目重启，保留原目录排查；不能通过删除数据库或换一个空目录来假装修复，否则服务器 ID、关系和未送达消息都会变。不要只复制运行中的 `relay.sqlite` 而忽略 WAL。
+5. 本阶段不自动建立服务端历史备份。原始磁盘快照会保留后来已送达的正文，恢复陈旧快照也可能让旧队列回退；在明确留存与恢复策略前，不把快照当作透明在线备份。已送达聊天的个人备份使用客户端 `.mtchistory`。当前故障恢复验证是进程崩溃，不是介质损坏、断电或节点丢失保证。
+
+`pnpm verify:central-ops` 验证源码和独立发布包：不同进程同目录拒绝启动、强杀/重启、原服务器身份保留、会话重新认证、群与附件补投、发送去重、不同设备 ACK 后正确保留/清除、重启不复活已送达正文。另用真实 CLI 子进程验证聚合指标准确且无敏感输出，未认证／错误令牌／普通用户不能访问管理状态。POSIX 环境另测等待收件时 SIGTERM；Windows 不冒充完成 POSIX 信号验证。CI 已配置在 Windows 和 Linux 运行这两组测试。
+
+本轮验收：全仓构建、类型检查和 332 项单测通过，2 项符号链接相关测试因 Windows 环境跳过。Node 24.12.0 下 Windows 源码／独立发布包、WSL Fedora Linux 独立发布包均完成上述进程级故障恢复及真实管理 CLI 验收；Linux 额外验证正常 SIGTERM。systemd 模板通过 `systemd-analyze verify` 静态检查，没有安装或启动真实 systemd 服务，Caddy/TLS 公网路径未实测。现有 Windows 桌面目录版与新服务联调，完整双端聊天、身份／多设备、群插件、附件／语音、离线补投，以及后台通知／托盘／故障回归通过。本轮未新增桌面代码、未使用真实 AI API，也未推送到远端，不能视为远端 CI 或公网部署已通过。满队列单测使用模拟字节计数触发预算分支，不是 512 MiB 实际容量压力测试。

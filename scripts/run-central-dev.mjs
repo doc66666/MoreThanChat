@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { createCentralServer } from '../apps/central-server/src/server.mjs'
+import { startCentralProcess } from '../apps/central-server/src/server-operations.mjs'
 const directory = path.resolve(
   import.meta.dirname,
   '..',
@@ -18,18 +19,19 @@ try {
   token = randomBytes(32).toString('base64url')
   await writeFile(tokenPath, token, { flag: 'wx', mode: 0o600 })
 }
-const app = createCentralServer({
-  directory,
-  mode: 'public',
-  adminToken: token,
-  name: 'MoreThanChat 本机开发服务器',
+const running = await startCentralProcess({
+  factory:createCentralServer,
+  env:{
+    MTC_SERVER_DATA_DIR:directory,
+    MTC_SERVER_MODE:'public',
+    MTC_SERVER_ADMIN_TOKEN_FILE:tokenPath,
+    MTC_SERVER_NAME:'MoreThanChat 本机开发服务器',
+    MTC_SERVER_HOST:'127.0.0.1',
+    MTC_SERVER_PORT:'8787',
+  },
 })
-await app.listen(8787, '127.0.0.1')
-console.log(
+if(running){console.log(
   'Development central server: http://localhost:8787 (loopback only; public blacklist mode)',
 )
 console.log('Admin credential path: ' + tokenPath)
-for (const signal of ['SIGINT', 'SIGTERM'])
-  process.on(signal, () => {
-    void app.close().then(() => process.exit(0))
-  })
+}

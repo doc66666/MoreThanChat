@@ -47,6 +47,10 @@ jobs:
         run: node scripts/verify-protocol-schema.mjs
       - name: Stage standalone central server
         run: node scripts/stage-central-release.mjs
+      - name: Verify isolated central process recovery
+        run: node scripts/verify-central-ops.mjs
+      - name: Verify standalone central release recovery
+        run: node scripts/verify-central-ops.mjs --release .artifacts/central-release
       - name: Verify desktop plugin UI
         if: runner.os == 'Windows'
         run: node scripts/verify-plugin-ui.mjs

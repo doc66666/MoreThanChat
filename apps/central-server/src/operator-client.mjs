@@ -1,0 +1,80 @@
+// Operator-only transport: tokens never go in URLs, CLI arguments or output.
+import { readAdminToken } from './server-operations.mjs'
+
+export function operatorAddress(value = 'http://localhost:8787') {
+  let url
+  try { url = new URL(value) } catch { throw new Error('Invalid central server address') }
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
+    throw new Error('Use an HTTPS server origin, or loopback HTTP, without a path or credentials')
+  }
+  return url.origin
+}
+
+export async function operatorRequest(route, { address, env = process.env, defaultTokenFile, body, fetchImpl = fetch } = {}) {
+  if (!['/v1/admin/access', '/v1/admin/status'].includes(route) ||
+      (route === '/v1/admin/status' ? body !== undefined : body === undefined)) throw new Error('Invalid operator route or method')
+  const origin = operatorAddress(address)
+  const credentials = { ...env }
+  if (credentials.MTC_SERVER_ADMIN_TOKEN === undefined && credentials.MTC_SERVER_ADMIN_TOKEN_FILE === undefined && defaultTokenFile) {
+    credentials.MTC_SERVER_ADMIN_TOKEN_FILE = defaultTokenFile
+  }
+  const token = await readAdminToken(credentials)
+  let response
+  try {
+    response = await fetchImpl(origin + route, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      redirect: 'error', signal: AbortSignal.timeout(10000),
+    })
+  } catch { throw new Error('Central operator request could not be completed') }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new Error('Central operation failed: HTTP ' + response.status)
+  }
+  try {
+    let length = 0
+    const chunks = []
+    for await (const chunk of response.body) {
+      length += chunk.length
+      if (length > 16384) throw new Error('Response limit exceeded')
+      chunks.push(chunk)
+    }
+    const value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (route === '/v1/admin/status') return statusResult(value)
+    if (value?.ok !== true) throw new Error('Invalid access result')
+    return { ok: true }
+  } catch { throw new Error('Central operator response was invalid') }
+}
+
+function statusResult(value) {
+  const number = value => {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid metric')
+    return value
+  }
+  if (value?.version !== 1 || typeof value.closing !== 'boolean') throw new Error('Invalid status')
+  return {
+    version: 1, uptimeMs: number(value.uptimeMs), closing: value.closing,
+    runtime: { activeSessions: number(value.runtime.activeSessions), pendingPolls: number(value.runtime.pendingPolls) },
+    users: number(value.users), groups: number(value.groups),
+    devices: { active: number(value.devices.active), revoked: number(value.devices.revoked) },
+    queue: { rows: number(value.queue.rows), payloadBytes: number(value.queue.payloadBytes),
+      deviceObligations: number(value.queue.deviceObligations),
+      oldestAgeMs: value.queue.oldestAgeMs === null ? null : number(value.queue.oldestAgeMs) },
+  }
+}
+
+export async function runAccessCli(args = process.argv.slice(2), options = {}) {
+  const [operation, userId, address] = args
+  if (args.length < 2 || args.length > 3 || !['allow', 'deny'].includes(operation) || !/^usr_[a-f0-9]{64}$/.test(userId ?? '')) {
+    throw new Error('Usage: central-access.mjs allow|deny usr_<global-id> [https://server]')
+  }
+  await operatorRequest('/v1/admin/access', { ...options, address, body: { userId, allowed: operation === 'allow' } })
+  return { ok: true, operation, userId, origin: operatorAddress(address) }
+}
+
+export async function runStatusCli(args = process.argv.slice(2), options = {}) {
+  if (args.length > 1) throw new Error('Usage: central-status.mjs [https://server]')
+  return operatorRequest('/v1/admin/status', { ...options, address: args[0] })
+}

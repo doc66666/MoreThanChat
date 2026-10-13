@@ -1,18 +1,19 @@
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '..'),
   output = path.join(root, '.artifacts', 'central-release')
 await mkdir(output, { recursive: true })
-await copyFile(
-  path.join(root, 'apps', 'central-server', 'src', 'server.mjs'),
-  path.join(output, 'server.mjs'),
-)
-await copyFile(path.join(root,'apps','central-server','src','device-delivery.mjs'),path.join(output,'device-delivery.mjs'))
-await copyFile(
-  path.join(root, 'scripts', 'central-access.mjs'),
-  path.join(output, 'central-access.mjs'),
-)
+for(const file of await readdir(path.join(root,'apps','central-server','src'))){
+  if(file.endsWith('.mjs'))await copyFile(path.join(root,'apps','central-server','src',file),path.join(output,file))
+}
+for(const [file,method] of [['central-access.mjs','runAccessCli'],['central-status.mjs','runStatusCli']]){
+  await writeFile(path.join(output,file),`import { ${method} } from './operator-client.mjs'\ntry { console.log(JSON.stringify(await ${method}(),null,2)) } catch { console.error('Operator command failed: check arguments, address, token configuration and server availability.'); process.exitCode=1 }\n`)
+}
+const deployment=path.join(output,'deploy')
+await mkdir(deployment,{recursive:true})
+for(const file of ['more-than-chat.service','server.env.example','Caddyfile.example'])await copyFile(path.join(root,'deploy','central',file),path.join(deployment,file))
+await copyFile(path.join(root,'docs','central-and-plugin-stage-2026-10-11.md'),path.join(output,'OPERATIONS.md'))
 const moduleRoot = path.join(
     output,
     'node_modules',
@@ -41,7 +42,8 @@ await writeFile(
       version: '0.1.0',
       private: true,
       type: 'module',
-      scripts: { start: 'node server.mjs' },
+      scripts: { start: 'node server.mjs', status:'node central-status.mjs' },
+      engines: { node: '>=24.12.0 <25' },
     },
     null,
     2,
