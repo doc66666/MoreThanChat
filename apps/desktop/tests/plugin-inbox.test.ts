@@ -18,14 +18,22 @@ async function fixture() {
   return { root, store, db }
 }
 const event = (id: string, pluginId = 'plugin', groupId = 'group') => ({ id, pluginId, groupId })
+function seedEvents(db: DatabaseSync, events: ReturnType<typeof event>[]) {
+  // Transactions are connection-local. Do not BEGIN here and write via ChatStore's
+  // other connection: that silently performs thousands of FULL-sync commits.
+  const insert = db.prepare('INSERT INTO plugin_inbox(server_id,id,group_id,plugin_id,payload,created_at) VALUES (?,?,?,?,?,?)')
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    for (const item of events) insert.run('server', item.id, item.groupId, item.pluginId, JSON.stringify(item), Date.now())
+    db.exec('COMMIT')
+  } catch (error) { db.exec('ROLLBACK'); throw error }
+}
 
 it('bounds acknowledged history while preserving uncertain receipts and deduplication across restart', async () => {
   const { root, store, db } = await fixture()
   store.savePluginEvent('server', event('uncertain'))
   const ids = Array.from({ length: 1020 }, (_, i) => String(i))
-  db.exec('BEGIN')
-  for (const id of ids) store.savePluginEvent('server', event(id))
-  db.exec('COMMIT')
+  seedEvents(db, ids.map(id => event(id)))
   store.confirmPluginAcks('server', ids)
   expect(db.prepare('SELECT COUNT(*) AS n FROM plugin_inbox').get()?.n).toBe(1001)
   expect(store.pendingPluginAcks('server')).toEqual(['uncertain'])
@@ -52,26 +60,21 @@ it('isolates ACKs and history by server, group and plugin', async () => {
 })
 
 it('caps total retained events across many plugin namespaces', async () => {
-  const { store, db } = await fixture(), ids: string[] = []
-  db.exec('BEGIN')
-  for (let i = 0; i < PLUGIN_HISTORY_LIMITS.total + 20; i++) {
-    ids.push(String(i)); store.savePluginEvent('server', event(String(i), 'plugin-' + i))
-  }
-  db.exec('COMMIT')
+  const { store, db } = await fixture()
+  const ids = Array.from({ length: PLUGIN_HISTORY_LIMITS.total + 20 }, (_, i) => String(i))
+  seedEvents(db, ids.map(id => event(id, 'plugin-' + id)))
+  expect(db.prepare('SELECT COUNT(*) AS n FROM plugin_inbox WHERE acknowledged=0').get()?.n).toBe(10020)
   store.confirmPluginAcks('server', ids)
   expect(db.prepare('SELECT COUNT(*) AS n FROM plugin_inbox').get()?.n).toBe(PLUGIN_HISTORY_LIMITS.total)
   expect(store.pluginInbox('server', 'group', 'plugin-0')).toEqual([])
 })
 
 it('caps UTF-8 payload bytes rather than character count without clearing unconfirmed bodies', async () => {
-  const { store, db } = await fixture(), ids: string[] = []
+  const { store, db } = await fixture()
+  const ids = Array.from({ length: 990 }, (_, i) => String(i))
   const payload = '棋'.repeat(6000)
   store.savePluginEvent('server', { ...event('pending'), payload } as ReturnType<typeof event>)
-  db.exec('BEGIN')
-  for (let i = 0; i < 990; i++) {
-    ids.push(String(i)); store.savePluginEvent('server', { ...event(String(i)), payload } as ReturnType<typeof event>)
-  }
-  db.exec('COMMIT')
+  seedEvents(db, ids.map(id => ({ ...event(id), payload })))
   store.confirmPluginAcks('server', ids)
   const stats = db.prepare('SELECT COUNT(*) AS n,SUM(length(CAST(payload AS BLOB))) AS bytes FROM plugin_inbox WHERE acknowledged=1').get()!
   expect(Number(stats.n)).toBeLessThan(990)
@@ -95,10 +98,10 @@ it('migrates v5 conservatively and does not ACK or delete old data until the rel
 })
 
 it('rolls back receipt confirmation when cleanup fails, so retry remains safe', async () => {
-  const { store, db } = await fixture(), ids: string[] = []
-  db.exec('BEGIN')
-  for (let i = 0; i < 1001; i++) { ids.push(String(i)); store.savePluginEvent('server', event(String(i))) }
-  db.exec("COMMIT; CREATE TRIGGER fail_prune BEFORE DELETE ON plugin_inbox BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END")
+  const { store, db } = await fixture()
+  const ids = Array.from({ length: 1001 }, (_, i) => String(i))
+  seedEvents(db, ids.map(id => event(id)))
+  db.exec("CREATE TRIGGER fail_prune BEFORE DELETE ON plugin_inbox BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END")
   expect(() => store.confirmPluginAcks('server', ids)).toThrow('cleanup failed')
   expect(db.prepare('SELECT COUNT(*) AS n FROM plugin_inbox WHERE acknowledged=1').get()?.n).toBe(0)
   expect(store.pendingPluginAcks('server')).toHaveLength(100)
