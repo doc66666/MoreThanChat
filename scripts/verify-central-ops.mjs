@@ -6,17 +6,20 @@ import { createServer, connect } from 'node:net'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const args = process.argv.slice(2)
-let releaseDirectory, loadRounds = 0, soakSeconds = 0
+let releaseDirectory, loadRounds = 0, soakSeconds = 0, memoryDiagnostics = false
 for (let i = 0; i < args.length; i += 2) {
+  if (args[i] === '--memory-diagnostics' && !memoryDiagnostics) { memoryDiagnostics = true; i--; continue }
   if (args[i] === '--release' && args[i + 1] && releaseDirectory === undefined) releaseDirectory = path.resolve(args[i + 1])
   else if (args[i] === '--load-rounds' && /^[1-9]\d{0,2}$/.test(args[i + 1] ?? '') && loadRounds === 0) loadRounds = Number(args[i + 1])
   else if (args[i] === '--soak-seconds' && /^[1-9]\d{0,3}$/.test(args[i + 1] ?? '') && Number(args[i + 1]) <= 3600 && soakSeconds === 0) soakSeconds = Number(args[i + 1])
-  else throw new Error('Usage: node scripts/verify-central-ops.mjs [--release <standalone-directory>] [--load-rounds 1..999] [--soak-seconds 1..3600]')
+  else throw new Error('Usage: node scripts/verify-central-ops.mjs [--release <standalone-directory>] [--load-rounds 1..999] [--soak-seconds 1..3600] [--memory-diagnostics]')
 }
+if (memoryDiagnostics && !loadRounds && !soakSeconds) throw new Error('Memory diagnostics requires a load or soak run')
 if (soakSeconds && !loadRounds) loadRounds = 8
 const root = path.resolve(import.meta.dirname, '..')
 const entry = releaseDirectory
@@ -48,7 +51,8 @@ async function reservePort() {
 async function start() {
   const port = await reservePort()
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MTC_SERVER_')))
-  const child = spawn(process.execPath, [entry], {
+  const probe = pathToFileURL(path.join(root, 'scripts', 'central-memory-probe.mjs')).href
+  const child = spawn(process.execPath, [...(memoryDiagnostics ? ['--expose-gc', '--import', probe] : []), entry], {
     cwd: path.dirname(entry),
     windowsHide: true,
     env: {
@@ -59,7 +63,7 @@ async function start() {
       MTC_SERVER_HOST: '127.0.0.1',
       MTC_SERVER_PORT: String(port),
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', ...(memoryDiagnostics ? ['ipc'] : [])],
   })
   const state = { child, url: `http://127.0.0.1:${port}`, output: '', exit: null }
   children.add(state)
@@ -73,6 +77,21 @@ async function start() {
   child.stdout.on('data', capture)
   child.stderr.on('data', capture)
   return state
+}
+
+async function diagnoseMemory(state) {
+  // Only after ordinary measurements and queue drain: never turn forced GC
+  // into a production fix or mix post-GC RSS into normal-run peak statistics.
+  const id = Date.now()
+  const sample = await new Promise((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); state.child.off('message', received); state.child.off('exit', exited) }
+    const received = message => { if (message?.type === 'memory-sample' && message.id === id) { cleanup(); resolve(message) } }
+    const exited = () => { cleanup(); reject(new Error('Memory probe process exited')) }
+    const timer = setTimeout(() => { cleanup(); reject(new Error('Memory probe timed out')) }, 10000)
+    state.child.on('message', received); state.child.once('exit', exited)
+    state.child.send({ type: 'sample-memory', id }, error => { if (error) { cleanup(); reject(error) } })
+  })
+  console.log(JSON.stringify({ memoryDiagnostic: true, before: sample.before, afterForcedGc: sample.after, resources: sample.resources }))
 }
 
 async function waitForReady(state) {
@@ -188,9 +207,10 @@ async function verifyStatusCli(server, privateValues) {
   try { result = JSON.parse(state.stdout) } catch { throw new Error('Status CLI returned invalid JSON') }
   const keys = (value, expected) => assert.deepEqual(Object.keys(value).sort(), expected.sort())
   keys(result, ['version', 'uptimeMs', 'closing', 'runtime', 'users', 'groups', 'devices', 'queue'])
-  keys(result.runtime, ['activeSessions', 'pendingPolls', 'outbound', 'memory'])
+  keys(result.runtime, ['activeSessions', 'pendingPolls', 'outbound', 'memory', 'statements'])
   keys(result.runtime.outbound, ['active', 'bytes', 'peakBytes', 'rejected', 'timeouts'])
   keys(result.runtime.memory, ['rssBytes', 'heapUsedBytes', 'externalBytes'])
+  keys(result.runtime.statements, ['size', 'capacity', 'prepared', 'hits', 'active'])
   keys(result.devices, ['active', 'revoked'])
   keys(result.queue, ['rows', 'payloadBytes', 'deviceObligations', 'oldestAgeMs'])
   assert.equal(result.version, 1)
@@ -465,6 +485,9 @@ try {
       firstRss ??= stats.runtime.memory.rssBytes
       lastRss = stats.runtime.memory.rssBytes; peakRss = Math.max(peakRss, lastRss)
       assert.ok(stats.runtime.outbound.bytes <= 64 * 1024 * 1024)
+      assert.ok(stats.runtime.statements.size <= stats.runtime.statements.capacity)
+      assert.equal(stats.runtime.statements.active, 0)
+      assert.ok(stats.runtime.statements.prepared < 128, 'Fixed workload unexpectedly keeps preparing new SQL statements')
       assert.equal(pendingMessages(b2), expectedMessages.size)
       if (!soakSeconds && round + 1 === Math.ceil(loadRounds / 2)) {
         const oldServerId = (await request(server, '/v1/ping')).serverId
@@ -481,7 +504,7 @@ try {
       if (soakSeconds) {
         if (performance.now() - lastProgress >= 30000) {
           lastProgress = performance.now()
-          console.log(JSON.stringify({ soakProgress: true, seconds: Math.round((lastProgress - started) / 1000), rounds, ...stats.runtime.memory, peakRssBytes: peakRss, responseBytes: stats.runtime.outbound.bytes }))
+          console.log(JSON.stringify({ soakProgress: true, seconds: Math.round((lastProgress - started) / 1000), rounds, ...stats.runtime.memory, peakRssBytes: peakRss, responseBytes: stats.runtime.outbound.bytes, statements: stats.runtime.statements }))
         }
         await delay(500)
       }
@@ -495,9 +518,14 @@ try {
     assert.equal(final.queue.deviceObligations, 0)
     assert.equal(final.runtime.outbound.bytes, 0)
     assert.equal(final.runtime.outbound.active, 0)
+    assert.equal(final.runtime.statements.active, 0)
     inspectDatabase(db => assert.equal(db.prepare('PRAGMA quick_check').get().quick_check, 'ok'))
     latencies.sort((left, right) => left - right)
     console.log(JSON.stringify({ loadPassed: true, soakSeconds, rounds, messages: totalMessages, deviceDeliveries: totalDeliveries, attachmentMessages, peakQueueBytes, elapsedMs: Math.round(performance.now() - started), sendP95Ms: Math.round(latencies[Math.ceil(latencies.length * 0.95) - 1]), queueRowsAfterDrain: final.queue.rows, responseBytesAfterDrain: final.runtime.outbound.bytes, firstRssBytes: firstRss, lastRssBytes: lastRss, peakRssBytes: peakRss }))
+    // Loop RSS is sampled per round, not a continuous all-process high-water
+    // mark. Keep final draining and diagnostic samples explicitly separate.
+    console.log(JSON.stringify({ drainedRuntime: final.runtime }))
+    if (memoryDiagnostics) await diagnoseMemory(server)
   }
 
   if (process.platform === 'win32') {

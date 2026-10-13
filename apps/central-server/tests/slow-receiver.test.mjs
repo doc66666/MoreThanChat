@@ -107,5 +107,6 @@ it('reuses the queue writer and can rebind after a rolled-back insert failure', 
   expect((await call(f, 'messages', a.token, body)).data.messageId).toBe(retried.data.messageId)
   const messages = (await call(f, 'events', b.token)).data.events.filter(event => event.kind === 'message')
   expect(messages.map(event => event.message.text)).toEqual([body.text, 'different bindings 😀'])
-  expect(prepare.mock.calls.some(([sql]) => /INSERT OR IGNORE INTO queue VALUES/.test(sql))).toBe(false)
+  // Only the failed native statement is replaced; subsequent sends reuse it.
+  expect(prepare.mock.calls.filter(([sql]) => /INSERT OR IGNORE INTO queue VALUES/.test(sql))).toHaveLength(1)
 })

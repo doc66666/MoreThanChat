@@ -192,11 +192,8 @@ describe('central server lifecycle', () => {
     expect(stats.status).toBe(200)
     expect(stats.data).toMatchObject({ version: 1, users: 1, queue: { rows: 0, payloadBytes: 0, oldestAgeMs: null } })
     expect(JSON.stringify(stats.data)).not.toContain(user.userId)
-    const prepare = f.app.db.prepare.bind(f.app.db)
-    vi.spyOn(f.app.db, 'prepare').mockImplementation(sql => {
-      if (sql === "SELECT value FROM meta WHERE key='id'") throw new Error('private DB diagnostic')
-      return prepare(sql)
-    })
+    // Break the actual query, including an already compiled cached statement.
+    f.app.db.exec('ALTER TABLE meta RENAME TO unavailable_meta')
     expect(await request(f, '/readyz')).toMatchObject({ status: 503, data: { status: 'not-ready' }, retryAfter: '1' })
     expect((await request(f, '/healthz')).status).toBe(200)
   })

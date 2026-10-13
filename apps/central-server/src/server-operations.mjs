@@ -168,7 +168,7 @@ const nonnegative = value => Number.isSafeInteger(value) && value >= 0 ? value :
 
 // Aggregate-only administrator diagnostics. Payloads are counted inside SQLite;
 // no message text, token, public key, user/device identifier, or IP leaves this function.
-export function collectServerStats(db, { startedAt, now = Date.now(), activeSessions = 0, pendingPolls = 0, closing = false, outbound, memory } = {}) {
+export function collectServerStats(db, { startedAt, now = Date.now(), activeSessions = 0, pendingPolls = 0, closing = false, outbound, memory, statements } = {}) {
   const count = sql => Number(db.prepare(sql).get().count)
   const queue = db.prepare('SELECT COUNT(*) AS rows, COALESCE(SUM(length(CAST(payload AS BLOB))),0) AS payload_bytes, MIN(created_at) AS oldest FROM queue').get()
   return {
@@ -179,6 +179,7 @@ export function collectServerStats(db, { startedAt, now = Date.now(), activeSess
       activeSessions: nonnegative(activeSessions), pendingPolls: nonnegative(pendingPolls),
       ...(outbound ? { outbound: Object.fromEntries(['active', 'bytes', 'peakBytes', 'rejected', 'timeouts'].map(key => [key, nonnegative(outbound[key])])) } : {}),
       ...(memory ? { memory: { rssBytes: nonnegative(memory.rss), heapUsedBytes: nonnegative(memory.heapUsed), externalBytes: nonnegative(memory.external) } } : {}),
+      ...(statements ? { statements: Object.fromEntries(['size', 'capacity', 'prepared', 'hits', 'active'].map(key => [key, nonnegative(statements[key])])) } : {}),
     },
     users: count('SELECT COUNT(*) AS count FROM users'),
     groups: count('SELECT COUNT(*) AS count FROM groups'),

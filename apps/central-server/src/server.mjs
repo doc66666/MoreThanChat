@@ -15,6 +15,7 @@ import { acquireDirectoryLock, serverLifecycle } from './server-lifecycle.mjs'
 import { collectServerStats } from './server-operations.mjs'
 import { TRAFFIC, tokenBuckets, isControlRequest, trafficClass, bodyLimit, bodyAdmission } from './traffic-policy.mjs'
 import { responseBudget, writeResponse, RESPONSE_LIMIT } from './response-flow.mjs'
+import { statementCache } from './statement-cache.mjs'
 import {
   parseGroupPluginPack,
   validUid,
@@ -103,7 +104,8 @@ export function createCentralServer({
   }
 }
 
-function initializeCentralServer({ mode, adminToken, name, accessList, shutdownTimeoutMs, onError }, db, releaseLock) {
+function initializeCentralServer({ mode, adminToken, name, accessList, shutdownTimeoutMs, onError }, database, releaseLock) {
+  const db = statementCache(database)
   const startedAt = Date.now()
   const budgets = Object.fromEntries(Object.keys(TRAFFIC).map(key => [key, tokenBuckets()]))
   const uploads = bodyAdmission(), requestIdentity = new WeakMap()
@@ -471,7 +473,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           startedAt, now: Date.now(),
           activeSessions: [...sessions.values()].filter(session => session.expires > Date.now()).length,
           pendingPolls: [...waiting.values()].reduce((count, listeners) => count + listeners.size, 0),
-          outbound: outbound.snapshot(), memory: process.memoryUsage(),
+          outbound: outbound.snapshot(), memory: process.memoryUsage(), statements: db.snapshot(),
           closing: lifecycle.state !== 'ready',
         }))
         const data = await body(request)
@@ -1201,7 +1203,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
   return {
     server,
     serverId,
-    db,
+    db: database,
     get state() { return lifecycle.state },
     listen(port = 8787, host = '127.0.0.1') { return lifecycle.listen(port, host) },
     close: lifecycle.close,

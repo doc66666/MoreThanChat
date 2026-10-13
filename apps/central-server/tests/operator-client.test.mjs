@@ -23,6 +23,17 @@ it('projects only numeric response-flow and process-memory aggregates', async ()
   value.runtime.outbound.bytes = -1
   await expect(runStatusCli([], { env, fetchImpl: async () => response(value) })).rejects.toThrow('invalid')
 })
+
+it('projects aggregate statement counters and rejects malformed optional fields', async () => {
+  const value = stats()
+  value.runtime.statements = { size: 60, capacity: 128, prepared: 61, hits: 500, active: 0, sql: TOKEN }
+  expect((await runStatusCli([], { env, fetchImpl: async () => response(value) })).runtime.statements)
+    .toEqual({ size: 60, capacity: 128, prepared: 61, hits: 500, active: 0 })
+  for (const invalid of [-1, 1.5, '128', null]) {
+    value.runtime.statements.capacity = invalid
+    await expect(runStatusCli([], { env, fetchImpl: async () => response(value) })).rejects.toThrow('invalid')
+  }
+})
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })

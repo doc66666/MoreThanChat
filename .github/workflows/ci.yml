@@ -54,7 +54,7 @@ jobs:
       - name: Verify bounded central traffic and offline backlog
         run: node scripts/verify-central-ops.mjs --release .artifacts/central-release --load-rounds 8
       - name: Verify slow receiver timeout and paced relay cycles
-        run: node scripts/verify-central-ops.mjs --release .artifacts/central-release --soak-seconds 10
+        run: node scripts/verify-central-ops.mjs --release .artifacts/central-release --soak-seconds 10 --memory-diagnostics
       - name: Verify desktop plugin UI
         if: runner.os == 'Windows'
         run: node scripts/verify-plugin-ui.mjs

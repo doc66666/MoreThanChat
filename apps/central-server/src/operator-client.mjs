@@ -60,6 +60,7 @@ function statusResult(value) {
       activeSessions: number(value.runtime.activeSessions), pendingPolls: number(value.runtime.pendingPolls),
       ...(value.runtime.outbound ? { outbound: Object.fromEntries(['active', 'bytes', 'peakBytes', 'rejected', 'timeouts'].map(key => [key, number(value.runtime.outbound[key])])) } : {}),
       ...(value.runtime.memory ? { memory: Object.fromEntries(['rssBytes', 'heapUsedBytes', 'externalBytes'].map(key => [key, number(value.runtime.memory[key])])) } : {}),
+      ...(value.runtime.statements ? { statements: Object.fromEntries(['size', 'capacity', 'prepared', 'hits', 'active'].map(key => [key, number(value.runtime.statements[key])])) } : {}),
     },
     users: number(value.users), groups: number(value.groups),
     devices: { active: number(value.devices.active), revoked: number(value.devices.revoked) },

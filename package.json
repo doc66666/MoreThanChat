@@ -13,6 +13,7 @@
     "verify:central-ops": "pnpm central:package && node scripts/verify-central-ops.mjs && node scripts/verify-central-ops.mjs --release .artifacts/central-release",
     "verify:central-load": "pnpm central:package && node scripts/verify-central-ops.mjs --release .artifacts/central-release --load-rounds 64",
     "verify:central-soak": "pnpm central:package && node scripts/verify-central-ops.mjs --release .artifacts/central-release --soak-seconds 180",
+    "verify:central-memory": "pnpm central:package && node scripts/verify-central-ops.mjs --release .artifacts/central-release --soak-seconds 600 --memory-diagnostics",
     "demo:clients": "pnpm build && node scripts/start-test-clients.mjs",
     "build": "pnpm build:host && pnpm --filter @more-than-chat/desktop build && node scripts/stage-host-resources.mjs && node scripts/package-dir.mjs --if-ci",
     "stage:host": "node scripts/stage-host-resources.mjs",
