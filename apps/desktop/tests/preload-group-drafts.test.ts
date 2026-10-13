@@ -28,3 +28,26 @@ it('distinguishes an attachment save from a cancelled file dialog',async()=>{
   mocks.invoke.mockResolvedValueOnce(undefined)
   await expect(mocks.api.saveAttachment('hash')).rejects.toThrow('无效附件保存结果')
 })
+it('validates initial notification settings instead of silently rendering an empty panel',async()=>{
+  mocks.invoke.mockResolvedValueOnce(undefined)
+  await expect(mocks.api.getDesktopSettings()).rejects.toThrow('尚未就绪')
+  const value={preferences:{notifications:true,preview:false,sound:false,closeToTray:false},trayAvailable:true,notificationsSupported:true,error:null}
+  mocks.invoke.mockResolvedValueOnce(value)
+  expect(await mocks.api.getDesktopSettings()).toEqual(value)
+  mocks.invoke.mockResolvedValueOnce({...value,preferences:{...value.preferences,notifications:'yes'}})
+  await expect(mocks.api.configureDesktop({notifications:true})).rejects.toThrow('无效通知偏好')
+})
+it('preserves cancelled identity and device actions and rejects ambiguous results',async()=>{
+  for(const result of ['cancelled','restarting','unchanged']){
+    mocks.invoke.mockResolvedValueOnce(result)
+    expect(await mocks.api.switchIdentity('profile')).toBe(result)
+  }
+  for(const result of ['cancelled','removed']){
+    mocks.invoke.mockResolvedValueOnce(result)
+    expect(await mocks.api.removeDevice('device')).toBe(result)
+  }
+  mocks.invoke.mockResolvedValueOnce(undefined)
+  await expect(mocks.api.switchIdentity('profile')).rejects.toThrow('无效操作结果')
+  mocks.invoke.mockResolvedValueOnce('unexpected')
+  await expect(mocks.api.removeDevice('device')).rejects.toThrow('无效操作结果')
+})

@@ -17,21 +17,21 @@ const api = {
   },
   exportChatHistory:async(password:string)=>parseHistoryCounts(await ipcRenderer.invoke('history:export',password),['conversations','messages','attachments'] as const),
   importChatHistory:async(password:string)=>parseHistoryCounts(await ipcRenderer.invoke('history:import',password),['conversationsAdded','messagesAdded','messagesSkipped','retractionsApplied','attachments'] as const),
-  getDesktopSettings:()=>ipcRenderer.invoke('app:desktop-settings'),
-  configureDesktop:(value:{notifications?:boolean;preview?:boolean;sound?:boolean;closeToTray?:boolean})=>ipcRenderer.invoke('app:desktop-configure',value),
+  getDesktopSettings:async()=>parseDesktopSettings(await ipcRenderer.invoke('app:desktop-settings')),
+  configureDesktop:async(value:{notifications?:boolean;preview?:boolean;sound?:boolean;closeToTray?:boolean})=>parseDesktopSettings(await ipcRenderer.invoke('app:desktop-configure',value)),
   testNotification:():Promise<void>=>ipcRenderer.invoke('app:notification-test'),
   hideToTray:():Promise<void>=>ipcRenderer.invoke('app:hide-to-tray'),
   quitApp:():Promise<void>=>ipcRenderer.invoke('app:quit'),
   getPendingNavigation:()=>ipcRenderer.invoke('app:pending-navigation'),
   navigationApplied:(id:string):Promise<void>=>ipcRenderer.invoke('app:navigation-applied',id),
   onOpenConversation:(listener:(value:{id:string;conversationId:string})=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:{id:string;conversationId:string})=>listener(value);ipcRenderer.on('app:open-conversation',handler);return()=>ipcRenderer.removeListener('app:open-conversation',handler)},
-  onDesktopSettings:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on('app:desktop-changed',handler);return()=>ipcRenderer.removeListener('app:desktop-changed',handler)},
+  onDesktopSettings:(listener:(value:unknown)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,value:unknown)=>listener(parseDesktopSettings(value));ipcRenderer.on('app:desktop-changed',handler);return()=>ipcRenderer.removeListener('app:desktop-changed',handler)},
   getIdentityProfiles:()=>ipcRenderer.invoke('identity:profiles'),
   backupIdentity:(password:string):Promise<boolean>=>ipcRenderer.invoke('identity:backup',password),
   restoreIdentity:(password:string):Promise<{id:string}|null>=>ipcRenderer.invoke('identity:restore',password),
-  switchIdentity:(id:string):Promise<void>=>ipcRenderer.invoke('identity:switch',id),
+  switchIdentity:async(id:string)=>parseChoice(await ipcRenderer.invoke('identity:switch',id),['restarting','cancelled','unchanged'] as const),
   getDevices:()=>ipcRenderer.invoke('central:devices'),
-  removeDevice:(id:string):Promise<void>=>ipcRenderer.invoke('central:remove-device',id),
+  removeDevice:async(id:string)=>parseChoice(await ipcRenderer.invoke('central:remove-device',id),['removed','cancelled'] as const),
   getWindowFocus:():Promise<boolean>=>ipcRenderer.invoke('app:window-focused'),
   focusChatWindow:():Promise<void>=>ipcRenderer.invoke('app:focus-window'),
   onWindowFocusChanged:(listener:(focused:boolean)=>void)=>{const handler=(_e:Electron.IpcRendererEvent,focused:boolean)=>listener(focused);ipcRenderer.on('app:window-focus-changed',handler);return()=>ipcRenderer.removeListener('app:window-focus-changed',handler)},
@@ -502,4 +502,16 @@ function parseHostPing(value: unknown): HostPingResult {
   return candidate as HostPingResult
 }
 
+function parseChoice<T extends string>(value:unknown,choices:readonly T[]):T {
+  if(typeof value!=='string'||!choices.includes(value as T))throw new Error('无效操作结果，请刷新后确认当前状态')
+  return value as T
+}
+function parseDesktopSettings(value:unknown) {
+  if(!value||typeof value!=='object')throw new Error('通知设置尚未就绪，请重试')
+  const v=value as Record<string,unknown>,p=v.preferences
+  if(!p||typeof p!=='object'||typeof v.trayAvailable!=='boolean'||typeof v.notificationsSupported!=='boolean'||(v.error!==null&&typeof v.error!=='string'))throw new Error('无效通知设置')
+  const preferences=p as Record<string,unknown>
+  for(const key of ['notifications','preview','sound','closeToTray'])if(typeof preferences[key]!=='boolean')throw new Error('无效通知偏好')
+  return value as {preferences:{notifications:boolean;preview:boolean;sound:boolean;closeToTray:boolean};trayAvailable:boolean;notificationsSupported:boolean;error:string|null}
+}
 contextBridge.exposeInMainWorld('moreThanChat', Object.freeze(api))

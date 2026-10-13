@@ -201,9 +201,10 @@ function registerIpc(): void {
     assertTrustedIpc(event)
     return identityTask(async()=>{
       if(typeof id!=='string'||!mainWindow||!(await listProfiles(profileRoot,systemCipher)).some(p=>p.id===id))throw new Error('身份空间不存在')
-      if(id===currentProfile)return
+      if(id===currentProfile)return 'unchanged'
       const result=await dialog.showMessageBox(mainWindow,{type:'question',message:'重启并切换身份？',detail:'当前身份的消息、插件与设置会留在原空间，可随时切回。新导入身份不包含旧设备的本地聊天历史或 API 密钥。',buttons:['取消','重启切换'],defaultId:0,cancelId:0})
-      if(result.response===1){pendingProfile=id;app.quit()}
+      if(result.response===1){pendingProfile=id;app.quit();return 'restarting'}
+      return 'cancelled'
     })
   })
   ipcMain.handle('central:devices',event=>{assertTrustedIpc(event);return centralClient?.devices()??[]})
@@ -217,7 +218,9 @@ function registerIpc(): void {
     if(result.response===1){
       if(centralClient.snapshot().serverId!==serverId)throw new Error('服务器已切换，请重新查看设备列表')
       await centralClient.removeDevice(id)
+      return 'removed'
     }
+    return 'cancelled'
   })
   ipcMain.handle('app:window-focused',event=>{assertTrustedIpc(event);return desktop?.foreground()??false})
   ipcMain.handle('app:focus-window',event=>{

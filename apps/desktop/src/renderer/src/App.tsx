@@ -96,6 +96,7 @@ import { MessageMarkdown } from './MessageMarkdown'
 import { AppearancePicker } from './AppearancePicker'
 import { DesktopSettings } from './DesktopSettings'
 import { HistorySettings } from './HistorySettings'
+import { useDialogFocus } from './use-dialog-focus'
 import { setThemePreference, useAppearance } from './theme'
 import { useChatDraft, clearRetractedDraftQuotes } from './chat-drafts'
 import { useChatReading } from './use-chat-reading'
@@ -2181,7 +2182,7 @@ function NewChatDialog({
   )
 }
 
-function ModelSettingsPanel({
+export function ModelSettingsPanel({
   snapshot,
   onClose,
   onSave,
@@ -2204,6 +2205,9 @@ function ModelSettingsPanel({
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirmClearKey,setConfirmClearKey]=useState(false)
+  const settingsRunning=useRef(false)
+  const settingsDialog=useDialogFocus()
 
   useEffect(() => {
     if (!snapshot) return
@@ -2214,7 +2218,8 @@ function ModelSettingsPanel({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!snapshot) return
+    if (!snapshot||settingsRunning.current||!baseUrl.trim()||!model.trim()) return
+    settingsRunning.current=true
     setBusy(true)
     setError(null)
     try {
@@ -2225,31 +2230,38 @@ function ModelSettingsPanel({
         ...(apiKey.trim() ? { apiKey } : {}),
       })
       setApiKey('')
+      setConfirmClearKey(false)
     } catch (caught) {
       setError(errorText(caught))
     } finally {
+      settingsRunning.current=false
       setBusy(false)
     }
   }
 
   async function clearKey() {
+    if(settingsRunning.current)return
+    settingsRunning.current=true
     setBusy(true)
     setError(null)
     try {
       await onClearKey()
       setApiKey('')
+      setConfirmClearKey(false)
     } catch (caught) {
       setError(errorText(caught))
     } finally {
+      settingsRunning.current=false
       setBusy(false)
     }
   }
 
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
-      <form
+      <aside
         className="plugin-drawer settings-drawer"
-        onSubmit={(event) => void submit(event)}
+        ref={settingsDialog} tabIndex={-1}
+        role="dialog" aria-modal="true" aria-label="设置"
         onMouseDown={(event) => event.stopPropagation()}
         data-provider-mode={providerMode}
         data-has-api-key={snapshot?.hasApiKey ? 'true' : 'false'}
@@ -2270,6 +2282,7 @@ function ModelSettingsPanel({
         >
           中心服务器 / 身份 / 联系人
         </button>
+        <form className="model-settings-form" aria-label="AI 模型设置" onSubmit={event=>void submit(event)}>
         <div className="settings-section-heading"><h3>AI 模型</h3></div>
         <p className="settings-note">
           API Key
@@ -2279,6 +2292,7 @@ function ModelSettingsPanel({
           <span>提供方</span>
           <select
             data-model-field="provider"
+            disabled={busy}
             value={providerMode}
             onChange={(event) =>
               setProviderMode(event.target.value as ModelProviderMode)
@@ -2292,6 +2306,7 @@ function ModelSettingsPanel({
           <span>Base URL</span>
           <input
             data-model-field="base-url"
+            disabled={busy}
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
             placeholder="https://api.deepseek.com"
@@ -2303,6 +2318,7 @@ function ModelSettingsPanel({
           <span>模型</span>
           <input
             data-model-field="model"
+            disabled={busy}
             value={model}
             onChange={(event) => setModel(event.target.value)}
             placeholder="deepseek-flash"
@@ -2314,6 +2330,7 @@ function ModelSettingsPanel({
           <span>API Key</span>
           <input
             data-model-field="key"
+            disabled={busy}
             type="password"
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
@@ -2324,26 +2341,29 @@ function ModelSettingsPanel({
             spellCheck={false}
           />
         </label>
-        {error && <p className="settings-error">{error}</p>}
+        {error && <p className="settings-error" role="alert">{error}</p>}
+        {confirmClearKey&&snapshot?.hasApiKey&&<div className="danger-confirm" role="group" aria-label="确认删除 API 密钥"><p>删除本机保存的 API 密钥？</p><small>聊天记录不会删除。使用真实模型前需要重新填写密钥；此操作不能找回旧密钥。</small><div><button type="button" className="secondary-button" disabled={busy} onClick={()=>setConfirmClearKey(false)}>保留密钥</button><button type="button" className="primary-button" data-confirm-clear-key disabled={busy} onClick={()=>void clearKey()}>确认删除密钥</button></div></div>}
         <div className="dialog-actions">
           {snapshot?.hasApiKey && (
             <button
               type="button"
               className="secondary-button"
               disabled={busy}
-              onClick={() => void clearKey()}
+              onClick={() => setConfirmClearKey(true)}
             >
               删除密钥
             </button>
           )}
           <button
+            type="submit"
             className="primary-button"
             disabled={busy || !snapshot || !baseUrl.trim() || !model.trim()}
           >
             {busy ? '保存中' : '保存'}
           </button>
         </div>
-      </form>
+        </form>
+      </aside>
     </div>
   )
 }

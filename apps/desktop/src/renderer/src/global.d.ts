@@ -82,9 +82,9 @@ declare global {
       getIdentityProfiles():Promise<{current:string;profiles:{id:string;userId:string}[]}>
       backupIdentity(password:string):Promise<boolean>
       restoreIdentity(password:string):Promise<{id:string}|null>
-      switchIdentity(id:string):Promise<void>
+      switchIdentity(id:string):Promise<'restarting'|'cancelled'|'unchanged'>
       getDevices():Promise<{id:string;name:string;createdAt:number;lastSeen:number;current:boolean}[]>
-      removeDevice(id:string):Promise<void>
+      removeDevice(id:string):Promise<'removed'|'cancelled'>
       getWindowFocus():Promise<boolean>
       focusChatWindow():Promise<void>
       onWindowFocusChanged(listener:(focused:boolean)=>void):()=>void

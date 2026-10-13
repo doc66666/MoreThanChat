@@ -651,3 +651,5 @@ svg { stroke-width: 1.7; }
 .network-notice { padding: 10px 12px; color: var(--success); background: var(--success-soft); font-size: 12px; line-height: 1.6; border-radius: 9px; }
 .network-feedback { position: sticky; top: 0; z-index: 2; padding: 10px; margin-block: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: 0 3px 12px var(--shadow-color); }
 .network-feedback p { margin: 0; }
+.model-settings-form { display: flex; flex-direction: column; gap: 12px; }
+.settings-recovery { display: grid; gap: 10px; margin-block: 12px; padding: 12px; border: 1px solid var(--danger-border); border-radius: 9px; background: var(--danger-soft); }

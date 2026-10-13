@@ -1,31 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, LockKeyhole, Upload } from 'lucide-react'
 import type { HistoryTransferStatus } from './global'
+import { useLiveSnapshot } from './use-live-snapshot'
+import { backupPasswordIssue } from './settings-actions'
 
 type Mode = 'export' | 'import'
 
 export function HistorySettings() {
   const [mode,setMode]=useState<Mode|null>(null)
   const [password,setPassword]=useState(''),[confirmation,setConfirmation]=useState('')
-  const [status,setStatus]=useState<HistoryTransferStatus|null>(null)
+  const snapshot=useLiveSnapshot<HistoryTransferStatus>(()=>window.moreThanChat.getHistoryTransferStatus(),listener=>window.moreThanChat.onHistoryTransferStatus(listener))
+  const status=snapshot.value
   const [working,setWorking]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('')
   const running=useRef(false),mounted=useRef(true)
-  const busy=working||status===null||status.busy
+  const busy=working||snapshot.loading||!!snapshot.error||status===null||status.busy
   const mismatch=mode==='export'&&confirmation.length>0&&password!==confirmation
 
   useEffect(()=>{
     mounted.current=true
-    let changed=false
-    const stop=window.moreThanChat.onHistoryTransferStatus(value=>{
-      changed=true
-      if(mounted.current)setStatus(value)
-    })
-    void window.moreThanChat.getHistoryTransferStatus().then(value=>{
-      if(mounted.current&&!changed)setStatus(value)
-    }).catch(()=>{
-      if(mounted.current)setError('暂时无法读取备份状态，请关闭设置后重试。')
-    })
-    return()=>{mounted.current=false;stop()}
+    return()=>{mounted.current=false}
   },[])
 
   function changeMode(next:Mode|null) {
@@ -36,10 +29,8 @@ export function HistorySettings() {
   async function confirm() {
     if(busy||running.current||!mode)return
     setError('');setNotice('')
-    if(password.length<12||password.length>256||!password.trim()){
-      setError('备份密码需要 12–256 个字符。');return
-    }
-    if(mode==='export'&&password!==confirmation){setError('两次输入的密码不一致。');return}
+    const issue=backupPasswordIssue(password,mode==='export'?confirmation:undefined)
+    if(issue){setError(issue);return}
     running.current=true;setWorking(true)
     try {
       const result=mode==='export'
@@ -69,22 +60,28 @@ export function HistorySettings() {
       <button type="button" className="secondary-button" data-history-action="export" disabled={busy} onClick={()=>changeMode('export')}><Download size={14}/>备份聊天记录</button>
       <button type="button" className="secondary-button" data-history-action="import" disabled={busy} onClick={()=>changeMode('import')}><Upload size={14}/>恢复聊天记录</button>
     </div>
-    {mode&&<div className="history-transfer-panel" role="group" aria-label={mode==='export'?'设置聊天备份密码':'解锁聊天备份'} onKeyDown={event=>{
-      if(event.key==='Enter'&&!event.nativeEvent.isComposing){event.preventDefault();event.stopPropagation();void confirm()}
-    }}>
-      <h4><LockKeyhole size={15}/>{mode==='export'?'设置备份密码':'输入备份密码'}</h4>
-      <label className="settings-field"><span>密码（12–256 个字符）</span><input data-history-password type="password" maxLength={256} autoComplete={mode==='export'?'new-password':'off'} value={password} disabled={busy} aria-invalid={Boolean(mismatch)} onChange={event=>{setPassword(event.target.value);setError('')}}/></label>
-      {mode==='export'&&<label className="settings-field"><span>再次输入密码</span><input data-history-confirm-password type="password" maxLength={256} autoComplete="new-password" value={confirmation} disabled={busy} aria-invalid={mismatch} onChange={event=>{setConfirmation(event.target.value);setError('')}}/></label>}
-      <p className="settings-note">{mode==='export'?'密码不能重置。若本机引用的附件缺失或损坏，备份会中止，原数据不受影响。':'选择文件后会先验证身份和内容，再请你确认合并。已有数据保留，不新增关系、不重发旧消息。'}</p>
-      <div className="history-transfer-actions">
-        <button type="button" className="primary-button" data-history-action="confirm" disabled={busy||mismatch} onClick={()=>void confirm()}>{mode==='export'?'加密并保存文件':'选择备份文件'}</button>
-        <button type="button" className="secondary-button" data-history-action="cancel" disabled={busy} onClick={()=>changeMode(null)}>取消</button>
-      </div>
-    </div>}
+    {mode&&<HistoryPasswordForm mode={mode} password={password} confirmation={confirmation} busy={busy} onPassword={value=>{setPassword(value);setError('')}} onConfirmation={value=>{setConfirmation(value);setError('')}} onConfirm={()=>void confirm()} onCancel={()=>changeMode(null)}/>}
     {(working||status?.busy)&&<p className="history-transfer-progress" role="status" aria-live="polite">{status?.stage||'正在准备聊天记录…'}<small>请勿退出应用。大文件可能需要一些时间。</small></p>}
-    {!status&&!error&&<p className="settings-note" role="status">正在读取备份状态…</p>}
+    {snapshot.loading&&<p className="settings-note" role="status">正在读取备份状态…</p>}
+    {snapshot.error&&<div className="settings-recovery"><p className="settings-error" role="alert">备份状态读取失败：{snapshot.error}</p><button type="button" className="secondary-button" disabled={working||snapshot.loading} onClick={()=>void snapshot.refresh()}>重新读取备份状态</button></div>}
     {(mismatch||error)&&<p className="settings-error" role="alert">{mismatch?'两次输入的密码不一致。':error}</p>}
     {notice&&<p className="history-transfer-result" role="status">{notice}</p>}
     <p className="settings-note history-transfer-help">换电脑时，请先导入原身份并切换到它，再恢复记录。备份密码不能重置；中心服务器已清除、且任何本机或备份中都不存在的内容无法找回。</p>
   </section>
+}
+
+export function HistoryPasswordForm({mode,password,confirmation,busy,onPassword,onConfirmation,onConfirm,onCancel}:{mode:Mode;password:string;confirmation:string;busy:boolean;onPassword:(value:string)=>void;onConfirmation:(value:string)=>void;onConfirm:()=>void;onCancel:()=>void}) {
+  const mismatch=mode==='export'&&confirmation.length>0&&password!==confirmation
+  return <form className="history-transfer-panel" aria-label={mode==='export'?'设置聊天备份密码':'解锁聊天备份'} onSubmit={event=>{event.preventDefault();onConfirm()}} onKeyDown={event=>{
+    if(event.key==='Enter'&&(event.nativeEvent.isComposing||event.nativeEvent.keyCode===229))event.preventDefault()
+  }}>
+    <h4><LockKeyhole size={15}/>{mode==='export'?'设置备份密码':'输入备份密码'}</h4>
+    <label className="settings-field"><span>密码（12–256 个字符）</span><input data-history-password type="password" maxLength={256} autoComplete={mode==='export'?'new-password':'off'} value={password} disabled={busy} aria-invalid={mismatch} onChange={event=>onPassword(event.target.value)}/></label>
+    {mode==='export'&&<label className="settings-field"><span>再次输入密码</span><input data-history-confirm-password type="password" maxLength={256} autoComplete="new-password" value={confirmation} disabled={busy} aria-invalid={mismatch} onChange={event=>onConfirmation(event.target.value)}/></label>}
+    <p className="settings-note">{mode==='export'?'密码不能重置。若本机引用的附件缺失或损坏，备份会中止，原数据不受影响。':'选择文件后会先验证身份和内容，再请你确认合并。已有数据保留，不新增关系、不重发旧消息。'}</p>
+    <div className="history-transfer-actions">
+      <button type="submit" className="primary-button" data-history-action="confirm" disabled={busy||!!backupPasswordIssue(password,mode==='export'?confirmation:undefined)}>{mode==='export'?'加密并保存文件':'选择备份文件'}</button>
+      <button type="button" className="secondary-button" data-history-action="cancel" disabled={busy} onClick={onCancel}>取消</button>
+    </div>
+  </form>
 }
