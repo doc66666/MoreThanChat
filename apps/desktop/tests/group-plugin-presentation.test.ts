@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { UI_SLOTS, type ServerSnapshot } from '@more-than-chat/central-protocol'
 import type { PluginDraftSummary } from '@more-than-chat/protocol'
 import { slotLabels, submissionIssue } from '../src/renderer/src/group-plugin-presentation'
@@ -9,6 +10,12 @@ const snapshot = {
   directory: { groups: [{ id: 'group', name: 'Group' }], plugins: [] },
 } as unknown as ServerSnapshot
 describe('group submission guidance', () => {
+  it('keeps consent gates visible when the ordinary UI slot is empty', () => {
+    const css = readFileSync(new URL('../src/renderer/src/styles.css', import.meta.url), 'utf8')
+    // Source-level regression only; packaged desktop acceptance checks actual visibility.
+    expect(css).toContain('.slot-surface:not(:has(.group-plugin-gate, .group-plugin-widget)):has(>.ui-slot:empty){display:none}')
+    expect(css).not.toContain('.slot-surface:not(:has(.group-plugin-widget)):has(>.ui-slot:empty){display:none}')
+  })
   it('covers every supported slot with a readable label', () => {
     expect(Object.keys(slotLabels).sort()).toEqual([...UI_SLOTS].sort())
     for (const slot of UI_SLOTS) expect(slotLabels[slot]).not.toBe(slot)

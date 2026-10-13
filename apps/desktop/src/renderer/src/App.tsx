@@ -1483,7 +1483,9 @@ export function App() {
                 <h3>本群插件</h3>
                 <p>提交申请后由群管理员批准并分发。</p>
                 <button onClick={()=>setShowPlugins(true)}>提交 AI 创作的群插件</button>
-                <p>在 More AI 中描述插件需求，创建并校验草稿后，在插件面板选择本群提交。下面是内置演示模板，并非 AI 创作。</p>
+                <p>在 More AI 中描述插件需求，创建并校验草稿后，在插件面板选择本群提交。</p>
+                {window.moreThanChat.demoPluginsEnabled && <>
+                <p>以下为开发验收模板，并非 AI 创作。</p>
                 <label>
                   插件显示位置{' '}
                   <select
@@ -1532,6 +1534,7 @@ export function App() {
                         : '申请同步通道'}
                   </button>
                 ))}
+                </>}
                 <button onClick={() => setShowServer(true)}>
                   打开群管理与审批
                 </button>

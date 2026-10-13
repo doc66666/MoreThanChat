@@ -664,6 +664,7 @@ function startHostSupervisor(): void {
       cwd: hostEntry.cwd,
       environment: {
         MTC_HOST_DATA_DIR: path.join(dataDirectory, 'host-private'),
+        MTC_ENABLE_DEMO_PLUGINS: process.env.MTC_QA_MODE === '1' ? '1' : '0',
         MTC_HOST_QA_CRASH_ONCE:
           process.env.MTC_QA_HOST_CRASH_ONCE === '1' ? '1' : undefined,
       },
@@ -707,6 +708,7 @@ async function createWindow(): Promise<void> {
     webPreferences: {
       ...(currentProfile==='default'?{}:{partition:'persist:identity-'+currentProfile}),
       preload: path.join(__dirname, 'preload.js'),
+      additionalArguments: process.env.MTC_QA_MODE === '1' ? ['--mtc-demo-plugins'] : [],
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,

@@ -47,12 +47,7 @@ export const pluginRuntime = new PluginRuntime({
   },
 })
 
-const bundledPlugins: readonly PluginSource[] = [
-  {
-    manifest: centralTransportManifest,
-    trust: 'builtin',
-    load: async () => ({ default: centralTransportPlugin }),
-  },
+const demoPlugins: readonly PluginSource[] = [
   {
     manifest: slotDemoManifest,
     trust: 'builtin',
@@ -68,6 +63,11 @@ const bundledPlugins: readonly PluginSource[] = [
     trust: 'builtin',
     load: () => import('@more-than-chat/plugin-hello-world'),
   },
+]
+
+const bundledPlugins: readonly PluginSource[] = [
+  { manifest: centralTransportManifest, trust: 'builtin', load: async () => ({ default: centralTransportPlugin }) },
+  ...(window.moreThanChat.demoPluginsEnabled ? demoPlugins : []),
 ]
 
 for (const source of bundledPlugins) pluginRuntime.install(source)

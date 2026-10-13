@@ -16,6 +16,18 @@ afterEach(async () => {
 })
 
 describe('ModelService', () => {
+  it('uses the release provider default without overwriting saved user choices', async () => {
+    const root = await tempDir()
+    const service = new ModelService({ dataDir: root, generation: 1, defaultProviderMode: 'openai-compatible' })
+    await service.load()
+    expect(service.getSettings()).toMatchObject({ providerMode: 'openai-compatible', hasApiKey: false })
+    await service.setSettings({ providerMode: 'mock' })
+    service.close()
+    const restored = new ModelService({ dataDir: root, generation: 2, defaultProviderMode: 'openai-compatible' })
+    await restored.load()
+    expect(restored.getSettings().providerMode).toBe('mock')
+    restored.close()
+  })
   it('does not clear an unreadable stored credential when encryption rejects a replacement', async () => {
     const root = await tempDir()
     const write = vi.fn(async (_key: string | null) => { throw new Error('Encryption unavailable') })

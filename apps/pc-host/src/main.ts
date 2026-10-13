@@ -29,7 +29,8 @@ const parentPort = (process as NodeJS.Process & { parentPort?: ParentPort }).par
 if (!parentPort) throw new Error('PC Host must run as an Electron utility process.')
 const credentials = new HostCredentialClient(message => parentPort.postMessage(message))
 const hostDataDir = process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private')
-const plugins = new HostPluginService(generation)
+const demoPluginsEnabled = process.env.MTC_ENABLE_DEMO_PLUGINS === '1'
+const plugins = new HostPluginService(generation, demoPluginsEnabled ? undefined : [])
 const staticTools = new InstalledStaticToolStore(hostDataDir)
 const drafts = new PluginDraftService({
   dataDir: hostDataDir,
@@ -41,6 +42,7 @@ const drafts = new PluginDraftService({
   })),
 })
 const model = new ModelService({
+  defaultProviderMode: demoPluginsEnabled ? 'mock' : 'openai-compatible',
   dataDir: hostDataDir,
   generation,
   authorTools: createAuthorToolExecutor(drafts),

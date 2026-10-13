@@ -14,8 +14,9 @@
     "nodeGypRebuild": false,
     "afterPack": "./scripts/copy-host-resources.cjs",
     "files": [
-      "!**/*.bak",
-      "!scripts{,/**/*}"
+      "dist-main/**/*",
+      "dist-renderer/**/*",
+      "package.json"
     ],
     "directories": {
       "output": "../../.artifacts/desktop-release"

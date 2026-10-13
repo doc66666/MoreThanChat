@@ -9,6 +9,7 @@ interface HostPingResult {
 }
 
 const api = {
+  demoPluginsEnabled: process.argv.includes('--mtc-demo-plugins'),
   getHistoryTransferStatus:async()=>parseHistoryTransferStatus(await ipcRenderer.invoke('history:status')),
   onHistoryTransferStatus:(listener:(value:{busy:boolean;stage:string})=>void)=>{
     const handler=(_event:Electron.IpcRendererEvent,value:unknown)=>listener(parseHistoryTransferStatus(value))

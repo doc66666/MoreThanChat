@@ -221,7 +221,9 @@ button { color: inherit; }
 .network-drawer input:not([type=checkbox]),.group-plugin-widget input { padding:9px; border:1px solid var(--border); border-radius:9px; width:100%; }
 .identity-id { font-size:11px; overflow-wrap:anywhere; color:var(--text-secondary); }
 .network-buttons { display:flex; gap:8px; }
-.contact-row { display:flex; align-items:center; justify-content:space-between; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--surface); cursor:pointer; text-align:left; }
+.contact-row { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--surface); cursor:pointer; text-align:left; }
+.contact-row > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.contact-row > button:not(.contact-open) { flex-shrink:0; white-space:nowrap; }
 .contact-row small { display:block; font-size:10px; color:var(--muted); max-width:320px; overflow-wrap:anywhere; }
 .group-member-option { display:flex; align-items:center; gap:8px; }
 .server-settings-shortcut { position:fixed; right:30px; top:110px; z-index:31; border:1px solid var(--border); border-radius:8px; padding:9px; background:var(--accent-soft); color:var(--accent); }
@@ -235,7 +237,8 @@ button { color: inherit; }
 .game-board button { height:45px; font-size:19px; }
 .game-board button:disabled { cursor:default; }
 .ui-slot:empty { display:none; }
-.slot-surface:not(:has(.group-plugin-widget)):has(>.ui-slot:empty){display:none}
+/* Pending/declined consent gates are content too; hiding them prevents first load. */
+.slot-surface:not(:has(.group-plugin-gate, .group-plugin-widget)):has(>.ui-slot:empty){display:none}
 .slot-surface[data-ui-slot-surface="app.overlay"]{position:fixed;top:80px;right:30px;max-width:500px;max-height:65vh;overflow:auto;z-index:25;box-shadow:0 12px 30px var(--shadow-color);background:var(--surface);border-radius:12px}
 .slot-surface[data-ui-slot-surface="app.sidebar"]{max-height:35vh;overflow:auto;flex-shrink:0}
 .slot-surface[data-ui-slot-surface="app.rail"]{max-height:40vh;overflow:auto;width:100%}
@@ -612,6 +615,9 @@ svg { stroke-width: 1.7; }
 .group-plugin-gate p, .group-draft-submit p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); overflow-wrap: anywhere; }
 .group-plugin-gate pre, .draft-card pre { max-height: 260px; overflow: auto; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .group-plugin-gate code { overflow-wrap: anywhere; font-size: 10px; }
+.network-drawer [data-group-plugin-review] { min-width:0; overflow-wrap:anywhere; }
+.network-drawer [data-group-plugin-review] pre { max-width:100%; max-height:260px; overflow:auto; white-space:pre-wrap; font-size:11px; }
+.network-drawer [data-group-plugin-review] button { padding:7px 10px; margin:5px 6px 0 0; border:1px solid var(--border); border-radius:7px; background:var(--surface); color:var(--accent-text); cursor:pointer; }
 .history-settings .settings-section-heading { flex-wrap: wrap; }
 .history-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .history-transfer-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }

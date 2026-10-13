@@ -4,6 +4,14 @@ import { timeToolPlugin } from '@more-than-chat/plugin-time-tool'
 import { HostPluginService } from '../src/plugin-service'
 
 describe('HostPluginService', () => {
+  it('starts a clean host without demos while preserving user installation support', async () => {
+    const service = new HostPluginService(1, [])
+    await service.start()
+    expect(service.catalog().plugins).toEqual([])
+    await service.installStaticTool(staticManifest(), { id: 'note', label: '便签', text: 'user plugin' })
+    expect((await service.invoke('example.note', 'note')).text).toBe('user plugin')
+    await service.stop()
+  })
   it('runs a bundled plugin and clears its tool on every deactivate', async () => {
     const service = new HostPluginService(7)
     await service.start()

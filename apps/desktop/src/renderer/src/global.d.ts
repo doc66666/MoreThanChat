@@ -66,6 +66,7 @@ export interface HistoryImportResult {conversationsAdded:number;messagesAdded:nu
 declare global {
   interface Window {
     moreThanChat: {
+      readonly demoPluginsEnabled: boolean
       getHistoryTransferStatus():Promise<HistoryTransferStatus>
       onHistoryTransferStatus(listener:(value:HistoryTransferStatus)=>void):()=>void
       exportChatHistory(password:string):Promise<HistoryExportResult|null>

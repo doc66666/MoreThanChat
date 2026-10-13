@@ -31,6 +31,7 @@ const MAX_TOOL_ROUNDS = 6
 const MAX_TOOL_CALLS = 4
 
 export interface ModelServiceOptions {
+  defaultProviderMode?: ModelProviderMode
   dataDir: string
   generation: number
   fetchImpl?: typeof fetch
@@ -78,6 +79,7 @@ export class ModelService {
   #settingsTail: Promise<unknown> = Promise.resolve()
 
   constructor(options: ModelServiceOptions) {
+    this.#settings.providerMode = options.defaultProviderMode ?? 'mock'
     this.#dataDir = options.dataDir
     this.#generation = options.generation
     this.#settingsPath = path.join(options.dataDir, 'model-settings.json')
