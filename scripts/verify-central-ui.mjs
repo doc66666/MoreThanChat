@@ -437,7 +437,9 @@ try {
   await openDetails(a)
   await openDetails(b)
   await click(b, '[data-submit-plugin="chain"]')
-  await poll(b, 'document.body.innerText.includes("等待管理员批准")')
+  // A transient toast can expire/lose a race with connection notices. The
+  // durable pending package is the submission result, reviewed through UI below.
+  await poll(b, 'window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.pack.kind==="chain"&&p.status==="pending"))')
   const chain = (await state(b)).directory.plugins.find(
     (plugin) => plugin.pack.kind === 'chain',
   )
