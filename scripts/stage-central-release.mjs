@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '..'),
@@ -39,7 +39,7 @@ await writeFile(
   JSON.stringify(
     {
       name: 'more-than-chat-central-release',
-      version: '0.1.0',
+      version: JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version,
       private: true,
       type: 'module',
       scripts: { start: 'node server.mjs', status:'node central-status.mjs' },

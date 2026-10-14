@@ -1,7 +1,7 @@
 {
   "name": "@more-than-chat/desktop",
   "productName": "MoreThanChat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "main": "dist-main/main.js",
