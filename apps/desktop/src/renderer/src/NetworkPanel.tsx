@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MAX_GROUP_MEMBERS, validGroupId } from '@more-than-chat/central-protocol'
+import { MAX_GROUP_MEMBERS, validGroupId, canReviewPlugin, pluginScopeMembers } from '@more-than-chat/central-protocol'
 import { slotLabels } from './group-plugin-presentation'
 import { friendRequestIssue, selectedCurrentFriends } from './network-form'
 import { useDialogFocus } from './use-dialog-focus'
@@ -70,8 +70,7 @@ export function NetworkPanel({
     directory?.plugins.filter(
       (plugin) =>
         plugin.status === 'pending' &&
-        directory.groups.find((group) => group.id === plugin.groupId)
-          ?.ownerId === snapshot?.userId,
+        canReviewPlugin(directory,plugin),
     ) ?? []
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
@@ -307,7 +306,7 @@ export function NetworkPanel({
             <button disabled={disabled} onClick={()=>void action('groups/reject',{groupId:request.groupId,userId:request.user.id})}>拒绝</button>
           </div>
         ))}
-        <h3>群插件申请 · 管理员审批</h3>
+        <h3>插件分享申请 · 好友同意／群管理员审批</h3>
         {pending.length === 0 && (
           <p className="settings-note">
             {connected?'没有待审批申请。进入群聊可提交 AI 创作的插件或使用演示模板。':'连接服务器后查看待审批的群插件申请。'}
@@ -323,13 +322,13 @@ export function NetworkPanel({
               {plugin.pack.displayName} · v{plugin.pack.version}
             </strong>
             <small>{plugin.digest}</small>
-            <p>群聊：{directory?.groups.find(group=>group.id===plugin.groupId)?.name??plugin.groupId}</p>
+            <p>会话：{directory?.groups.find(group=>group.id===plugin.groupId)?.name??(directory&&pluginScopeMembers(directory,plugin.groupId).filter(m=>m.id!==snapshot?.userId).map(m=>m.displayName).join('、'))}</p>
             <p>申请人：{plugin.submittedBy}</p>
             {plugin.pack.artifact&&<><p>{plugin.pack.artifact.manifest.description} · 更新会重置共享状态，成员需重新确认载入。</p><details><summary>审阅完整插件包</summary><pre>{JSON.stringify(plugin.pack,null,2)}</pre></details></>}
-            <p>
+            {plugin.pack.kind==='executable'?<><p>可执行客户端插件，可改造整个界面、通过本会话同步；批准只是分发，双方／成员仍自行载入。</p><details><summary>查看完整插件代码</summary><pre>{JSON.stringify(plugin.pack.client,null,2)}</pre></details></>:<p>
               界面位置：{slotLabels[plugin.pack.slot]}；可向本群发送同步事件，无任意 URL
               或文件权限。
-            </p>
+            </p>}
             <div className="draft-actions">
               <button
                 data-approve-group-plugin
@@ -344,7 +343,7 @@ export function NetworkPanel({
                   })
                 }
               >
-                批准并向本群分发
+                {plugin.groupId.startsWith('dm_')?'同意分享并分发':'批准并向本群分发'}
               </button>
               <button
                 disabled={disabled}

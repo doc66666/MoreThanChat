@@ -26,7 +26,7 @@ import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
 import { DesktopIntegration } from './desktop-integration'
 import { exportHistory, restoreHistory } from './history-transfer'
 import { createHash } from 'node:crypto'
-import { parseGroupArtifact, parseGroupPluginPack, UI_SLOTS, type UiSlot } from '@more-than-chat/central-protocol'
+import { parseGroupArtifact, parseGroupPluginPack, pluginScopeMembers, UI_SLOTS, type UiSlot } from '@more-than-chat/central-protocol'
 import { GroupPluginConsentStore } from './group-plugin-consent'
 import { ClientPluginStore, clientPackageDigest } from './client-plugins'
 import { parseExecutableClientPackage } from '@more-than-chat/plugin-runtime'
@@ -133,6 +133,7 @@ async function recoverClientInterface(): Promise<void> {
   const window = mainWindow
   try {
     await clientPlugins.disableAll()
+    await groupConsent.disableExecutable()
     centralClient?.setReadingConversation(null)
     // A fresh WebContents avoids the crash/reload race. Keep the old window until
     // its replacement loads; never leave the application without a live window.
@@ -414,10 +415,11 @@ function registerIpc(): void {
         throw new Error('不允许的中心服务操作')
       const client=centralClient, snapshot=client.snapshot()
       if (input.route==='plugins/event') {
-        const data=input.data as {groupId?:string;pluginId?:string;digest?:string}|null
+        const data=input.data as {groupId?:string;pluginId?:string;digest?:string;serverId?:string}|null
         const plugin=snapshot.directory?.plugins.find(p=>p.groupId===data?.groupId&&p.pack.id===data?.pluginId&&p.status==='approved')
         if (!plugin || !snapshot.serverId || await groupConsent.get(snapshot,plugin.groupId,plugin.pack.id,plugin.digest)!=='loaded') throw new Error('请先确认在本机载入此版本的群插件')
-        if (plugin.pack.kind==='declarative'&&data?.digest!==plugin.digest) throw new Error('插件版本已改变')
+        if (['declarative','executable'].includes(plugin.pack.kind)&&data?.digest!==plugin.digest) throw new Error('插件版本已改变')
+        if (plugin.pack.kind==='executable'&&data?.serverId!==snapshot.serverId) throw new Error('插件服务器已改变')
         if (client!==centralClient||client.serverId!==snapshot.serverId) throw new Error('中心服务器已切换')
       }
       return client.action(input.route, input.data)
@@ -445,6 +447,28 @@ function registerIpc(): void {
     const id='gplugin_'+[hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-')
     const prior=client.snapshot().directory?.plugins.filter(p=>p.groupId===input.groupId&&p.pack.id===id)??[]
     const pack=parseGroupPluginPack({id,version:1+Math.max(0,...prior.map(p=>p.pack.version)),displayName:artifact.manifest.displayName,kind:'declarative',slot:input.slot as UiSlot,artifact})
+    return client.action('plugins/submit',{groupId:input.groupId,pack})
+  })
+  ipcMain.handle('central:share-client-plugin', async (event, input) => {
+    assertTrustedIpc(event)
+    if (!centralClient || !input || typeof input.groupId!=='string' || typeof input.serverId!=='string') throw new Error('请选择要分享的会话')
+    const client=centralClient, snapshot=client.snapshot()
+    if (snapshot.status!=='connected'||snapshot.serverId!==input.serverId||!snapshot.directory||!pluginScopeMembers(snapshot.directory,input.groupId).some(m=>m.id===snapshot.userId)) throw new Error('会话或服务器已改变')
+    let source
+    if (typeof input.draftId==='string' && Number.isSafeInteger(input.revision) && hostSupervisor) {
+      const draft=await hostSupervisor.exportClientDraft(input.draftId,input.revision)
+      source={manifest:JSON.parse(draft.manifestJson),program:JSON.parse(draft.source)}
+    } else if (typeof input.pluginId==='string' && typeof input.digest==='string') {
+      const installed=(await clientPlugins.list()).find(p=>p.manifest.id===input.pluginId&&p.digest===input.digest)
+      if (!installed) throw new Error('本机插件版本已改变，请刷新后分享')
+      source={manifest:installed.manifest,program:installed.program}
+    } else throw new Error('请选择已校验的草稿或已安装插件版本')
+    const executable=parseExecutableClientPackage(source)
+    if (client!==centralClient||client.serverId!==snapshot.serverId) throw new Error('中心服务器已切换')
+    const hex=createHash('sha256').update(snapshot.userId+':'+executable.manifest.id).digest('hex').slice(0,32)
+    const id='gplugin_'+[hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-')
+    const prior=client.snapshot().directory?.plugins.filter(p=>p.groupId===input.groupId&&p.pack.id===id)??[]
+    const pack=parseGroupPluginPack({id,version:1+Math.max(0,...prior.map(p=>p.pack.version)),displayName:executable.manifest.displayName,kind:'executable',slot:'chat.details',client:executable})
     return client.action('plugins/submit',{groupId:input.groupId,pack})
   })
   ipcMain.handle(

@@ -5,6 +5,8 @@ import type { PluginDraftSummary } from '@more-than-chat/protocol'
 import { pluginRuntime } from './plugin-host'
 import { ClientPluginLoader, importClientModule } from './client-plugin-loader'
 import { ClientPluginController } from './client-plugin-controller'
+import type { ServerSnapshot } from '@more-than-chat/central-protocol'
+import { ShareClientPlugin, SharedPluginChoices } from './SharedClientPlugins'
 
 let loader: ClientPluginLoader | undefined
 export function getClientPluginLoader(): ClientPluginLoader {
@@ -17,7 +19,7 @@ export function getClientPluginController(): ClientPluginController {
   return controller ??= new ClientPluginController(getClientPluginLoader(), window.moreThanChat, changed)
 }
 
-export function InstallClientDraft({draft}: {draft: PluginDraftSummary}) {
+export function InstallClientDraft({draft,snapshot}: {draft: PluginDraftSummary;snapshot:ServerSnapshot|null}) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState('')
   return <div>
     <button className="secondary-button" data-client-install disabled={busy || !draft.ok} onClick={async () => {
@@ -29,10 +31,11 @@ export function InstallClientDraft({draft}: {draft: PluginDraftSummary}) {
     }}>{busy ? '正在应用…' : '安装并启用此版本'}</button>
     <p className="settings-note">插件可修改客户端界面，请使用可信来源。</p>
     {notice && <p role="status" className="settings-note">{notice}</p>}
+    <ShareClientPlugin snapshot={snapshot} draft={draft}/>
   </div>
 }
 
-export function ClientPlugins() {
+export function ClientPlugins({snapshot:serverSnapshot}:{snapshot:ServerSnapshot|null}) {
   const clientPluginLoader = getClientPluginLoader()
   const clientPluginController = getClientPluginController()
   const [packages, setPackages] = useState<InstalledClientPackage[]>([])
@@ -75,9 +78,11 @@ export function ClientPlugins() {
             await clientPluginController.disable(pack); setNotice('已停用。')
           })}>停用界面插件</button>}
         </div>
+        <ShareClientPlugin snapshot={serverSnapshot} pack={pack}/>
       </div>
     })}
     {notice && <p role="status" className="settings-note">{notice}</p>}
     <p className="settings-note">界面异常时可按 Ctrl+Shift+F12 停用界面插件并重新打开聊天。已保存数据不变，未发送输入可能丢失。</p>
+    <SharedPluginChoices snapshot={serverSnapshot} onError={setNotice}/>
   </section>
 }

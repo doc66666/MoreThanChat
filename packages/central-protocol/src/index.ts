@@ -1,4 +1,6 @@
 import { parseGroupArtifact, validateProgramState, type GroupArtifact } from './group-program.js'
+import { parseSharedClientPackage, type SharedClientPackage } from './executable-client.js'
+export * from './executable-client.js'
 export * from './group-program.js'
 export * from './group-program-diagnostics.js'
 export const CENTRAL_PROTOCOL_VERSION = 1
@@ -86,9 +88,10 @@ export interface GroupPluginPack {
   id: string
   version: number
   displayName: string
-  kind: 'chain' | 'tic-tac-toe' | 'channel' | 'declarative'
+  kind: 'chain' | 'tic-tac-toe' | 'channel' | 'declarative' | 'executable'
   slot: UiSlot
   artifact?: GroupArtifact
+  client?: SharedClientPackage
 }
 export interface GroupPlugin {
   groupId: string
@@ -157,6 +160,31 @@ export function validUid(id: unknown): id is string {
 export function validGroupId(id: unknown): id is string {
   return typeof id === 'string' && /^grp_[a-f0-9-]{36}$/.test(id)
 }
+/** Legacy groupId fields now carry a conversation scope; direct scopes are symmetric. */
+export function directPluginScope(a: string, b: string): string {
+  if (!validUid(a) || !validUid(b) || a === b) throw new Error('Invalid direct participants')
+  return 'dm_' + [a.slice(4), b.slice(4)].sort().join('_')
+}
+export function directPluginMembers(scope: string): string[] | null {
+  if (!/^dm_[a-f0-9]{64}_[a-f0-9]{64}$/.test(scope)) return null
+  const [a,b] = scope.slice(3).split('_').map(id => 'usr_' + id)
+  return a! < b! ? [a!,b!] : null
+}
+export function validPluginScope(id: unknown): id is string {
+  return typeof id === 'string' && (validGroupId(id) || directPluginMembers(id) !== null)
+}
+export function pluginScopeMembers(directory: Directory, scope: string): Member[] {
+  const group = directory.groups.find(g => g.id === scope)
+  if (group) return group.members
+  const ids = directPluginMembers(scope)
+  const peer = ids?.includes(directory.self.id) && directory.friends.find(f => ids.includes(f.id))
+  return peer ? [directory.self,peer] : []
+}
+export function canReviewPlugin(directory: Directory, plugin: GroupPlugin): boolean {
+  return validGroupId(plugin.groupId)
+    ? directory.groups.find(g => g.id === plugin.groupId)?.ownerId === directory.self.id
+    : pluginScopeMembers(directory, plugin.groupId).length === 2 && plugin.submittedBy !== directory.self.id
+}
 export function parseGroupPluginPack(value: unknown): GroupPluginPack {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid plugin package')
@@ -169,13 +197,13 @@ export function parseGroupPluginPack(value: unknown): GroupPluginPack {
     typeof v.displayName !== 'string' ||
     !v.displayName.trim() ||
     v.displayName.length > 80 ||
-    !['chain', 'tic-tac-toe', 'channel', 'declarative'].includes(v.kind) ||
+    !['chain', 'tic-tac-toe', 'channel', 'declarative', 'executable'].includes(v.kind) ||
     !UI_SLOTS.includes(v.slot)
   )
     throw new Error('Invalid plugin package')
   if (
     Object.keys(value).some(
-      (key) => !['id', 'version', 'displayName', 'kind', 'slot', ...(v.kind === 'declarative' ? ['artifact'] : [])].includes(key),
+      (key) => !['id', 'version', 'displayName', 'kind', 'slot', ...(v.kind === 'declarative' ? ['artifact'] : []), ...(v.kind === 'executable' ? ['client'] : [])].includes(key),
     )
   )
     throw new Error('Unsupported executable plugin package')
@@ -186,6 +214,7 @@ export function parseGroupPluginPack(value: unknown): GroupPluginPack {
     kind: v.kind,
     slot: v.slot,
     ...(v.kind === 'declarative' ? { artifact: parseGroupArtifact(v.artifact) } : {}),
+    ...(v.kind === 'executable' ? { client: parseSharedClientPackage(v.client) } : {}),
   }
 }
 export function validateWireAttachment(value: WireAttachment): void {
@@ -256,7 +285,7 @@ export function parseDirectory(value: unknown): Directory {
       pack = parseGroupPluginPack(p.pack),
       state = record(p.state)
     if (
-      !validGroupId(p.groupId) ||
+      !validPluginScope(p.groupId) ||
       !validUid(p.submittedBy) ||
       typeof p.digest !== 'string' ||
       !/^[a-f0-9]{64}$/.test(p.digest) ||
@@ -340,7 +369,7 @@ export function parseRelayEvent(value: unknown): RelayEvent {
   }
   if (e.kind === 'plugin') {
     if (
-      !validGroupId(e.groupId) ||
+      !validPluginScope(e.groupId) ||
       typeof e.pluginId !== 'string' ||
       !/^gplugin_[a-f0-9-]{36}$/.test(e.pluginId) ||
       JSON.stringify(e.payload ?? null).length > 32000

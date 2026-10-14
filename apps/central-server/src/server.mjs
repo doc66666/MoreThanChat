@@ -18,6 +18,7 @@ import { responseBudget, writeResponse, RESPONSE_LIMIT } from './response-flow.m
 import { statementCache } from './statement-cache.mjs'
 import {
   parseGroupPluginPack,
+  directPluginScope, directPluginMembers,
   transition,
   validUid,
   validateWireAttachment,
@@ -297,6 +298,12 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       ? [ownerId, ...ids.filter((id) => id !== ownerId)]
       : ids
   }
+  const scopeUsers = (uid, scope) => {
+    const peers = directPluginMembers(scope)
+    if (!peers) { member(uid, scope); return groupUsers(scope) }
+    if (!peers.includes(uid) || !db.prepare("SELECT 1 FROM friends WHERE a=? AND b=? AND status='accepted'").get(...peers)) fail(403, '仅已互为好友的双方可以共享插件')
+    return peers
+  }
   const pluginRows = (groupId) =>
     db
       .prepare('SELECT * FROM plugins WHERE group_id=? ORDER BY version')
@@ -325,7 +332,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
     enqueue([sender],{id:randomUUID(),kind:'directory',receipt},false,undefined,deliveryControlBudget)
     return sender
   }
-  const directoryFor = (uid, supportsGroupPrograms = false) => {
+  const directoryFor = (uid, supportsGroupPrograms = false, supportsExecutable = false) => {
     const friends = db
       .prepare(
         "SELECT a,b FROM friends WHERE (a=? OR b=?) AND status='accepted'",
@@ -372,8 +379,8 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       outgoingRequests,
       groups,
       groupRequests,
-      plugins: groups.flatMap((group) =>
-        pluginRows(group.id).filter(plugin => supportsGroupPrograms || plugin.pack.kind !== 'declarative').filter(
+      plugins: [...groups, ...(supportsExecutable ? friends.map(friend => ({id:directPluginScope(uid,friend.id),ownerId:uid})) : [])].flatMap((group) =>
+        pluginRows(group.id).filter(plugin => (supportsGroupPrograms || plugin.pack.kind !== 'declarative') && (supportsExecutable || plugin.pack.kind !== 'executable')).filter(
           (plugin) =>
             plugin.status === 'approved' ||
             plugin.submittedBy === uid ||
@@ -460,7 +467,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       if (!isControlRequest(request.method, route) && lifecycle.activeRequests > 224)
         fail(429, '服务器请求繁忙，请稍后重试')
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1'] })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1'] })
       if ((route === '/v1/admin/access' && request.method === 'POST') || (route === '/v1/admin/status' && request.method === 'GET')) {
         const received = Buffer.from(
             (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -577,7 +584,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           token,
           serverId,
           mode,
-          directory: directoryFor(challenge.uid,challenge.features.includes('group-program-v1')),
+          directory: directoryFor(challenge.uid,challenge.features.includes('group-program-v1'),challenge.features.includes('executable-plugin-v1')),
         })
       }
       const uid = auth(request, trafficClass(request.method, route))
@@ -585,6 +592,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       const deviceId=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.deviceId
       const supportsActions=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('message-actions-v1')??false
       const supportsGroupPrograms=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('group-program-v1')??false
+      const supportsExecutable=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('executable-plugin-v1')??false
       const supportsLargeGroups=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('large-groups-v1')??false
       if (!supportsLargeGroups && ['/v1/events','/v1/messages','/v1/directory'].includes(route)
         && db.prepare('SELECT 1 FROM members mine WHERE mine.user_id=? AND (SELECT COUNT(*) FROM members all_members WHERE all_members.group_id=mine.group_id)>20 LIMIT 1').get(uid)) {
@@ -607,7 +615,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         return json(response, 200, { ok: true })
       }
       if (route === '/v1/directory' && request.method === 'GET')
-        return json(response, 200, directoryFor(uid,supportsGroupPrograms))
+        return json(response, 200, directoryFor(uid,supportsGroupPrograms,supportsExecutable))
       if (route === '/v1/users' && request.method === 'GET') {
         const found = user(url.searchParams.get('id'))
         if (!found || !allowed(found.id)) fail(404, '此用户不在当前服务器')
@@ -685,7 +693,13 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         const data=await body(request),peer=text(data.userId),row=db.prepare('SELECT * FROM friends WHERE a=? AND b=?').get(...pair(uid,peer))
         if(!validUid(peer)||!row)fail(404,'没有此好友或申请')
         if(route.endsWith('/remove')?row.status!=='accepted':row.status!=='pending'||(route.endsWith('/cancel')?row.requester!==uid:row.requester===uid))fail(403,'不能处理这条申请')
-        notify([uid,peer],()=>db.prepare('DELETE FROM friends WHERE a=? AND b=?').run(...pair(uid,peer)))
+        notify([uid,peer],()=>{
+          db.prepare('DELETE FROM friends WHERE a=? AND b=?').run(...pair(uid,peer))
+          const scope=directPluginScope(uid,peer)
+          // Re-adding a friend must not resurrect an old approval or queued code events.
+          db.prepare('DELETE FROM plugins WHERE group_id=?').run(scope)
+          db.prepare("DELETE FROM queue WHERE json_extract(payload,'$.kind')='plugin' AND json_extract(payload,'$.groupId')=?").run(scope)
+        })
         return json(response,200,{ok:true})
       }
       if (['/v1/groups/rename','/v1/groups/kick','/v1/groups/transfer','/v1/groups/leave','/v1/groups/dissolve','/v1/groups/reject'].includes(route) && request.method==='POST') {
@@ -925,8 +939,9 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       }
       if (route === '/v1/plugins/submit' && request.method === 'POST') {
         const data = await body(request)
-        member(uid, text(data.groupId))
+        const recipients=scopeUsers(uid, text(data.groupId))
         const pack = clientValue(() => parseGroupPluginPack(data.pack))
+        if ((pack.kind==='executable'||directPluginMembers(data.groupId))&&!supportsExecutable) fail(400,'请升级客户端以使用会话可执行插件')
         if (pack.kind === 'declarative' && !supportsGroupPrograms) fail(400,'请使用支持群插件的新版客户端')
         const original = db.prepare('SELECT submitter FROM plugins WHERE group_id=? AND id=? ORDER BY version LIMIT 1').get(data.groupId,pack.id)
         if (
@@ -947,14 +962,15 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         if (original && original.submitter !== uid) fail(403, '只有原作者可以提交该插件的新版本')
         const serialized = JSON.stringify(pack),
           digest = createHash('sha256').update(serialized).digest('hex')
-        notify(groupUsers(data.groupId), () => db.prepare(
+        notify(recipients, () => db.prepare(
           "INSERT INTO plugins VALUES (?,?,?,?,?,?,'pending',0,'{}')",
         ).run(data.groupId, pack.id, pack.version, serialized, digest, uid))
         return json(response, 200, { digest })
       }
       if (route === '/v1/plugins/review' && request.method === 'POST') {
         const data = await body(request)
-        owner(uid, text(data.groupId))
+        const members=scopeUsers(uid, text(data.groupId))
+        if (!directPluginMembers(data.groupId)) owner(uid,data.groupId)
         const row = db
           .prepare(
             "SELECT * FROM plugins WHERE group_id=? AND id=? AND version=? AND status='pending'",
@@ -966,8 +982,9 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           row.digest !== data.digest
         )
           fail(409, '待审批版本已改变')
-        const pack = JSON.parse(row.pack),
-          members = groupUsers(data.groupId)
+        if (directPluginMembers(data.groupId)&&row.submitter===uid) fail(403,'分享申请必须由对方同意，不能自行批准')
+        const pack = JSON.parse(row.pack)
+        if ((pack.kind==='executable'||directPluginMembers(data.groupId))&&!supportsExecutable) fail(400,'请升级客户端以使用会话可执行插件')
         if (pack.kind === 'declarative' && !supportsGroupPrograms) fail(400,'请使用支持群插件的新版客户端')
         if (data.approve && db.prepare("SELECT 1 FROM plugins WHERE group_id=? AND id=? AND status='approved' AND version>=?").get(data.groupId,pack.id,pack.version)) fail(409,'不能批准比当前版本更旧的申请')
         const previous = db
@@ -1017,7 +1034,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       }
       if (route === '/v1/plugins/event' && request.method === 'POST') {
         const data = await body(request)
-        member(uid, text(data.groupId))
+        const recipients=scopeUsers(uid, text(data.groupId))
         const row = db
           .prepare(
             "SELECT * FROM plugins WHERE group_id=? AND id=? AND status='approved' ORDER BY version DESC LIMIT 1",
@@ -1029,17 +1046,21 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           fail(413, '插件事件过大')
         const pack = JSON.parse(row.pack),
           state = JSON.parse(row.state)
+        if (pack.kind==='executable') {
+          if (!supportsExecutable) fail(400,'请升级客户端以使用会话可执行插件')
+          if (data.digest!==row.digest) fail(409,'插件版本已改变，请载入新版本')
+        }
         if (pack.kind === 'declarative') {
           if (!supportsGroupPrograms) fail(400,'请使用支持群插件的新版客户端')
           if (channel !== 'state' || data.digest !== row.digest) fail(409, '插件版本已改变，请重新确认载入')
         }
-        if (channel === 'state') {
+        if (channel === 'state' && pack.kind !== 'executable') {
           if (data.expectedRevision !== row.revision)
             fail(409, '状态已被其他成员更新，请重试')
           const payload = object(data.payload)
           if (pack.kind === 'declarative') {
             const next = clientValue(() => transition(pack.artifact.program, {
-              state, actor: uid, members: groupUsers(data.groupId), event: object(payload.input ?? {}),
+              state, actor: uid, members: recipients, event: object(payload.input ?? {}),
             }, text(payload.action,48)))
             for (const key of Object.keys(state)) delete state[key]
             Object.assign(state,next)
@@ -1089,12 +1110,12 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
             state.turn = 1 - state.turn
           } else fail(400, '该插件只接受通道事件')
         }
-        const recipients = groupUsers(data.groupId)
         transaction(() => {
-          if (channel === 'state')
+          if (channel === 'state' && pack.kind !== 'executable')
             db.prepare(
               'UPDATE plugins SET state=?,revision=revision+1 WHERE group_id=? AND id=? AND version=?',
             ).run(JSON.stringify(state), data.groupId, pack.id, pack.version)
+          if (pack.kind==='executable') db.prepare('UPDATE plugins SET revision=revision+1 WHERE group_id=? AND id=? AND version=?').run(data.groupId,pack.id,pack.version)
           enqueue(recipients, {
             id: randomUUID(),
             kind: 'plugin',
@@ -1105,7 +1126,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
             // Provenance is derived from the authenticated session and approved row,
             // never from client-supplied trace/actor/version fields.
             trace: { actorId: uid, packVersion: pack.version, digest: row.digest, acceptedAt: Date.now(),
-              ...(channel === 'state' ? { stateRevision: row.revision + 1 } : {}) },
+              ...(channel === 'state' || pack.kind==='executable' ? { stateRevision: row.revision + 1 } : {}) },
           })
         })
         for (const recipient of recipients) wake(recipient)
@@ -1119,7 +1140,10 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
             const payloadBytes = Buffer.byteLength(row.payload)
             if (result.length && bytes + payloadBytes > 12 * 1024 * 1024) break
             bytes += payloadBytes
-            result.push(JSON.parse(row.payload))
+            const event=JSON.parse(row.payload)
+            // Old clients cannot parse direct plugin scopes. Keep chat delivery working;
+            // this device acknowledges a harmless wake-up, not executable content.
+            result.push(!supportsExecutable&&event.kind==='plugin'&&directPluginMembers(event.groupId)?{id:event.id,kind:'directory'}:event)
           }
           return result
         }
@@ -1154,7 +1178,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         auth(request)
         if (!allowed(uid)) fail(403, '身份已被服务器禁止')
         events = pending()
-        return json(response, 200, { events, directory: directoryFor(uid,supportsGroupPrograms) })
+        return json(response, 200, { events, directory: directoryFor(uid,supportsGroupPrograms,supportsExecutable) })
       }
       if (route === '/v1/read' && request.method === 'POST') {
         const data = await body(request)

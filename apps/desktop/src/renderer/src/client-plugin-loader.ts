@@ -6,7 +6,7 @@ export type ClientModule = {default: (context: PluginContext, sdk: unknown) => v
 export class ClientPluginLoader {
   readonly #packages = new Map<string, InstalledClientPackage>()
   #tail: Promise<unknown> = Promise.resolve()
-  constructor(readonly runtime: PluginRuntime, readonly sdk: unknown, readonly load: (code: string) => Promise<ClientModule>) {}
+  constructor(readonly runtime: PluginRuntime, readonly sdk: unknown, readonly load: (code: string) => Promise<ClientModule>, readonly context: (context: PluginContext) => PluginContext = context => context) {}
   current(id: string): InstalledClientPackage | undefined { return this.#packages.get(id) }
   isActive(id: string): boolean { return this.runtime.list().some(p => p.manifest.id === id && p.status === 'active') }
   remove(id: string): Promise<void> { return this.#enqueue(async () => {await this.runtime.uninstall(id); this.#packages.delete(id)}) }
@@ -32,7 +32,7 @@ export class ClientPluginLoader {
     this.runtime.install({manifest: pack.manifest, trust: 'trusted', load: async () => {
       const module = await this.load(pack.program.code)
       if (typeof module.default !== 'function') throw new Error('界面模块需要 export default function activate(ctx, sdk)')
-      return {manifest: pack.manifest, activate: context => module.default(context, this.sdk)}
+      return {manifest: pack.manifest, activate: context => module.default(this.context(context), this.sdk)}
     }})
     this.#packages.set(pack.manifest.id, pack)
   }

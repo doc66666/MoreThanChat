@@ -1,6 +1,6 @@
 # 插件运行时与第一个示例
 
-最新入口与信任边界见文末“2026-10-14：用户可执行界面入口”；本机可执行代码与旧声明式群插件并存。
+最新入口与共享协议见文末“2026-10-14：同一可执行包的本机／群聊／私聊闭环”；旧声明式群插件继续兼容。
 
 ## 2026-10-14 可执行界面组合层
 
@@ -8,7 +8,7 @@ PC UI 现使用 `CordisPluginRuntime`，除旧 `ui.slots` 外增加 `ui.surfaces
 
 `root` 的 context 当前提供当前会话／消息／草稿／资料、会话列表、选择会话、修改草稿、发送和中心快照。App 的状态与通信 hooks 保持运行，替换的是返回的视图。有自定义 root 时暂停默认视图的自动已读，避免插件未展示消息却被标记已读；插件视图可见性与已读 SDK 留待完整包阶段接入。render 异常通过 React boundary 返回该区域默认视图；循环区域或超过 32 层的组合返回 fallback。相同贡献 ID 的重新注册使用新实例标识，避免热换后沿用旧错误状态。激活失败与停用由 Cordis/effect 清理注册；没有安装替换模块时视觉结构保持原样。
 
-这些是可信 React/JS 模块的组合 API，不是安全沙箱：死循环、任意 DOM 操作、直接修改共享引用仍不能靠 React boundary 或 Cordis 防御。本机包读取／安装、AI 创作这种包、主进程恢复入口现已接入；隔离的第三方 Host 和可执行群分发仍未完成。旧群 JSON 程序仍使用原审批协议与九个位置，后续另接可执行包通道，不把旧包暗中升级为可执行代码。
+这些是可信 React/JS 模块的组合 API，不是安全沙箱：死循环、任意 DOM 操作、直接修改共享引用仍不能靠 React boundary 或 Cordis 防御。本机包读取／安装、AI 创作、群与私聊分发、主进程恢复入口已接入；隔离的第三方 Node Host 扩展尚未完成。旧群 JSON 程序仍使用原审批协议与九个位置，不把旧包暗中升级为可执行代码。
 
 当前实现完成了可信插件的第一条真实闭环：独立插件包通过版本化 manifest 进入 catalog，应用在运行时动态加载模块，执行 `activate()`，收集其贡献，并可在不重启应用的情况下停用和再次启用。
 
@@ -90,4 +90,40 @@ pnpm verify:plugin-ui
 - 每次启动／重载自动加载用户已启用的界面插件；停用状态同样保存。旧目录没有 enabled 字段时按未启用迁移。Ctrl+Shift+F12 直接停用界面插件并创建新的聊天窗口，不再使用 forcefullyCrashRenderer + reload；不删除已存聊天或插件，但未发送输入可能丢失。这是故障入口，正常热更新不重启窗口。
 - 示例：[client-desktop.mtcplugin](../examples/client-desktop.mtcplugin)。仅供主动导入，不预装进发行版。
 
-尚未完成的能力：可执行包群审批／分发、第三方 Node Host 扩展。`chat.network` 服务本身存在，但本机界面安装不能绕过中心的已审批群包／本机载入检查，不能冒称任意本机插件已获得群通信授权。DSH 插件需要接口适配，不保证原封不动加载。
+第三方 Node Host 扩展尚未完成。DSH 插件需要接口适配，不保证原封不动加载。
+
+## 2026-10-14：同一可执行包的本机／群聊／私聊闭环
+
+同一个 `{manifest,program:{kind:'executable-client',code}}` 不需要改写成声明式状态机，即可本机安装或申请分享。草稿卡与已安装插件卡均有“分享到好友／群聊”。群管理员批准；私聊由**接收方**批准，提交者不能自行批准。批准后完整包进入会话成员目录，各端自行点击载入。没有额外系统级信任弹窗。
+
+成员载入的包按服务器、用户、会话、包摘要隔离。本机副本与多个会话副本不会互相覆盖。已选择的共享实例在打开所属会话时激活，切换、断线、离群／删除好友、版本被替代、停用时撤销生命周期登记。重启保留本机选择；新版本审批不自动执行，新版由各端选择载入。恢复界面入口也停用本机已载入的共享可执行包，不删除源码。
+
+共享实例使用同一个 Cordis / ES module 加载器，同样可替换 root、包装聊天、创建任意子界面，**不受旧九插槽限制**。同一包本机与共享同时启用时，当前会话的 surface 优先于该包本机 surface，离开后恢复本机；不改变其他包的优先级。包中 legacy `slot` 只为协议兼容，不决定 JavaScript 渲染位置。不能将完整 renderer 信任宣称为恶意代码沙箱。
+
+运行时 SDK：
+
+```js
+export default function activate(ctx, sdk) {
+  // sdk.network / sdk.conversation 仅在已载入的会话共享实例中提供。
+  // 同一份源码可以在没有 network 的本机模式提供单机功能。
+  if (!sdk.network) return
+  const { id, kind, serverId, userId } = sdk.conversation
+  // members 是动态 getter，Member[]；kind 是 group 或 direct。
+  ctx.effect(sdk.network.subscribe(event => {
+    // event.id 去重；event.trace.actorId 是服务器认证的发起人。
+    // payload 是插件自己的数据，不能把 payload.actor 当认证身份。
+  }))
+  // 先订阅，再 history()，合并重叠事件并按 stateRevision 排序。
+  // sdk.network.send('my-channel', { ... }) 返回 Promise<void>。
+}
+```
+
+`sdk.plugin` 是原始 manifest；`ctx.manifest.id` 是隔离后的运行实例 ID。`sdk.network.send(channel,payload)` 自动绑定服务器、会话、批准包 ID 和 digest；`history()` 读取本机该版本最近事件；`subscribe(listener)` 返回取消函数，应放进 `ctx.effect`。声明 `chat.network` 的旧 `ctx.getService('chat.network').forPlugin(...)` 接口在共享实例中也绑定到这个实例。
+
+服务器只转发 JS 插件的任意 channel/payload，不执行源码、不计算胜负、不保存业务快照。追踪信息 `trace` 包含 `actorId,packVersion,digest,acceptedAt,stateRevision`，最后一项是每插件单调事件序号，新版本不保证从零开始。事件持久入队、按现有设备规则投递、客户端落盘后 ACK；本机缓存最多 1000 条／插件且受全局配额约束，不是无限存档。迟加入、截断、重连、请求结果不确定时的去重、业务规则、存档与升级迁移由插件设计。平台不提供业务存储服务；旧声明式插件的历史状态机仅作兼容保留。
+
+线协议继续使用历史字段 `groupId` 表示 scope；群为 `grp_...`，私聊为 `dm_<较小用户公钥指纹>_<较大用户公钥指纹>`，用 `directPluginScope(a,b)` 构造。它不是聊天消息自身的 conversationId，插件不应自行拼接。仅已接受好友关系可以使用私聊 scope；删除好友会清除该 scope 的审批包和未送达插件事件。新能力通过 `executable-plugin-v1` 协商；旧客户端不会收到不可解析的可执行目录，私聊插件事件降为目录唤醒，不阻断普通消息。
+
+示例 [shared-tic-tac-toe.mtcplugin](../examples/shared-tic-tac-toe.mtcplugin) 用同一份源码演示单机、群、私聊，完整 root 包装、主动占座、退座、胜负、新局释放席位、hello/snapshot 与插件自行 localStorage 存档；不预装。示例是可信成员协作游戏，不承诺对恶意对手的防作弊。
+
+验收命令 `pnpm verify:shared-plugins`：真实 Electron / preload / Host / Cordis / Blob ESM / 中心 SQLite，三个隔离用户，通过聊天模型工具循环生成与修订草稿、从用户界面分享／审批／载入。模型为确定性 OpenAI-compatible 测试端，不冒充本轮真实 DeepSeek 生成。支持 `MTC_TEST_PACKAGED_EXE` 验收打包后的实际 EXE。

@@ -15,6 +15,15 @@ const render = (registry: UiSurfaceRegistry) => renderToStaticMarkup(h(UiSurface
 }))
 
 describe('executable desktop composition', () => {
+  it('prefers a conversation instance over its same-package local view and restores local without changing other priorities',async()=>{
+    const registry=new UiSurfaceRegistry()
+    registry.register('local.game',{id:'root',surface:'root',priority:-10,render:()=> 'local'})
+    const shared=registry.registerInstance('shared.game','local.game',{id:'root',surface:'root',priority:5,render:()=> 'shared'})
+    expect(render(registry)).toBe('shared')
+    const other=registry.register('other',{id:'root',surface:'root',priority:-100,render:()=> 'other'})
+    expect(render(registry)).toBe('other');await other();expect(render(registry)).toBe('shared')
+    await shared();expect(render(registry)).toBe('local')
+  })
   it('keeps the original desktop when no replacement is installed', () => {
     expect(render(new UiSurfaceRegistry())).toBe('<main>Default desktop</main>')
   })

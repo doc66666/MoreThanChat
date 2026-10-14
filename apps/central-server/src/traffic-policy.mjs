@@ -49,6 +49,7 @@ export function trafficClass(method, route) {
 }
 
 export function bodyLimit(route) {
+  if (route === '/v1/plugins/submit') return 700 * 1024
   if (route === '/v1/messages') return 8 * 1024 * 1024
   if (['/v1/challenge', '/v1/session'].includes(route)) return 8 * 1024
   if (['/v1/ack', '/v1/read', '/v1/admin/access'].includes(route)) return 16 * 1024

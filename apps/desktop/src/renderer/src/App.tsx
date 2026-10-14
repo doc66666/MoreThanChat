@@ -9,6 +9,8 @@ import {
   type KeyboardEvent,
 } from 'react'
 import { ClientPlugins, InstallClientDraft } from './ClientPlugins'
+import { SharedPluginChoices, useSharedClientPlugins } from './SharedClientPlugins'
+import { directPluginScope, pluginScopeMembers } from '@more-than-chat/central-protocol'
 import {
   Bot,
   ChevronDown,
@@ -471,6 +473,9 @@ export function App() {
     (item) => item.id === state.activeConversationId,
   )
   const messages = active && state ? (state.messages[active.id] ?? []) : []
+  const pluginScope=active?.serverId===serverState?.serverId && active?.targetId && serverState?.userId
+    ? active.kind==='group'?active.targetId:active.kind==='direct'?directPluginScope(serverState.userId,active.targetId):null : null
+  useSharedClientPlugins(serverState,pluginScope)
   useEffect(()=>{
     let cancelled=false
     setQuotedMessage(null)
@@ -518,7 +523,8 @@ export function App() {
     .filter(
       (plugin) =>
         plugin.status === 'approved' &&
-        plugin.groupId === active.targetId &&
+        plugin.pack.kind !== 'executable' &&
+        plugin.groupId === pluginScope &&
         active.serverId === serverState?.serverId,
     )
     .filter(
@@ -552,7 +558,7 @@ export function App() {
             key={`${serverState?.serverId}:${serverState?.userId}:${plugin.groupId}:${plugin.pack.id}:${plugin.digest}`}
             plugin={plugin}
             userId={serverState?.userId ?? ''}
-            members={serverState?.directory?.groups.find(g=>g.id===plugin.groupId)?.members.map(m=>m.id)??[]}
+            members={serverState?.directory?pluginScopeMembers(serverState.directory,plugin.groupId).map(m=>m.id):[]}
             onError={setToast}
           />
         ))}
@@ -1489,6 +1495,8 @@ export function App() {
           />
           {active.kind==='group'&&active.serverId===serverState?.serverId&&serverState?.directory&&serverState.directory.groups.filter(group=>group.id===active.targetId).map(group=><GroupManager key={group.id} group={group} directory={serverState.directory!} userId={serverState.userId} connected={serverState.status==='connected'}/>)}
           {renderSlot('chat.details')}
+          {pluginScope&&<SharedPluginChoices snapshot={serverState} scope={pluginScope} onError={setToast}/>}
+          {pluginScope&&active.kind==='direct'&&<button className="secondary-button" onClick={()=>setShowPlugins(true)}>分享 AI 插件给好友</button>}
           {active.kind === 'group' &&
             active.serverId &&
             serverState?.serverId === active.serverId && (
@@ -1982,7 +1990,7 @@ function PluginPanel({
             </div>
           ))}
         </div>
-        <ClientPlugins />
+        <ClientPlugins snapshot={serverSnapshot}/>
         <section className="draft-section">
           <div>
             <p className="eyebrow">未安装</p>
@@ -2020,7 +2028,7 @@ function PluginPanel({
                   >
                     诊断
                   </button>
-                  {item.distribution==='local-client' ? <InstallClientDraft draft={item}/> : item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : (
+                  {item.distribution==='local-client' ? <InstallClientDraft draft={item} snapshot={serverSnapshot}/> : item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : (
                     <button
                       type="button"
                       className="secondary-button"

@@ -32,8 +32,8 @@ export function GroupPluginGate({plugin,children,onError}:{plugin:GroupPlugin;ch
     {problem&&<p className="inline-problem" role="alert">{problem}</p>}
     {consent==='loaded' ? <><button className="secondary-button" disabled={busy} data-disable-group-plugin onClick={()=>void choose('declined')}>停用本机插件</button>{children}</> : <>
       <strong>{plugin.pack.displayName} · v{plugin.pack.version}</strong>
-      <p>{consent==='declined'?'本机未载入，不参与此插件；随时可以重新载入。':consent===null?(problem?'暂时无法验证本机授权，请检查服务器连接后重试。':'正在检查本机授权…'):'管理员已批准。是否在此设备载入？'}</p>
-      <p>权限：本群状态同步；无外部网络、文件或系统访问。更新需重新确认；新版会重置共享状态。</p>
+      <p>{consent==='declined'?'本机未载入，不参与此插件；随时可以重新载入。':consent===null?(problem?'暂时无法验证本机选择，请检查服务器连接后重试。':'正在检查本机选择…'):'分享已获批准。是否在此设备载入？'}</p>
+      <p>{plugin.pack.kind==='executable'?'可执行客户端代码，可修改整个界面并同步本会话。仅载入可信来源；数据保存由插件实现。':'权限：本会话状态同步；无外部网络、文件或系统访问。新版会重置共享状态。'}</p>
       <details><summary>查看完整插件包和摘要</summary><code>{plugin.digest}</code><pre>{JSON.stringify(plugin.pack,null,2)}</pre></details>
       <button className="primary-button" disabled={busy||(consent===null&&!problem)} data-enable-group-plugin onClick={()=>void choose('loaded')}>{busy?'正在保存本机选择…':problem?'重新校验并确认载入':'确认载入本机'}</button>
       <button className="secondary-button" disabled={busy||consent===null} onClick={()=>void choose('declined')}>暂不载入</button>

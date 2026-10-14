@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, expect, it } from 'vitest'
-import { parseGroupPluginPack, type ServerSnapshot } from '@more-than-chat/central-protocol'
+import { directPluginScope, parseGroupPluginPack, type ServerSnapshot } from '@more-than-chat/central-protocol'
 import { GroupPluginConsentStore } from '../src/main/group-plugin-consent'
 import { groupGameArtifact } from '../../../scripts/fixtures/group-game.mjs'
 const dirs:string[]=[]
@@ -38,4 +38,22 @@ it('fails closed for pending approvals, stale/tampered content, lost membership 
   const entry=JSON.parse(await readFile(file,'utf8'));entry.pack.artifact.program.initial.turn=99;await writeFile(file,JSON.stringify(entry))
   await expect(store.get(...args)).rejects.toThrow(/损坏/)
   await writeFile(file,'broken');await expect(store.get(...args)).rejects.toThrow(/不可读/)
+})
+it('supports executable direct choices and recovery disables code without deleting it or legacy choices',async()=>{
+  const {dir,s,p,store}=await fixture()
+  await store.set(s,p.groupId,p.pack.id,p.digest,'loaded')
+  const userId='usr_'+'a'.repeat(64),peer='usr_'+'b'.repeat(64)
+  const client=JSON.parse(await readFile(new URL('../../../examples/shared-tic-tac-toe.mtcplugin',import.meta.url),'utf8'))
+  const pack=parseGroupPluginPack({id:'gplugin_'+randomUUID(),version:1,displayName:'Executable',kind:'executable',slot:'chat.details',client})
+  const direct=structuredClone(s);direct.userId=userId;direct.directory!.self={id:userId,displayName:'A',online:true};direct.directory!.friends=[{id:peer,displayName:'B',online:true}]
+  const item={...p,groupId:directPluginScope(userId,peer),pack,digest:createHash('sha256').update(JSON.stringify(pack)).digest('hex'),submittedBy:peer,state:{}}
+  direct.directory!.plugins=[item]
+  const args=[direct,item.groupId,item.pack.id,item.digest] as const
+  expect(await store.get(...args)).toBe('pending');await store.set(...args,'loaded')
+  expect(await new GroupPluginConsentStore(dir).get(...args)).toBe('loaded')
+  await store.disableExecutable();expect(await store.get(...args)).toBe('declined')
+  expect(await store.get(s,p.groupId,p.pack.id,p.digest)).toBe('loaded')
+  const entries=await Promise.all((await readdir(path.join(dir,'group-plugins'))).map(name=>readFile(path.join(dir,'group-plugins',name),'utf8')))
+  expect(entries.some(text=>JSON.parse(text).pack?.client?.program.code===client.program.code)).toBe(true)
+  direct.directory!.friends=[];await expect(store.get(...args)).rejects.toThrow('成员身份')
 })

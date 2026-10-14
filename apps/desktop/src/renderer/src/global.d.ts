@@ -113,6 +113,7 @@ declare global {
       groupPluginConsent(input:{groupId:string;pluginId:string;digest:string;decision?:'loaded'|'declined'}):Promise<'pending'|'loaded'|'declined'>
       onGroupPluginConsentChanged(listener:()=>void):()=>void
       submitGroupDraft(input:{serverId:string;groupId:string;draftId:string;revision:number;slot:string;confirmed:true}):Promise<ServerSnapshot>
+      shareClientPlugin(input:{serverId:string;groupId:string} & ({draftId:string;revision:number}|{pluginId:string;digest:string})):Promise<ServerSnapshot>
       sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string}):Promise<{eventId:string;acceptedAt:number;queued?:boolean}>
       chooseAttachment():Promise<AttachmentRef|null>
       recordVoice(input:{data:string;mime:string;durationMs:number}):Promise<AttachmentRef>

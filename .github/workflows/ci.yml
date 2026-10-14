@@ -63,6 +63,9 @@ jobs:
       - name: Verify executable client hot updates and window replacement
         if: runner.os == 'Windows'
         run: node scripts/verify-client-plugins-ui.mjs
+      - name: Verify AI executable group and direct plugin lifecycle
+        if: runner.os == 'Windows'
+        run: node scripts/verify-shared-client-plugins.mjs
       - name: Verify Host crash recovery and plugin preferences
         if: runner.os == 'Windows'
         run: node scripts/verify-plugin-ui.mjs --host
@@ -90,6 +93,8 @@ jobs:
         run: |
           $env:MTC_TEST_PACKAGED_EXE = Join-Path $PWD '.artifacts/desktop-release/win-unpacked/MoreThanChat.exe'
           node scripts/verify-client-plugins-ui.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-shared-client-plugins.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/verify-ai-ui.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -427,13 +427,29 @@ export interface UiSurfaceContribution {
   render(input: UiSurfaceInput): unknown
 }
 export class UiSurfaceRegistry extends ContributionRegistry<UiSurfaceContribution> {
+  readonly #instanceOwners = new Map<string,string>()
+  /** A selected conversation instance shadows only its own local package's surfaces. */
+  registerInstance(ownerId:string,localOwnerId:string,contribution:UiSurfaceContribution):PluginDisposer {
+    const previous=this.#instanceOwners.get(ownerId)
+    this.#instanceOwners.set(ownerId,localOwnerId)
+    try {
+      const dispose=this.register(ownerId,contribution)
+      return()=>{
+        const result=dispose()
+        if(!this.list().some(entry=>entry.ownerId===ownerId))this.#instanceOwners.delete(ownerId)
+        return result
+      }
+    }catch(error){if(previous===undefined)this.#instanceOwners.delete(ownerId);else this.#instanceOwners.set(ownerId,previous);throw error}
+  }
   override register(ownerId: string, contribution: UiSurfaceContribution): PluginDisposer {
     if (!/^[a-z][a-z0-9.-]{0,127}$/.test(contribution.surface)) throw new Error('Invalid UI surface name.')
     if (typeof contribution.render !== 'function' || !Number.isFinite(contribution.priority ?? 0)) throw new Error('Invalid UI surface contribution.')
     return super.register(ownerId, Object.freeze({ ...contribution }))
   }
   resolve(name: string): RegisteredContribution<UiSurfaceContribution> | undefined {
-    return this.list().filter(entry => entry.contribution.surface === name)
+    const entries=this.list().filter(entry=>entry.contribution.surface===name)
+    const shadowed=new Set(entries.map(entry=>this.#instanceOwners.get(entry.ownerId)).filter(Boolean))
+    return entries.filter(entry=>!shadowed.has(entry.ownerId))
       .sort((a, b) => (a.contribution.priority ?? 0) - (b.contribution.priority ?? 0))[0]
   }
 }

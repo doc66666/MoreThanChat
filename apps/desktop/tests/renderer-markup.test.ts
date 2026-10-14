@@ -10,7 +10,7 @@ vi.mock('../src/renderer/src/plugin-host',()=>({chatNetworkService:{}}))
 
 const self='usr_'+'a'.repeat(64),peer='usr_'+'b'.repeat(64)
 const group={id:'grp_'+'0'.repeat(36),name:'测试群',ownerId:self,members:[{id:self,displayName:'我',online:true},{id:peer,displayName:'好友',online:false}]} satisfies Group
-const directory={groups:[group],friends:[],requests:[],outgoingRequests:[],groupRequests:[],plugins:[]} as unknown as Directory
+const directory={self:{id:self,displayName:'我',online:true},groups:[group],friends:[],requests:[],outgoingRequests:[],groupRequests:[],plugins:[]} as unknown as Directory
 function button(html:string,attribute:string){return html.match(new RegExp('<button[^>]*'+attribute+'[^>]*>'))?.[0]??''}
 
 describe('renderer markup without launching a browser or desktop app',()=>{
@@ -41,7 +41,7 @@ describe('renderer markup without launching a browser or desktop app',()=>{
     const snapshot={status:'disconnected',serverId:'server',userId:self,directory:cached,address:'http://localhost:8787',displayName:'我'} as unknown as ServerSnapshot
     const html=renderToStaticMarkup(createElement(NetworkPanel,{snapshot,onClose:vi.fn(),onOpenChat:vi.fn()}))
     for(const attribute of ['data-request-friend','data-create-group','data-approve-group-plugin'])expect(button(html,attribute)).toContain('disabled')
-    expect(html).toContain('群聊：测试群');expect(html).toContain('聊天详情侧栏（推荐）')
+    expect(html).toContain('会话：测试群');expect(html).toContain('聊天详情侧栏（推荐）')
     expect(html).toContain('连接服务器后才能处理')
   })
 })

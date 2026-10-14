@@ -2,6 +2,8 @@
 
 更新日期：2026-10-14。
 
+共享可执行包阶段补充：再次核对上述上游的 `packages/boot/app-boot/src/index.ts` 中 `reloadProfile`，其在配置更新后等待旧 fiber 的异步 disposer 和 loader 稳定，再报告激活错误。本项目同样串行替换并等待 Cordis 清理，按会话隔离实例；不复制 DSH 的 Fiber ABI。AI 草稿与本机、群聊、私聊分发现已接通，详见 [当前插件 SDK](plugin-runtime.md)。多人审批／分发／消息中继是 MoreThanChat 自己实现的聊天能力，不声称 DSH 已提供这一业务。
+
 ## 2026-10-14：按最新上游纠正插件目标
 
 已 fetch `deepseek-ai/deepseek-harness` 的 `origin/master`，核对提交 `d743267388641bc76f17c45ce8b4c231aed1d32c`（0.2.1-alpha.2）。以下旧快照仍保留供追溯，不再代表上游当前能力。研究目录工作树没有切换；最新文件通过 `git show origin/master:<path>` 读取。

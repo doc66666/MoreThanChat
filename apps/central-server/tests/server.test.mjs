@@ -1,10 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCentralServer, publicUserId } from '../src/server.mjs'
-import { createMessageReference, MAX_GROUP_MEMBERS, parseDirectory, parseMessageReceipt } from '@more-than-chat/central-protocol'
+import { createMessageReference, MAX_GROUP_MEMBERS, parseDirectory, parseMessageReceipt, directPluginScope, parseRelayEvent } from '@more-than-chat/central-protocol'
 import { groupGameArtifact } from '../../../scripts/fixtures/group-game.mjs'
 const fixtures = []
 afterEach(async () => {
@@ -75,6 +75,46 @@ async function befriend(f, a, b) {
 }
 
 describe('central relay contracts', () => {
+  it('shares the same executable in groups and direct chats, with peer approval, versioned opaque relay and no business storage', async()=>{
+    const f=await fixture(),features=['group-program-v1','executable-plugin-v1']
+    const a=await login(f,identity(),'Author',features),b=await login(f,identity(),'Owner',features),c=await login(f,identity(),'Other',features)
+    await befriend(f,a,b);await befriend(f,b,c)
+    const client=JSON.parse(await readFile(new URL('../../../examples/shared-tic-tac-toe.mtcplugin',import.meta.url),'utf8'))
+    const pack={id:'gplugin_'+randomUUID(),version:1,displayName:'Executable',kind:'executable',slot:'chat.details',client}
+    const direct=directPluginScope(a.userId,b.userId)
+    expect(directPluginScope(b.userId,a.userId)).toBe(direct)
+    expect((await request(f,'plugins/submit',a.token,{groupId:directPluginScope(a.userId,c.userId),pack})).status).toBe(403)
+    const group=(await request(f,'groups',b.token,{name:'Executable group',memberIds:[a.userId,c.userId]})).data.groupId
+    for(const scope of [group,direct]){
+      const submitted=await request(f,'plugins/submit',a.token,{groupId:scope,pack})
+      expect(submitted.status).toBe(200)
+      const review={groupId:scope,pluginId:pack.id,version:1,digest:submitted.data.digest,approve:true}
+      expect((await request(f,'plugins/review',a.token,review)).status).toBe(403)
+      expect((await request(f,'plugins/review',b.token,review)).status).toBe(200)
+      const directory=parseDirectory((await request(f,'directory',a.token)).data)
+      expect(directory.plugins.find(p=>p.groupId===scope&&p.status==='approved').pack.client).toEqual(client)
+      const event={groupId:scope,pluginId:pack.id,digest:submitted.data.digest,channel:'state',payload:{arbitrary:'plugin-owned'},trace:{actorId:c.userId}}
+      expect((await request(f,'plugins/event',a.token,{...event,digest:'0'.repeat(64)})).status).toBe(409)
+      expect((await request(f,'plugins/event',a.token,event)).status).toBe(200)
+      const received=(await request(f,'events',b.token)).data.events.filter(e=>e.kind==='plugin'&&e.groupId===scope).map(parseRelayEvent)
+      expect(received).toHaveLength(1)
+      expect(received[0].payload).toEqual(event.payload)
+      expect(received[0].trace).toMatchObject({actorId:a.userId,packVersion:1,digest:submitted.data.digest,stateRevision:1})
+      expect(f.app.db.prepare('SELECT state FROM plugins WHERE group_id=? AND id=?').get(scope,pack.id).state).toBe('{}')
+      if(scope===direct)expect((await request(f,'plugins/event',c.token,event)).status).toBe(403)
+      const update={...pack,version:2,client:{...client,manifest:{...client.manifest,version:'0.2.0'}}}
+      const next=await request(f,'plugins/submit',a.token,{groupId:scope,pack:update})
+      expect(next.status).toBe(200)
+      expect((await request(f,'plugins/review',b.token,{...review,version:2,digest:next.data.digest})).status).toBe(200)
+      expect((await request(f,'plugins/event',a.token,event)).status).toBe(409)
+      expect((await request(f,'plugins/event',a.token,{...event,digest:next.data.digest})).status).toBe(200)
+    }
+    const old=await login(f,a,'Old',[])
+    expect(parseDirectory((await request(f,'directory',old.token)).data).plugins).toEqual([])
+    expect((await request(f,'friends/remove',b.token,{userId:a.userId})).status).toBe(200)
+    expect(f.app.db.prepare('SELECT COUNT(*) n FROM plugins WHERE group_id=?').get(direct).n).toBe(0)
+    expect(f.app.db.prepare("SELECT COUNT(*) n FROM queue WHERE json_extract(payload,'$.groupId')=?").get(direct).n).toBe(0)
+  })
   it('delivers 256-member group messages with full receipt counts and preserves old-client pending delivery', async () => {
     const f = await fixture()
     const features = ['message-actions-v1', 'group-program-v1', 'large-groups-v1']

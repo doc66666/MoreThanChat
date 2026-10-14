@@ -60,6 +60,7 @@ const api = {
   groupPluginConsent:(input:unknown)=>ipcRenderer.invoke('central:plugin-consent',input),
   onGroupPluginConsentChanged:(listener:()=>void)=>{const handler=()=>listener();ipcRenderer.on('central:plugin-consent-changed',handler);return()=>ipcRenderer.removeListener('central:plugin-consent-changed',handler)},
   submitGroupDraft:(input:unknown)=>ipcRenderer.invoke('central:submit-draft',input),
+  shareClientPlugin:(input:unknown)=>ipcRenderer.invoke('central:share-client-plugin',input),
   sendCentralMessage:(input:unknown)=>ipcRenderer.invoke('central:send',input),
   chooseAttachment:()=>ipcRenderer.invoke('attachment:choose'),
   recordVoice:(input:unknown)=>ipcRenderer.invoke('attachment:voice',input),
