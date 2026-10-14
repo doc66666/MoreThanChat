@@ -28,7 +28,7 @@ export function GroupPluginGate({plugin,children,onError}:{plugin:GroupPlugin;ch
     catch(e){if(id===request.current){const message=e instanceof Error?e.message:'本机授权保存失败';setProblem(message);onError(message)}}
     finally{inFlight.current=false;if(id===request.current)setBusy(false)}
   }
-  return <section className="group-plugin-gate" aria-busy={busy} data-group-plugin-gate={plugin.pack.id} data-consent={consent??'checking'}>
+  return <section className="group-plugin-gate" aria-busy={busy} data-group-plugin-gate={plugin.pack.id} data-plugin-scope={plugin.groupId} data-plugin-digest={plugin.digest} data-consent={consent??'checking'}>
     {problem&&<p className="inline-problem" role="alert">{problem}</p>}
     {consent==='loaded' ? <><button className="secondary-button" disabled={busy} data-disable-group-plugin onClick={()=>void choose('declined')}>停用本机插件</button>{children}</> : <>
       <strong>{plugin.pack.displayName} · v{plugin.pack.version}</strong>

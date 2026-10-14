@@ -18,13 +18,22 @@ export function useSharedClientPlugins(snapshot:ServerSnapshot|null,scope:string
     return()=>{void sharedManager().update(null,null).catch(console.error)}
   },[snapshot,scope,revision])
 }
+export function sharedPluginScopeLabel(snapshot:ServerSnapshot,scope:string):string {
+  const group=snapshot.directory?.groups.find(group=>group.id===scope)
+  if(group)return '群聊 · '+group.name
+  const friend=snapshot.directory?.friends.find(friend=>directPluginScope(snapshot.userId,friend.id)===scope)
+  return friend?'好友 · '+friend.displayName:'会话 · '+scope
+}
 export function SharedPluginChoices({snapshot,scope,onError}:{snapshot:ServerSnapshot|null;scope?:string|null;onError:(text:string)=>void}) {
   const [,refresh]=useState(0)
   useEffect(()=>{const listener=()=>refresh(n=>n+1);window.addEventListener('shared-plugins-changed',listener);return()=>window.removeEventListener('shared-plugins-changed',listener)},[])
   const plugins=snapshot?.directory?.plugins.filter(p=>p.status==='approved'&&p.pack.kind==='executable'&&(!scope||p.groupId===scope))??[]
   if(!plugins.length)return null
   return <section data-shared-plugins><h3>会话共享插件</h3><p className="settings-note">各设备自主载入。打开所属会话时运行，切换会话时清理；插件可使用整个客户端界面。</p>
-    {plugins.map(plugin=><GroupPluginGate key={`${snapshot?.serverId}:${plugin.groupId}:${plugin.pack.id}:${plugin.digest}`} plugin={plugin} onError={onError}><p>{plugin.pack.displayName} · 已载入本机，打开所属会话即可使用。</p></GroupPluginGate>)}
+    {plugins.map(plugin=><div key={`${snapshot?.serverId}:${plugin.groupId}:${plugin.pack.id}:${plugin.digest}`} data-shared-plugin-scope={plugin.groupId}>
+      <h4>{sharedPluginScopeLabel(snapshot!,plugin.groupId)}</h4>
+      <GroupPluginGate plugin={plugin} onError={onError}><p>{plugin.pack.displayName} · 已载入本机，打开所属会话即可使用。</p></GroupPluginGate>
+    </div>)}
     {[...(manager?.errors.values()??[])].map((error,index)=><p key={index} role="alert">{error}</p>)}
   </section>
 }

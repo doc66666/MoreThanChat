@@ -77,7 +77,8 @@ async function share(s,scope,fromInstalled=false){
   return (await state(s)).directory.plugins.filter(p=>p.groupId===scope&&p.status==='pending').at(-1)
 }
 async function approve(s,p){await closePanel(s);await click(s,'button[title="联系人"]');await click(s,`[data-group-plugin-review="${p.pack.id}"] [data-approve-group-plugin]`);await poll(s,`window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.groupId===${JSON.stringify(p.groupId)}&&p.digest===${JSON.stringify(p.digest)}&&p.status==='approved'))`);await closePanel(s)}
-async function load(s,p){await plugins(s);await click(s,`[data-group-plugin-gate="${p.pack.id}"] [data-enable-group-plugin]`);await closePanel(s);await poll(s,`document.querySelector('[data-shared-game]')?.dataset.sharedGame===${JSON.stringify(p.groupId.startsWith('dm_')?'direct':'group')}`)}
+function gate(p){return `[data-group-plugin-gate="${p.pack.id}"][data-plugin-scope="${p.groupId}"][data-plugin-digest="${p.digest}"]`}
+async function load(s,p){await plugins(s);await click(s,`${gate(p)} [data-enable-group-plugin]`);await closePanel(s);await poll(s,`document.querySelector('[data-shared-game]')?.dataset.sharedGame===${JSON.stringify(p.groupId.startsWith('dm_')?'direct':'group')}`)}
 async function board(s,text){await poll(s,`[...document.querySelectorAll('[data-shared-cell]')].map(n=>n.textContent).join('')===${JSON.stringify(text)}`)}
 async function close(s){if(s.client){try{await limit(s.client.send('Browser.close'),1000)}catch{}s.client.close();s.client=null}await waitForExit(s.child,5000);if(s.child.exitCode===null)s.child.kill()}
 try{
@@ -127,7 +128,9 @@ try{
   await poll(a,'!document.querySelector("[data-shared-game]")');await poll(b2,'!document.querySelector("[data-shared-game]")')
   await load(a,upgrade);await load(b2,upgrade);await poll(b2,'document.querySelector("[data-shared-game]")?.textContent.includes("v2")')
   assert.equal(await value(b2,'document.querySelectorAll("[data-shared-game]").length'),1)
-  await plugins(b2);await click(b2,`[data-group-plugin-gate="${upgrade.pack.id}"] [data-disable-group-plugin]`);await closePanel(b2);await poll(b2,'!document.querySelector("[data-shared-game]")')
+  await plugins(b2);await click(b2,`${gate(upgrade)} [data-disable-group-plugin]`);await closePanel(b2);await poll(b2,'!document.querySelector("[data-shared-game]")')
+  assert.equal(await value(b2,`window.moreThanChat.groupPluginConsent(${JSON.stringify({groupId:direct,pluginId:upgrade.pack.id,digest:upgrade.digest})})`),'declined')
+  assert.equal(await value(b2,`window.moreThanChat.groupPluginConsent(${JSON.stringify({groupId:group,pluginId:proposal.pack.id,digest:proposal.digest})})`),'loaded','Stopping the direct instance must not stop the same plugin in the group')
   assert.equal(await value(a,'Boolean(document.querySelector("[data-shared-game]"))'),true)
   evidence.push('upgrade: old executable stops, new exact version individually loaded, no duplicate root; member unload does not unload peer')
   await open(a,group);await poll(a,'Boolean(document.querySelector("[data-shared-game]"))');await board(a,'········X')
