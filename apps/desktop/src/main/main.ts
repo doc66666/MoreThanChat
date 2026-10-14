@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  Menu,
   dialog,
   ipcMain,
   shell,
@@ -27,6 +28,8 @@ import { exportHistory, restoreHistory } from './history-transfer'
 import { createHash } from 'node:crypto'
 import { parseGroupArtifact, parseGroupPluginPack, UI_SLOTS, type UiSlot } from '@more-than-chat/central-protocol'
 import { GroupPluginConsentStore } from './group-plugin-consent'
+import { ClientPluginStore, clientPackageDigest } from './client-plugins'
+import { parseExecutableClientPackage, type ExecutableClientPackage } from '@more-than-chat/plugin-runtime'
 
 let chatStore: ChatStore | null = null
 let mainWindow: BrowserWindow | null = null
@@ -121,9 +124,72 @@ try {
 }
 const dataDirectory = profilePath(profileRoot, currentProfile)
 const groupConsent = new GroupPluginConsentStore(dataDirectory)
+const clientPlugins = new ClientPluginStore(dataDirectory)
+let clientPluginBusy = false
+let recoveryPending = false
+async function confirmClientPlugin(pack: ExecutableClientPackage, operation: string): Promise<boolean> {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error('聊天窗口尚未就绪')
+  const {response} = await dialog.showMessageBox(mainWindow, {
+    type: 'warning', message: operation + '可执行界面插件？',
+    detail: `${pack.manifest.displayName} (${pack.manifest.id})\n版本 ${pack.manifest.version}\nSHA-256 ${clientPackageDigest(pack)}\n\n这是真实 JavaScript，不是受限的群插件 JSON。它与客户端界面具有同等信任，可读取当前聊天、调用客户端接口、改变整个桌面；Cordis 只管理生命周期，不是恶意代码沙箱。仅运行你审查并信任的代码。主进程和凭据存储不开放 Node 权限。\n\nCtrl+Shift+F12 可恢复默认界面；每次重启默认不自动运行第三方界面插件。`,
+    buttons: ['取消', '信任此版本并' + operation], defaultId: 0, cancelId: 0,
+  })
+  return response === 1
+}
+async function recoverClientInterface(): Promise<void> {
+  if (recoveryPending || !mainWindow || mainWindow.isDestroyed()) return
+  recoveryPending = true
+  const window = mainWindow
+  try {
+    const answer = await dialog.showMessageBox(window, {type: 'warning', message: '恢复默认界面？', detail: '将重新加载窗口并停止本次运行的第三方界面代码。已保存的聊天、插件文件不删除；尚未保存的输入可能丢失。', buttons: ['取消', '恢复默认界面'], defaultId: 0, cancelId: 0})
+    if (answer.response !== 1 || window.isDestroyed()) return
+    centralClient?.setReadingConversation(null)
+    // Bypass even a hung or hostile renderer and its beforeunload callbacks.
+    window.webContents.forcefullyCrashRenderer()
+    window.webContents.reload()
+  } finally { recoveryPending = false }
+}
 app.on('second-instance', () => openChatWindow())
 
 function registerIpc(): void {
+  const clientTask = async <T,>(work: () => Promise<T>): Promise<T> => {
+    if (clientPluginBusy || identityBusy || windowClosing || quitRequested) throw new Error('已有插件或窗口操作正在进行')
+    clientPluginBusy = true
+    try { return await work() } finally { clientPluginBusy = false }
+  }
+  ipcMain.handle('client-plugins:list', event => {assertTrustedIpc(event); return clientPlugins.list()})
+  ipcMain.handle('client-plugins:import', event => {
+    assertTrustedIpc(event)
+    return clientTask(async () => {
+      const result = await dialog.showOpenDialog(mainWindow!, {title: '导入可执行界面插件包', properties: ['openFile'], filters: [{name: 'MoreThanChat 界面插件', extensions: ['mtcplugin', 'json']}]})
+      if (result.canceled || !result.filePaths[0]) return null
+      const pack = await clientPlugins.readFile(result.filePaths[0])
+      if (!await confirmClientPlugin(pack, '安装')) return null
+      return clientPlugins.save(pack)
+    })
+  })
+  ipcMain.handle('client-plugins:install-draft', (event, payload) => {
+    assertTrustedIpc(event)
+    return clientTask(async () => {
+      if (!hostSupervisor) throw new Error('PC Host 尚未就绪')
+      const request = parseHostMessage(createHostRequest('pluginDrafts.exportClient', 'ipc', payload))
+      if (request.kind !== 'request' || request.method !== 'pluginDrafts.exportClient') throw new Error('无效草稿')
+      const draft = await hostSupervisor.exportClientDraft(request.payload.draftId, request.payload.revision)
+      const pack = parseExecutableClientPackage({manifest: JSON.parse(draft.manifestJson), program: JSON.parse(draft.source)})
+      if (!await confirmClientPlugin(pack, '安装')) return null
+      // Store the exact immutable snapshot shown above, never reread a changing source.
+      return clientPlugins.save(pack)
+    })
+  })
+  ipcMain.handle('client-plugins:authorize', (event, id: unknown, digest: unknown) => {
+    assertTrustedIpc(event)
+    return clientTask(async () => {
+      const pack = (await clientPlugins.list()).find(item => item.manifest.id === id && item.digest === digest)
+      if (!pack) throw new Error('插件版本已变化，请刷新列表后重试')
+      return await confirmClientPlugin(pack, '运行') ? pack : null
+    })
+  })
+  ipcMain.handle('client-plugins:recover', event => {assertTrustedIpc(event); return recoverClientInterface()})
   const historyTask=async<T,>(password:unknown,work:(password:string)=>Promise<T>):Promise<T>=>{
     if(typeof password!=='string'||password.length<12||password.length>256||!password.trim())throw new Error('备份密码需要 12–256 个字符')
     if(historyTransferStatus.busy||identityBusy||quitRequested||windowClosing)throw new Error('已有历史、身份或窗口关闭操作正在进行，请稍后重试')
@@ -829,6 +895,12 @@ async function createWindow(): Promise<void> {
   window.webContents.on('render-process-gone', (_event, details) => {
     console.error('[renderer] Process exited:', details)
   })
+  window.on('unresponsive', () => { void recoverClientInterface() })
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.control && input.shift && input.key === 'F12') {
+      event.preventDefault(); void recoverClientInterface()
+    }
+  })
 
   if (process.argv.includes('--dev')) {
     await window.loadURL('http://127.0.0.1:5173')
@@ -896,6 +968,10 @@ app
       )
     }
     registerIpc()
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{label: 'MoreThanChat', submenu: [
+      {label: '恢复默认界面（停用第三方界面代码）', accelerator: 'CommandOrControl+Shift+F12', click: () => {void recoverClientInterface()}},
+      {role: 'quit'},
+    ]}, {role: 'editMenu'}]))
     startHostSupervisor()
     await createWindow()
     await desktop.initialize()

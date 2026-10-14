@@ -1,12 +1,14 @@
 # 插件运行时与第一个示例
 
+最新入口与信任边界见文末“2026-10-14：用户可执行界面入口”；本机可执行代码与旧声明式群插件并存。
+
 ## 2026-10-14 可执行界面组合层
 
 PC UI 现使用 `CordisPluginRuntime`，除旧 `ui.slots` 外增加 `ui.surfaces` 服务（`UiSurfaceRegistry`）。可执行插件通过 `context.contribute(registry, {id, surface:'root', priority, render})` 替换整个默认桌面，而非只能附加九个挂件。`render` 接收 `context`、`defaultView` 和 `renderSurface(name, context?, fallback?)`，可以包装默认界面、完全替换界面或渲染任意命名的子区域。数值较小的 priority 获选，同优先级按注册先后；卸载获选贡献后恢复先前贡献或默认视图。
 
 `root` 的 context 当前提供当前会话／消息／草稿／资料、会话列表、选择会话、修改草稿、发送和中心快照。App 的状态与通信 hooks 保持运行，替换的是返回的视图。有自定义 root 时暂停默认视图的自动已读，避免插件未展示消息却被标记已读；插件视图可见性与已读 SDK 留待完整包阶段接入。render 异常通过 React boundary 返回该区域默认视图；循环区域或超过 32 层的组合返回 fallback。相同贡献 ID 的重新注册使用新实例标识，避免热换后沿用旧错误状态。激活失败与停用由 Cordis/effect 清理注册；没有安装替换模块时视觉结构保持原样。
 
-这些是可信 React/JS 模块的组合 API，不是安全沙箱：死循环、任意 DOM 操作、直接修改共享引用仍不能靠 React boundary 或 Cordis 防御。用户级可执行包读取／安装、AI 创作这种包、隔离执行与不可替换的主进程恢复入口尚未完成；暂不把这项能力加入 AI 可调用工具。旧群 JSON 程序仍使用原审批协议与九个位置，后续另接可执行包通道，不把旧包暗中升级为可执行代码。
+这些是可信 React/JS 模块的组合 API，不是安全沙箱：死循环、任意 DOM 操作、直接修改共享引用仍不能靠 React boundary 或 Cordis 防御。本机包读取／安装、AI 创作这种包、主进程恢复入口现已接入；隔离的第三方 Host 和可执行群分发仍未完成。旧群 JSON 程序仍使用原审批协议与九个位置，后续另接可执行包通道，不把旧包暗中升级为可执行代码。
 
 当前实现完成了可信插件的第一条真实闭环：独立插件包通过版本化 manifest 进入 catalog，应用在运行时动态加载模块，执行 `activate()`，收集其贡献，并可在不重启应用的情况下停用和再次启用。
 
@@ -75,3 +77,17 @@ pnpm verify:plugin-ui
 ```
 
 `verify:plugin-ui` 会启动隔离 QA 实例，实际停用/启用示例插件、点击贡献动作并检查输入框结果；截图写入被 Git 忽略的 `.artifacts/plugin-panel-e2e.png`。
+
+## 2026-10-14：用户可执行界面入口
+
+`executable-client` 已接入用户目录安装与原生确认运行。它与旧声明式群插件是两种不同信任模型，不应混用：
+
+- AI 用已有 `create_draft` / `validate_draft` 写 `{kind:"executable-client",code:"export default function activate(ctx,sdk) {...}"}`；manifest 为 `pc-ui`、`permissions:["client.trusted"]`。源码仍作为 JSON 保存，不在模型 Host 执行。
+- 用户从草稿安装，或导入 `{manifest,program}` 的 `.mtcplugin` 文件。安装只保存完整源快照与 SHA-256，不运行。点击“确认运行”后由主进程原生对话框确认精确版本，再加载自包含 ES module。
+- `sdk.React` 是应用的同一 React 实例；`ctx.getService('ui.surfaces')` 支持 `root` 完整替换和自定义子界面；不是九个固定位置的上限。用 `React.createElement`，不直接加载 JSX/TS/npm 裸导入。需要第三方库时先打包为单模块。
+- `ctx.contribute`、`ctx.effect` 管理生命周期副作用。重复启停会撤销登记；热更新激活失败尝试恢复旧运行版本。没有登记的全局副作用、恶意代码和无限循环不受 Cordis 沙箱保护。
+- 同 renderer 的代码拥有完整客户端界面信任，可能访问聊天和现有 preload API；不是细粒度权限隔离。Node/Electron、原始凭据读取不开放，原有 CSP 外网限制保留。
+- 每次启动／重载不自动运行第三方界面。Ctrl+Shift+F12 由主进程弹出恢复确认，强制重启 renderer；不删除已存聊天或插件，但未保存输入可能丢失。无响应时也提供恢复入口。
+- 示例：[client-desktop.mtcplugin](../examples/client-desktop.mtcplugin)。仅供主动导入，不预装进发行版。
+
+尚未完成的能力：可执行包群审批／分发、第三方 Node Host 扩展、自动恢复启用偏好。`chat.network` 服务本身存在，但本机界面安装不能绕过中心的已审批群包／本机载入检查，不能冒称任意本机插件已获得群通信授权。DSH 插件需要接口适配，不保证原封不动加载。

@@ -1,6 +1,6 @@
 import { chmod, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { validatePluginManifest, type PluginManifestV1 } from '@more-than-chat/plugin-runtime'
+import { parseExecutableClientPackage, validatePluginManifest, type PluginManifestV1 } from '@more-than-chat/plugin-runtime'
 import type {
   PluginDraftCreateResult,
   PluginDraftInspection,
@@ -125,6 +125,17 @@ export class PluginDraftService {
   }
 
   /** Export only a validated, immutable revision selected by the user. No installation. */
+  exportClient(draftId: string, revision: number): Promise<{ manifestJson: string; source: string }> {
+    return this.#enqueue(async () => {
+      const stored = await this.#readLatest(draftId)
+      if (stored.revision !== revision) throw new Error('草稿已更新，请重新查看并确认安装')
+      const assessed = assessDraft(JSON.stringify(stored.manifest), stored.source, this.#installedPlugins())
+      if (!assessed.ok) throw new Error('界面插件草稿校验未通过')
+      const pack = parseExecutableClientPackage({manifest: stored.manifest, program: JSON.parse(stored.source)})
+      return {manifestJson: JSON.stringify(pack.manifest), source: JSON.stringify(pack.program)}
+    })
+  }
+
   exportGroup(draftId: string, revision: number): Promise<{ manifestJson: string; source: string }> {
     return this.#enqueue(async () => {
       const stored = await this.#readLatest(draftId)
@@ -339,14 +350,19 @@ function assessDraft(manifestJson: string, source: string, installed: readonly I
   else if (manifestError) issues.push(finding('error', 'MANIFEST_INVALID', manifestError))
   if (manifest && source.trim().length === 0) issues.push(finding('error', 'EMPTY_SOURCE', '草稿源码是空的。'))
   if (manifest) {
-    if (manifest.targets.includes('pc-ui')) {
+    const executable = manifest.permissions.includes('client.trusted')
+    if (executable) {
+      try { parseExecutableClientPackage({manifest, program: JSON.parse(source)}) }
+      catch (error) { issues.push(finding('error', 'NOT_INSTALLABLE', error instanceof Error ? error.message : '无效可执行界面插件')) }
+    }
+    else if (manifest.targets.includes('pc-ui')) {
       try {
         const artifact = parseGroupArtifact({manifest,program:JSON.parse(source)})
         for (const message of diagnoseGroupProgram(artifact.program)) issues.push(finding('error','NOT_DECLARATIVE',message))
       }
       catch (error) { issues.push(finding('error','NOT_DECLARATIVE',error instanceof Error ? error.message : '群插件必须满足 group-state-machine 契约；不执行 JS 或外部代码。')) }
     }
-    for (const name of findDangerousApis(source)) {
+    for (const name of executable ? [] : findDangerousApis(source)) {
       issues.push(finding('error', 'DANGEROUS_API', `草稿引用了未允许的 API：${name}。`))
     }
     if (installed.some(plugin => plugin.id === manifest?.id)) {
@@ -369,7 +385,7 @@ function summaryOf(manifest: PluginManifestV1, revision: number, updatedAt: numb
     version: clamp(manifest.version, 32, '0.0.0'),
     updatedAt,
     ok,
-    ...(manifest.targets.includes('pc-ui') ? { distribution: 'group' as const } : {}),
+    ...(manifest.permissions.includes('client.trusted') ? {distribution: 'local-client' as const} : manifest.targets.includes('pc-ui') ? { distribution: 'group' as const } : {}),
   }
 }
 

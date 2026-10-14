@@ -199,7 +199,9 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(43);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(45);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.pluginDraftExportClientRequest).toBeDefined();
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.pluginDraftExportClientResponse).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.handshakeRequest).toBeDefined();
   });
@@ -212,6 +214,20 @@ describe("Host protocol v1", () => {
     const inspect=createHostRequest('pluginDrafts.inspect','inspect',{});
     const response=createHostSuccessResponse(inspect,{installed:[],drafts:[{id:'test.game',revision:2,displayName:'Game',version:'0.1.0',updatedAt:1,ok:true,distribution:'group'}]});
     expect(parseHostMessage(response)).toEqual(response);
+  });
+
+  it('round-trips pinned executable exports and keeps the new draft kind distinct from groups', () => {
+    const req = createHostRequest('pluginDrafts.exportClient', 'client-export', {draftId: 'test.desktop', revision: 3});
+    expect(parseHostMessage(req)).toEqual(req);
+    expectProtocolError({...req, payload: {draftId: 'test.desktop', revision: 0}}, 'INVALID_PAYLOAD');
+    const reply = createHostSuccessResponse(req, {manifestJson: '{}', source: 'x'.repeat(40000)});
+    expect(parseHostMessage(reply)).toEqual(reply);
+    expectProtocolError({...reply, payload: {...reply.payload, source: 'x'.repeat(100001)}}, 'INVALID_PAYLOAD');
+    const inspect = createHostRequest('pluginDrafts.inspect', 'client-inspect', {});
+    const summary = {id: 'test.desktop', revision: 3, displayName: 'Desktop', version: '0.1.0', updatedAt: 1, ok: true, distribution: 'local-client' as const};
+    const response = createHostSuccessResponse(inspect, {installed: [], drafts: [summary]});
+    expect(parseHostMessage(response)).toEqual(response);
+    expectProtocolError({...response, payload: {installed: [], drafts: [{...summary, distribution: 'script'}]}}, 'INVALID_PAYLOAD');
   });
 
   it('validates host plugin control and serializable tool results', () => {

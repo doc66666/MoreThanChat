@@ -10,6 +10,7 @@
     "productName": "MoreThanChat",
     "asar": true,
     "compression": "store",
+    "publish": null,
     "npmRebuild": false,
     "nodeGypRebuild": false,
     "afterPack": "./scripts/copy-host-resources.cjs",
@@ -28,6 +29,14 @@
     "win": {
       "target": "dir",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": false,
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
     }
   },
   "scripts": {

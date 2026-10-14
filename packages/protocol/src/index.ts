@@ -17,6 +17,7 @@ export const HOST_METHODS = [
   "pluginDrafts.diagnose",
   "pluginDrafts.install",
   "pluginDrafts.exportGroup",
+  "pluginDrafts.exportClient",
   "credentials.read",
   "credentials.write",
 ] as const;
@@ -154,7 +155,7 @@ export interface PluginDraftIssue {
 }
 
 export interface PluginDraftSummary {
-  distribution?: "group";
+  distribution?: "group" | "local-client";
   id: string;
   revision: number;
   displayName: string;
@@ -238,6 +239,7 @@ export interface HostRequestPayloadMap {
   "pluginDrafts.diagnose": { draftId: string };
   "pluginDrafts.install": { draftId: string; confirmed: boolean };
   "pluginDrafts.exportGroup": { draftId: string; revision: number };
+  "pluginDrafts.exportClient": { draftId: string; revision: number };
 }
 
 export interface HostResponsePayloadMap {
@@ -269,6 +271,7 @@ export interface HostResponsePayloadMap {
   "pluginDrafts.diagnose": PluginDraftReport;
   "pluginDrafts.install": PluginDraftInstallResult;
   "pluginDrafts.exportGroup": { manifestJson: string; source: string };
+  "pluginDrafts.exportClient": { manifestJson: string; source: string };
 }
 
 export const AUTHOR_TOOL_PUBLIC_NAMES = [
@@ -988,7 +991,7 @@ const parseDraftIssues = (value: unknown, path: string): PluginDraftIssue[] => {
 const parseDraftSummary = (value: unknown, path: string): PluginDraftSummary => {
   const object = asObject(value, path, "INVALID_PAYLOAD");
   assertKeys(object, ["id", "revision", "displayName", "version", "updatedAt", "ok"], ["distribution"], path, "INVALID_PAYLOAD");
-  if (object.distribution !== undefined && object.distribution !== "group") throw new ProtocolValidationError("INVALID_PAYLOAD", "Invalid draft distribution", path);
+  if (object.distribution !== undefined && object.distribution !== "group" && object.distribution !== "local-client") throw new ProtocolValidationError("INVALID_PAYLOAD", "Invalid draft distribution", path);
   if (typeof object.revision !== "number" || !Number.isSafeInteger(object.revision) || object.revision < 1) {
     throw new ProtocolValidationError("INVALID_PAYLOAD", `${path}.revision must be a positive integer`, `${path}.revision`);
   }
@@ -1005,7 +1008,7 @@ const parseDraftSummary = (value: unknown, path: string): PluginDraftSummary => 
     version: parseBoundedText(object.version, `${path}.version`, 32),
     updatedAt: object.updatedAt,
     ok: object.ok,
-    ...(object.distribution === "group" ? { distribution: "group" as const } : {}),
+    ...(object.distribution === "group" || object.distribution === "local-client" ? { distribution: object.distribution } : {}),
   };
 };
 
@@ -1126,7 +1129,8 @@ const parseRequestPayload = <M extends HostMethod>(
       assertKeys(object, [], [], "$.payload", "INVALID_PAYLOAD");
       return {} as HostRequestPayloadMap[M];
     }
-    case "pluginDrafts.exportGroup": {
+    case "pluginDrafts.exportGroup":
+    case "pluginDrafts.exportClient": {
       const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
       assertKeys(object, ["draftId", "revision"], [], "$.payload", "INVALID_PAYLOAD");
       if (!Number.isSafeInteger(object.revision) || Number(object.revision) < 1) throw new ProtocolValidationError("INVALID_PAYLOAD", "Invalid revision", "$.payload.revision");
@@ -1285,10 +1289,11 @@ const parseResponsePayload = <M extends HostMethod>(
       return parsePluginDraftReport(value) as HostResponsePayloadMap[M];
     case "pluginDrafts.install":
       return parsePluginDraftInstallResult(value) as HostResponsePayloadMap[M];
-    case "pluginDrafts.exportGroup": {
+    case "pluginDrafts.exportGroup":
+    case "pluginDrafts.exportClient": {
       const object = asObject(value, "$.payload", "INVALID_PAYLOAD");
       assertKeys(object, ["manifestJson", "source"], [], "$.payload", "INVALID_PAYLOAD");
-      return { manifestJson: parseBoundedText(object.manifestJson, "$.payload.manifestJson", 20000), source: parseBoundedText(object.source, "$.payload.source", 24000) } as HostResponsePayloadMap[M];
+      return { manifestJson: parseBoundedText(object.manifestJson, "$.payload.manifestJson", 20000), source: parseBoundedText(object.source, "$.payload.source", method === 'pluginDrafts.exportClient' ? 100000 : 24000) } as HostResponsePayloadMap[M];
     }
   }
 };

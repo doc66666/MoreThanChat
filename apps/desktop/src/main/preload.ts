@@ -9,6 +9,11 @@ interface HostPingResult {
 }
 
 const api = {
+  getClientPlugins: () => ipcRenderer.invoke('client-plugins:list'),
+  importClientPlugin: () => ipcRenderer.invoke('client-plugins:import'),
+  installClientDraft: (draftId: string, revision: number) => ipcRenderer.invoke('client-plugins:install-draft', {draftId, revision}),
+  authorizeClientPlugin: (id: string, digest: string) => ipcRenderer.invoke('client-plugins:authorize', id, digest),
+  recoverClientInterface: () => ipcRenderer.invoke('client-plugins:recover'),
   demoPluginsEnabled: process.argv.includes('--mtc-demo-plugins'),
   getHistoryTransferStatus:async()=>parseHistoryTransferStatus(await ipcRenderer.invoke('history:status')),
   onHistoryTransferStatus:(listener:(value:{busy:boolean;stage:string})=>void)=>{
@@ -472,7 +477,7 @@ function parseDraftDiagnosis(record: Record<string, unknown>) {
 
 function parseDraftSummary(value: unknown) {
   const record = asRecord(value, 'Invalid plugin draft.')
-  assertExactKeys(record, ['id', 'revision', 'displayName', 'version', 'updatedAt', 'ok', ...(record.distribution==='group'?['distribution']:[])], 'Invalid plugin draft.')
+  assertExactKeys(record, ['id', 'revision', 'displayName', 'version', 'updatedAt', 'ok', ...(record.distribution==='group'||record.distribution==='local-client'?['distribution']:[])], 'Invalid plugin draft.')
   if (typeof record.revision !== 'number' || !Number.isSafeInteger(record.revision) || record.revision < 1) throw new Error('Invalid plugin draft.')
   if (typeof record.updatedAt !== 'number' || !Number.isSafeInteger(record.updatedAt) || record.updatedAt < 0) throw new Error('Invalid plugin draft.')
   if (typeof record.ok !== 'boolean') throw new Error('Invalid plugin draft.')
@@ -483,7 +488,7 @@ function parseDraftSummary(value: unknown) {
     version: requiredBounded(record.version, 32, 'Invalid plugin draft.'),
     updatedAt: record.updatedAt,
     ok: record.ok,
-    ...(record.distribution==='group'?{distribution:'group' as const}:{}),
+    ...(record.distribution==='group'||record.distribution==='local-client'?{distribution:record.distribution}:{}),
   }
 }
 

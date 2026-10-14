@@ -66,6 +66,11 @@ export interface HistoryImportResult {conversationsAdded:number;messagesAdded:nu
 declare global {
   interface Window {
     moreThanChat: {
+      getClientPlugins(): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage[]>
+      importClientPlugin(): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage | null>
+      installClientDraft(draftId: string, revision: number): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage | null>
+      authorizeClientPlugin(id: string, digest: string): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage | null>
+      recoverClientInterface(): Promise<void>
       readonly demoPluginsEnabled: boolean
       getHistoryTransferStatus():Promise<HistoryTransferStatus>
       onHistoryTransferStatus(listener:(value:HistoryTransferStatus)=>void):()=>void

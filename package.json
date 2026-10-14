@@ -18,6 +18,7 @@
     "build": "pnpm build:host && pnpm --filter @more-than-chat/desktop build && node scripts/stage-host-resources.mjs && node scripts/package-dir.mjs --if-ci",
     "stage:host": "node scripts/stage-host-resources.mjs",
     "package:dir": "pnpm build && node scripts/package-dir.mjs",
+    "package:windows": "pnpm build && node scripts/package-windows.mjs",
     "test": "pnpm build:host && pnpm -r --if-present test",
     "verify:plugin-ui": "pnpm build && node scripts/verify-plugin-ui.mjs",
     "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",

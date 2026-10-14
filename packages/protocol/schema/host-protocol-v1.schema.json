@@ -132,6 +132,12 @@
     },
     {
       "$ref": "#/$defs/pluginDraftExportGroupResponse"
+    },
+    {
+      "$ref": "#/$defs/pluginDraftExportClientRequest"
+    },
+    {
+      "$ref": "#/$defs/pluginDraftExportClientResponse"
     }
   ],
   "$defs": {
@@ -539,6 +545,7 @@
             "pluginDrafts.diagnose",
             "pluginDrafts.install",
             "pluginDrafts.exportGroup",
+            "pluginDrafts.exportClient",
             "credentials.read",
             "credentials.write"
           ]
@@ -2189,7 +2196,10 @@
                 ],
                 "properties": {
                   "distribution": {
-                    "const": "group"
+                    "enum": [
+                      "group",
+                      "local-client"
+                    ]
                   },
                   "id": {
                     "type": "string",
@@ -2288,7 +2298,10 @@
                   ],
                   "properties": {
                     "distribution": {
-                      "const": "group"
+                      "enum": [
+                        "group",
+                        "local-client"
+                      ]
                     },
                     "id": {
                       "type": "string",
@@ -2433,7 +2446,10 @@
               ],
               "properties": {
                 "distribution": {
-                  "const": "group"
+                  "enum": [
+                    "group",
+                    "local-client"
+                  ]
                 },
                 "id": {
                   "type": "string",
@@ -2573,7 +2589,10 @@
               ],
               "properties": {
                 "distribution": {
-                  "const": "group"
+                  "enum": [
+                    "group",
+                    "local-client"
+                  ]
                 },
                 "id": {
                   "type": "string",
@@ -2765,7 +2784,10 @@
               ],
               "properties": {
                 "distribution": {
-                  "const": "group"
+                  "enum": [
+                    "group",
+                    "local-client"
+                  ]
                 },
                 "id": {
                   "type": "string",
@@ -3065,6 +3087,109 @@
               "minLength": 1,
               "pattern": ".*\\S.*",
               "maxLength": 24000
+            }
+          }
+        }
+      }
+    },
+    "pluginDraftExportClientRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "pluginDrafts.exportClient"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "draftId",
+            "revision"
+          ],
+          "properties": {
+            "draftId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 128
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      }
+    },
+    "pluginDraftExportClientResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "pluginDrafts.exportClient"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "manifestJson",
+            "source"
+          ],
+          "properties": {
+            "manifestJson": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 20000
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ".*\\S.*",
+              "maxLength": 100000
             }
           }
         }

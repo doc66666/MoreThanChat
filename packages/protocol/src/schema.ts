@@ -3,7 +3,7 @@ const nonEmptyString = { type: "string", minLength: 1, pattern: ".*\\S.*" } as c
 const requestId = { ...nonEmptyString, maxLength: 256 } as const;
 const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke'] as const;
 const modelMethods = ['model.getSettings', 'model.setSettings', 'model.chat.start', 'model.chat.cancel'] as const;
-const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose', 'pluginDrafts.install', 'pluginDrafts.exportGroup'] as const;
+const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose', 'pluginDrafts.install', 'pluginDrafts.exportGroup', 'pluginDrafts.exportClient'] as const;
 const credentialMethods = ['credentials.read', 'credentials.write'] as const;
 const credential = { type: 'object', additionalProperties: false, required: ['apiKey'], properties: {
   apiKey: { anyOf: [{ ...nonEmptyString, maxLength: 4096 }, { type: 'null' }] },
@@ -83,7 +83,7 @@ const draftIssue = {
 const draftSummary = {
   type: 'object', additionalProperties: false, required: ['id', 'revision', 'displayName', 'version', 'updatedAt', 'ok'],
   properties: {
-    distribution: { const: 'group' },
+    distribution: { enum: ['group', 'local-client'] },
     id: { ...nonEmptyString, maxLength: 128 },
     revision: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
     displayName: { ...nonEmptyString, maxLength: 80 },
@@ -191,6 +191,8 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/pluginDraftInstallResponse' },
     { $ref: '#/$defs/pluginDraftExportGroupRequest' },
     { $ref: '#/$defs/pluginDraftExportGroupResponse' },
+    { $ref: '#/$defs/pluginDraftExportClientRequest' },
+    { $ref: '#/$defs/pluginDraftExportClientResponse' },
   ],
   $defs: {
     protocolError: {
@@ -501,6 +503,14 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     pluginDraftExportGroupResponse: response('pluginDrafts.exportGroup', {
       type:'object',additionalProperties:false,required:['manifestJson','source'],
       properties:{manifestJson:{...nonEmptyString,maxLength:20000},source:{...nonEmptyString,maxLength:24000}},
+    }),
+    pluginDraftExportClientRequest: request('pluginDrafts.exportClient', {
+      type: 'object', additionalProperties: false, required: ['draftId','revision'],
+      properties: {draftId:{...nonEmptyString,maxLength:128},revision:{type:'integer',minimum:1,maximum:Number.MAX_SAFE_INTEGER}},
+    }),
+    pluginDraftExportClientResponse: response('pluginDrafts.exportClient', {
+      type:'object',additionalProperties:false,required:['manifestJson','source'],
+      properties:{manifestJson:{...nonEmptyString,maxLength:20000},source:{...nonEmptyString,maxLength:100000}},
     }),
     modelChatCancelledEvent: {
       type: 'object', additionalProperties: false,

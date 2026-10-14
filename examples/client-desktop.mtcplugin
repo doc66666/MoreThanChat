@@ -1,0 +1,17 @@
+{
+  "manifest": {
+    "manifestVersion": 1,
+    "id": "example.desktop-workbench",
+    "version": "0.1.0",
+    "displayName": "可替换桌面示例",
+    "description": "独立的整个桌面布局，可切回默认聊天；仅用于用户主动导入，不随应用预装。",
+    "targets": ["pc-ui"],
+    "engine": { "moreThanChat": "^0.1.0" },
+    "permissions": ["client.trusted"],
+    "services": { "requires": ["ui.surfaces"] }
+  },
+  "program": {
+    "kind": "executable-client",
+    "code": "export default function activate(ctx, sdk) { const R = sdk.React, h = R.createElement; function Desktop({input}) { const [standard, setStandard] = R.useState(false); const [count, setCount] = R.useState(0); const button = {padding:'10px 16px',border:'1px solid #d5cfc4',borderRadius:12,background:'#fffaf3',color:'#51473e',cursor:'pointer'}; return h('section', {style:{height:'100vh',display:'flex',flexDirection:'column',background:'#f7f2e9',color:'#51473e',paddingTop:38,boxSizing:'border-box',fontFamily:'sans-serif'},'data-custom-desktop':'true'}, h('header',{style:{padding:20,display:'flex',alignItems:'center',gap:16}},h('strong',null,'我的插件工作台'),h('button',{style:button,onClick:()=>setStandard(!standard)},standard?'返回自定义桌面':'显示默认聊天'),h('button',{style:button,onClick:()=>sdk.app.recoverClientInterface()},'恢复原界面')), standard ? h('div',{style:{flex:1,minHeight:0,overflow:'auto'}},input.defaultView) : h('main',{style:{padding:32,flex:1}},h('h1',null,'这整个桌面来自用户插件'),h('p',null,'不是侧边栏挂件，也不依赖九个固定位置。界面元素、样式和交互均由模块实现。'),h('button',{style:button,onClick:()=>setCount(count+1)},'交互计数：'+count),h('h2',null,'当前会话'),h('nav',{style:{display:'flex',gap:12,flexWrap:'wrap'}},...(input.context.conversations||[]).map(c=>h('button',{key:c.id,style:button,onClick:()=>{input.context.selectConversation(c.id);setStandard(true)}},c.title||c.name||c.id))),h('p',null,'Ctrl+Shift+F12 始终可请求主进程恢复默认界面。')),input.renderSurface('example.workbench-footer',input.context,h('footer',{style:{padding:16}},'插件自定义子界面 · 本机测试，无网络请求'))); } ctx.contribute(ctx.getService('ui.surfaces'),{id:'desktop',surface:'root',render:input=>h(Desktop,{input})}); }"
+  }
+}

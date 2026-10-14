@@ -127,10 +127,12 @@ export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorTool
         let notice = noticeFrom(call.name, result, source)
         let installationIssues: readonly PluginDraftIssue[] = []
         const groupDraft = 'draft' in result && result.draft?.distribution === 'group'
+        const clientDraft = 'draft' in result && result.draft?.distribution === 'local-client'
+        if (clientDraft) notice = {...notice, pendingInstall: false, summary: result.ok ? '可执行界面草稿已保存并校验格式。请用户在插件面板安装，再在原生信任对话框确认运行；尚未执行或验证运行效果。' : result.summary}
         if (groupDraft) {
           notice = { ...notice, pendingInstall: false, summary: result.ok ? '群插件草稿已校验。请用户在插件面板选择群聊并确认提交，等待管理员审批和成员本机载入。' : result.summary }
         }
-        if (!groupDraft && notice.pendingInstall && notice.draft) {
+        if (!groupDraft && !clientDraft && notice.pendingInstall && notice.draft) {
           const plan = await drafts.planInstall(notice.draft.id, false, { ignoreInstalledId: true })
           const installable = !plan.installable && plan.issues.length === 1 && plan.issues[0]?.code === 'CONFIRMATION_REQUIRED'
           if (!plan.installable) installationIssues = plan.issues.filter(issue => issue.code !== 'CONFIRMATION_REQUIRED')

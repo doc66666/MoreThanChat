@@ -1,4 +1,5 @@
 export const pluginTargets = ['pc-host', 'pc-ui', 'android-runtime', 'android-ui'] as const
+export { parseExecutableClientPackage, type ExecutableClientProgram, type ExecutableClientPackage, type InstalledClientPackage } from './client-package'
 
 export type PluginTarget = typeof pluginTargets[number]
 export type PluginTrust = 'builtin' | 'trusted'

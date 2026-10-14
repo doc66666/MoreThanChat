@@ -8,6 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react'
+import { ClientPlugins, InstallClientDraft } from './ClientPlugins'
 import {
   Bot,
   ChevronDown,
@@ -1908,7 +1909,7 @@ function PluginPanel({
           </button>
         </div>
         <div className="plugin-list">
-          {plugins.map((plugin) => {
+          {plugins.filter(plugin => plugin.trust === 'builtin').map((plugin) => {
             const busy =
               plugin.status === 'activating' || plugin.status === 'deactivating'
             const active = plugin.status === 'active'
@@ -1982,6 +1983,7 @@ function PluginPanel({
             </div>
           ))}
         </div>
+        <ClientPlugins />
         <section className="draft-section">
           <div>
             <p className="eyebrow">未安装</p>
@@ -1989,7 +1991,7 @@ function PluginPanel({
           </div>
           <p className="settings-note">
             让 More AI
-            为你创建文本动作或实时群插件。文本动作可本机安装；群插件先选择群聊提交审批，成员收到后自主载入，不授予文件或系统权限。
+            为你创建文本动作、完整界面或实时群插件。可执行界面需确认完整客户端信任；声明式群插件仍须提交审批、成员自主载入。
           </p>
           {(drafts?.drafts ?? []).map((item) => {
             const installed = hostPlugins.some(
@@ -2006,7 +2008,7 @@ function PluginPanel({
                 <strong>{item.displayName}</strong>
                 <small>
                   {item.id} · r{item.revision} ·{' '}
-                  {installed ? '已安装' : '未安装'} ·{' '}
+                  {item.distribution === 'local-client' ? '源草稿（运行版本见可执行界面）' : installed ? '已安装' : '未安装'} ·{' '}
                   {item.ok ? '校验通过' : '校验未通过'}
                 </small>
                 <div className="draft-actions">
@@ -2019,7 +2021,7 @@ function PluginPanel({
                   >
                     诊断
                   </button>
-                  {item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : confirmId === item.id ? (
+                  {item.distribution==='local-client' ? <InstallClientDraft draft={item}/> : item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : confirmId === item.id ? (
                     <div className="draft-confirm" data-draft-confirm={item.id}>
                       <p>
                         {installed
@@ -2105,8 +2107,8 @@ function PluginPanel({
           <PlugZap />
           <h3>可信插件模式</h3>
           <p>
-            示例插件经过版本化 manifest
-            和生命周期运行时接入。任意磁盘代码将在独立进程与权限代理完成后开放。
+            可执行界面经原生信任确认后由 Cordis 管理生命周期，可以替换完整桌面。
+            它不是恶意代码沙箱；第三方 Node 后台代码尚未开放。声明式群插件仍保持受限执行。
           </p>
         </div>
       </aside>

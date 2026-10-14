@@ -45,6 +45,8 @@ jobs:
         run: pnpm build
       - name: Verify Android protocol schema
         run: node scripts/verify-protocol-schema.mjs
+      - name: Verify documented executable client module
+        run: node scripts/verify-client-module.mjs
       - name: Stage standalone central server
         run: node scripts/stage-central-release.mjs
       - name: Verify isolated central process recovery
