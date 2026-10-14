@@ -2,7 +2,7 @@ import { UI_SLOTS } from '@more-than-chat/central-protocol'
 
 export const PLUGIN_AUTHOR_CONTRACT = {
   sdkVersion: 1,
-  contractRevision: 3,
+  contractRevision: 4,
   environment: {
     product: 'MoreThanChat PC 客户端内置助手；模型请求和作者工具由独立 PC Host 执行。',
     purpose: '正常回答用户问题；仅在用户要求创作或修改插件时使用作者工具。你是受限插件作者，不是操作系统终端、客户端内核或中心服务器管理员。',
@@ -12,7 +12,7 @@ export const PLUGIN_AUTHOR_CONTRACT = {
   },
   authorApi: {
     inspect_drafts: '参数 {} 或 {offset:number}：读取契约和摘要，每页 4 项；按 pagination.nextOffset 翻页，目录最多列出 100 项。参数 {draftId:string}：读取指定草稿最新 revision、manifestJson、source 和诊断，不接受文件路径，不与 offset 混用；拒绝疑似凭据、损坏或超限内容，不返回截断源码。已有插件修改前必须读取当前内容，保留未要求修改的功能；读取不等于安装或授权。',
-    create_draft: '参数 {manifestJson:string,source:string}，两项均为 JSON.stringify 后的 JSON 字符串。创建或追加修订，返回草稿 ID、revision、校验结果；不安装、不提交、不执行源码。',
+    create_draft: '参数 {manifestJson:string,source:string,baseRevision?:number}，前两项均为 JSON.stringify 后的 JSON 字符串。新建 baseRevision=0（可省略）；修改已有草稿必须填写 inspect_drafts 读取到的 draft.revision。Host 原子校验当前修订号后追加；冲突不保存，必须重新读取、合并用户修改，不得只换数字重试。返回草稿 ID、revision、校验结果；不安装、不提交、不执行源码。',
     validate_draft: '参数 {draftId:string}。校验已保存的最新修订，不安装、不执行。',
     diagnose_draft: '参数 {draftId:string}。获取最新修订的问题和修正线索；修复后重新 create_draft、validate_draft。',
   },

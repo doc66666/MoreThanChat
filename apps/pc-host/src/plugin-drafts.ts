@@ -13,7 +13,7 @@ import { isStaticTextToolManifest, parseDeclarativeInstall, type DeclarativeComp
 import { diagnoseGroupProgram, parseGroupArtifact } from '@more-than-chat/central-protocol'
 
 export class PluginDraftError extends Error {
-  constructor(readonly code: 'DRAFT_NOT_FOUND', message: string) {
+  constructor(readonly code: 'DRAFT_NOT_FOUND' | 'DRAFT_REVISION_CONFLICT', message: string) {
     super(message)
     this.name = 'PluginDraftError'
   }
@@ -62,7 +62,7 @@ export class PluginDraftService {
     }))
   }
 
-  create(input: { manifestJson: string; source: string }): Promise<PluginDraftCreateResult> {
+  create(input: { manifestJson: string; source: string; baseRevision?: number }): Promise<PluginDraftCreateResult> {
     return this.#enqueue(async () => {
       const assessed = assessDraft(input.manifestJson, input.source, this.#installedPlugins())
       if (!assessed.manifest || assessed.blocked) {
@@ -77,6 +77,13 @@ export class PluginDraftService {
         }
       }
       const revision = await this.#nextRevision(assessed.manifest.id)
+      // Compare and append in the same Host queue, including ordinary UI saves.
+      // Public/manual callers retain their existing append behavior; AI calls always
+      // supply a base (zero for creation), so omission cannot bypass the guard.
+      if (input.baseRevision !== undefined && (!Number.isSafeInteger(input.baseRevision)
+        || input.baseRevision < 0 || input.baseRevision !== revision - 1)) {
+        throw new PluginDraftError('DRAFT_REVISION_CONFLICT', '草稿已变化或未提供当前修订号；请重新读取后合并修改。')
+      }
       const updatedAt = Date.now()
       const record = {
         v: 1 as const,

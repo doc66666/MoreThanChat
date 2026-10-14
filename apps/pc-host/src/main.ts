@@ -219,7 +219,11 @@ function protocolError(error: unknown): ProtocolErrorPayload {
     return { code: error.code, message: sanitizeProviderText(error.message, ''), retryable: error.retryable }
   }
   if (error instanceof HostPluginError) return { code: error.code, message: error.message, retryable: false }
-  if (error instanceof PluginDraftError) return { code: error.code, message: error.message, retryable: false }
+  if (error instanceof PluginDraftError) return {
+    // Revision conflicts are author-tool results, not a new public v1 RPC code.
+    code: error.code === 'DRAFT_REVISION_CONFLICT' ? 'INVALID_PAYLOAD' : error.code,
+    message: error.message, retryable: false,
+  }
   const message = error instanceof Error ? error.message : 'PC Host failed to handle the request.'
   return { code: 'INTERNAL_ERROR', message: sanitizeProviderText(message, ''), retryable: false }
 }

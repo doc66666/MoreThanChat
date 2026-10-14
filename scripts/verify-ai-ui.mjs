@@ -24,8 +24,16 @@ if (!live) {
     const operation = updating ? 'lowercase' : 'uppercase', label = updating ? '英文小写' : '英文大写'
     const args = { manifestJson: JSON.stringify({ manifestVersion: 1, id: pluginId, version: updating ? '0.1.1' : '0.1.0', displayName: label, description: '转换输入框文字', targets: ['pc-host'], engine: { moreThanChat: '^0.1.0' }, permissions: [], services: { requires: ['host.tools'] } }),
       source: JSON.stringify({ kind: 'composer-transform-action', actionId: operation, label, operation }) }
-    const delta = round < 2 ? { tool_calls: [{ index: 0, id: `call-${round}`, function: { name: round === 0 ? 'create_draft' : 'validate_draft', arguments: JSON.stringify(round === 0 ? args : { draftId: pluginId }) } }] } : { content: '草稿已校验，请确认安装。' }
-    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: round < 2 ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`)
+    if (updating && round > 0) {
+      const snapshot = JSON.parse(parsed.messages.find(message => message.role === 'tool').content)
+      assert.equal(snapshot.draft.id, pluginId)
+      assert.equal(JSON.parse(snapshot.source).operation, 'uppercase')
+      args.baseRevision = snapshot.draft.revision
+    }
+    const steps = updating ? ['inspect_drafts', 'create_draft', 'validate_draft'] : ['create_draft', 'validate_draft']
+    const tool = steps[round]
+    const delta = tool ? { tool_calls: [{ index: 0, id: `call-${round}`, function: { name: tool, arguments: JSON.stringify(tool === 'create_draft' ? args : { draftId: pluginId }) } }] } : { content: '草稿已校验，请确认安装。' }
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: tool ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`)
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); baseUrl = `http://127.0.0.1:${server.address().port}`
 }

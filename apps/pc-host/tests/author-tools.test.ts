@@ -18,6 +18,87 @@ afterEach(async () => {
 })
 
 describe('plugin author tool loop', () => {
+  it('rejects stale or missing bases and lets the author re-read and merge without losing user changes', async () => {
+    const directory = await tempDir()
+    const drafts = new PluginDraftService({ dataDir: directory, installedPlugins: () => [] })
+    const executor = createAuthorToolExecutor(drafts)
+    const save = (extra: Record<string, unknown> = {}) => executor.execute({ id: 'save', name: 'create_draft', arguments: JSON.stringify({ manifestJson: manifest('example.note'), source, ...extra }) })
+    expect((await save()).notice.ok).toBe(true)
+    const read = await drafts.readForAuthor('example.note')
+    const userSource = JSON.stringify({ kind: 'composer-text-action', actionId: 'note', label: '用户的按钮', text: 'keep-user-change' })
+    await drafts.create({ manifestJson: manifest('example.note'), source: userSource })
+    for (const extra of [{}, { baseRevision: 0 }, { baseRevision: read.draft.revision }, { baseRevision: 99 }]) {
+      const result = await save(extra)
+      expect(result.notice).toMatchObject({ ok: false, pendingInstall: false, draft: null })
+      expect(result.content).toContain('修订号冲突')
+    }
+    const latest = await drafts.readForAuthor('example.note')
+    expect(latest.draft.revision).toBe(2)
+    expect(latest.source).toBe(userSource)
+    const merged = { ...JSON.parse(latest.source), label: 'AI 改名' }
+    expect((await save({ baseRevision: latest.draft.revision, source: JSON.stringify(merged) })).notice.ok).toBe(true)
+    const reopened = new PluginDraftService({ dataDir: directory, installedPlugins: () => [] })
+    const final = await reopened.readForAuthor('example.note')
+    expect(final.draft.revision).toBe(3)
+    expect(JSON.parse(final.source)).toMatchObject({ label: 'AI 改名', text: 'keep-user-change' })
+    expect(JSON.parse(await readFile(path.join(directory, 'plugin-drafts', 'example.note', 'revision-2.json'), 'utf8')).source).toBe(userSource)
+  })
+
+  it('serializes competing AI saves and admits only one matching base', async () => {
+    const drafts = new PluginDraftService({ dataDir: await tempDir(), installedPlugins: () => [] })
+    await drafts.create({ manifestJson: manifest('example.note'), source })
+    const executor = createAuthorToolExecutor(drafts)
+    const results = await Promise.all([1, 2].map(n => executor.execute({ id: `save-${n}`, name: 'create_draft', arguments: JSON.stringify({ manifestJson: manifest('example.note'), source, baseRevision: 1 }) })))
+    expect(results.filter(result => result.notice.ok)).toHaveLength(1)
+    expect(results.filter(result => result.content.includes('修订号冲突'))).toHaveLength(1)
+    expect((await drafts.readForAuthor('example.note')).draft.revision).toBe(2)
+  })
+
+  it('recovers from a concurrent user edit within one model tool conversation', async () => {
+    let store: PluginDraftService
+    const provider: ChatModelProvider = {
+      async stream(request, onDelta) {
+        const results = request.messages.filter(message => message.role === 'tool')
+        const call = (name: string, args: unknown) => ({ toolCalls: [{ id: `call-${results.length}`, name, arguments: JSON.stringify(args) }] })
+        if (results.length === 0 || results.length === 2) {
+          if (results.length === 2) expect(results[1]!.content).toContain('修订号冲突')
+          return call('inspect_drafts', { draftId: 'example.note' })
+        }
+        if (results.length === 1 || results.length === 3) {
+          const snapshot = JSON.parse(results.at(-1)!.content!)
+          if (results.length === 1) await store.create({ manifestJson: snapshot.manifestJson,
+            source: JSON.stringify({ ...JSON.parse(snapshot.source), text: 'concurrent-user-marker' }) })
+          return call('create_draft', { manifestJson: snapshot.manifestJson,
+            source: JSON.stringify({ ...JSON.parse(snapshot.source), label: 'AI 改名' }), baseRevision: snapshot.draft.revision })
+        }
+        if (results.length === 4) return call('validate_draft', { draftId: 'example.note' })
+        onDelta('已合并用户修改，等待确认')
+        return { toolCalls: [] }
+      },
+    }
+    const { service, drafts, events } = await createLoop(provider)
+    store = drafts
+    await drafts.create({ manifestJson: manifest('example.note'), source: JSON.stringify({ kind: 'composer-text-action', actionId: 'note', label: '旧名称', text: '旧内容' }) })
+    service.start(startInput(), event => events.push(event))
+    await waitFor(() => events.some(event => event.event === 'model.chat.completed'))
+    const final = await drafts.readForAuthor('example.note')
+    expect(final.draft.revision).toBe(3)
+    expect(JSON.parse(final.source)).toMatchObject({ label: 'AI 改名', text: 'concurrent-user-marker' })
+    const saves = events.filter(event => event.event === 'model.authorTool' && event.payload.tool === 'create_draft' && event.payload.phase === 'finished')
+    expect(saves).toHaveLength(2)
+    expect(saves[0]).toMatchObject({ payload: { ok: false, pendingInstall: false, draft: null } })
+    expect(saves[1]).toMatchObject({ payload: { ok: true, pendingInstall: true, draft: { revision: 3 } } })
+    expect(JSON.stringify(events)).not.toContain('concurrent-user-marker')
+    service.close()
+  })
+
+  it.each([null, -1, 1.5, '1', 9007199254740992])('refuses invalid create baseRevision %s without saving', async baseRevision => {
+    const drafts = new PluginDraftService({ dataDir: await tempDir(), installedPlugins: () => [] })
+    const result = await createAuthorToolExecutor(drafts).execute({ id: 'save', name: 'create_draft', arguments: JSON.stringify({ manifestJson: manifest('example.note'), source, baseRevision }) })
+    expect(result.notice.ok).toBe(false)
+    expect((await drafts.inspect()).drafts).toEqual([])
+  })
+
   it('pages summaries and reads the latest complete draft after reopening its store', async () => {
     const directory = await tempDir()
     const options = { dataDir: directory, installedPlugins: () => [] }
@@ -108,7 +189,7 @@ describe('plugin author tool loop', () => {
           expect(snapshot.source).toBe(original)
           const program = JSON.parse(snapshot.source)
           program.label = '新按钮'
-          return { toolCalls: [{ id: 'edit', name: 'create_draft', arguments: JSON.stringify({ manifestJson: snapshot.manifestJson, source: JSON.stringify(program) }) }] }
+          return { toolCalls: [{ id: 'edit', name: 'create_draft', arguments: JSON.stringify({ manifestJson: snapshot.manifestJson, source: JSON.stringify(program), baseRevision: snapshot.draft.revision }) }] }
         }
         if (results.length === 2) return { toolCalls: [{ id: 'check', name: 'validate_draft', arguments: '{"draftId":"example.note"}' }] }
         onDelta('草稿修改完成，等待用户确认')
