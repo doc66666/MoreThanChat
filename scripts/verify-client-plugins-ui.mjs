@@ -45,6 +45,9 @@ async function click(selector) {
   await value(`document.querySelector(${JSON.stringify(selector)}).click()`)
 }
 async function textButton(text) {
+  // The drawer mounts before its asynchronous installed-plugin query finishes.
+  // Wait for the actual enabled action, not merely the section container.
+  await poll(`[...document.querySelectorAll('button')].some(b=>b.textContent.trim()===${JSON.stringify(text)}&&!b.disabled)`)
   await value(`(() => {const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)}); if(!b)throw Error('Missing button'); b.click()})()`)
 }
 async function showChat() {
