@@ -69,7 +69,7 @@ declare global {
       getClientPlugins(): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage[]>
       importClientPlugin(): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage | null>
       installClientDraft(draftId: string, revision: number): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage | null>
-      authorizeClientPlugin(id: string, digest: string): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage | null>
+      saveClientPlugin(pack: import('@more-than-chat/plugin-runtime').InstalledClientPackage, enabled: boolean): Promise<import('@more-than-chat/plugin-runtime').InstalledClientPackage>
       recoverClientInterface(): Promise<void>
       readonly demoPluginsEnabled: boolean
       getHistoryTransferStatus():Promise<HistoryTransferStatus>

@@ -21,6 +21,7 @@
     "package:windows": "pnpm build && node scripts/package-windows.mjs",
     "test": "pnpm build:host && pnpm -r --if-present test",
     "verify:plugin-ui": "pnpm build && node scripts/verify-plugin-ui.mjs",
+    "verify:client-plugins": "pnpm build && node scripts/verify-client-plugins-ui.mjs",
     "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",
     "verify:ai-ui": "pnpm build && node scripts/verify-ai-ui.mjs",
     "verify:chat-ui": "pnpm build && node scripts/verify-chat-core-ui.mjs",

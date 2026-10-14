@@ -7,7 +7,7 @@ export function clientPackageDigest(pack: ExecutableClientPackage): string {
   return createHash('sha256').update(JSON.stringify({manifest: pack.manifest, program: pack.program})).digest('hex')
 }
 
-/** Source snapshots only; never imports JS in the kernel. No automatic startup execution. */
+/** Source snapshots and user selection only; never imports JS in the kernel. */
 export class ClientPluginStore {
   readonly directory: string
   #tail: Promise<unknown> = Promise.resolve()
@@ -21,23 +21,32 @@ export class ClientPluginStore {
     await this.#tail
     return this.#read()
   }
-  save(pack: ExecutableClientPackage): Promise<InstalledClientPackage> {
-    // Snapshot before joining the queue: approval callers must not mutate the input.
+  save(pack: ExecutableClientPackage, enabled?: boolean): Promise<InstalledClientPackage> {
+    // Snapshot before joining the queue; callers cannot change an in-flight write.
     const snapshot = parseExecutableClientPackage(pack)
     const task = this.#tail.then(async () => {
       const installed = await this.#read()
       if (installed.length >= 100 && !installed.some(p => p.manifest.id === snapshot.manifest.id)) throw new Error('本机插件目录已达 100 项')
-      const next = {...snapshot, digest: clientPackageDigest(snapshot)}
+      const previous = installed.find(p => p.manifest.id === snapshot.manifest.id)
+      const next = {...snapshot, digest: clientPackageDigest(snapshot), enabled: enabled ?? previous?.enabled ?? false}
       const contents = [...installed.filter(p => p.manifest.id !== snapshot.manifest.id), next]
-      await mkdir(this.directory, {recursive: true, mode: 0o700})
-      if (!(await lstat(this.directory)).isDirectory()) throw new Error('插件目录不可用')
-      const temporary = path.join(this.directory, randomUUID() + '.tmp')
-      await writeFile(temporary, JSON.stringify(contents), {mode: 0o600, flag: 'wx'})
-      await rename(temporary, path.join(this.directory, 'installed.json'))
+      await this.#write(contents)
       return next
     })
     this.#tail = task.catch(() => undefined)
     return task
+  }
+  disableAll(): Promise<void> {
+    const task = this.#tail.then(async () => this.#write((await this.#read()).map(p => ({...p, enabled: false}))))
+    this.#tail = task.catch(() => undefined)
+    return task
+  }
+  async #write(contents: InstalledClientPackage[]): Promise<void> {
+    await mkdir(this.directory, {recursive: true, mode: 0o700})
+    if (!(await lstat(this.directory)).isDirectory()) throw new Error('插件目录不可用')
+    const temporary = path.join(this.directory, randomUUID() + '.tmp')
+    await writeFile(temporary, JSON.stringify(contents), {mode: 0o600, flag: 'wx'})
+    await rename(temporary, path.join(this.directory, 'installed.json'))
   }
   async #read(): Promise<InstalledClientPackage[]> {
     try {
@@ -48,8 +57,9 @@ export class ClientPluginStore {
       if (!Array.isArray(parsed) || parsed.length > 100) throw new Error('插件索引损坏')
       const result = parsed.map(v => {
         const pack = parseExecutableClientPackage({manifest: v.manifest, program: v.program})
-        if (v.digest !== clientPackageDigest(pack)) throw new Error('插件内容已被修改；请重新导入确认')
-        return {...pack, digest: v.digest as string}
+        if (v.digest !== clientPackageDigest(pack)) throw new Error('插件内容已被修改；请重新导入')
+        if (v.enabled !== undefined && typeof v.enabled !== 'boolean') throw new Error('插件启用状态无效')
+        return {...pack, digest: v.digest as string, enabled: v.enabled === true}
       })
       if (new Set(result.map(p => p.manifest.id)).size !== result.length) throw new Error('插件索引包含重复标识')
       return result

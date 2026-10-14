@@ -3,7 +3,7 @@ import { validatePluginManifest, type PluginManifestV1 } from './index'
 /** Executable and fully trusted, deliberately distinct from the declarative DSL. */
 export interface ExecutableClientProgram { kind: 'executable-client'; code: string }
 export interface ExecutableClientPackage { manifest: PluginManifestV1; program: ExecutableClientProgram }
-export interface InstalledClientPackage extends ExecutableClientPackage { digest: string }
+export interface InstalledClientPackage extends ExecutableClientPackage { digest: string; enabled?: boolean }
 
 export function parseExecutableClientPackage(value: unknown): ExecutableClientPackage {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的界面插件包')

@@ -96,10 +96,6 @@ try {
   const card = `.draft-card[data-draft-id="${pluginId}"]`
   await poll(session.client, `Boolean(document.querySelector(${JSON.stringify(card)}))`)
   await click(card + ' [data-draft-install]')
-  await click(card + ' [data-draft-confirm-cancel]')
-  assert.equal(await installedPlugin(), undefined, 'Cancelled confirmation installed the plugin')
-  await click(card + ' [data-draft-install]')
-  await click(card + ' [data-draft-confirm-ok]')
   const action = `.declarative-composer-action[data-plugin-id="${pluginId}"]`
   await poll(session.client, `Boolean(document.querySelector(${JSON.stringify(action)}))`)
   await input(session.client, 'Hello, plugin 你好!'); await evaluate(session.client, `document.querySelector(${JSON.stringify(action)})?.click()`)
@@ -109,8 +105,6 @@ try {
     await author(`请用工具修订 ${pluginId}，版本 0.1.1，operation lowercase，生成并校验小写转换草稿，等我确认更新。`)
     assert.equal((await installedPlugin()).version, '0.1.0', 'AI activated an unconfirmed update')
     await click('button[title="插件"]')
-    await click(card + ' [data-draft-update]')
-    await click(card + ' [data-draft-confirm-cancel]')
     await input(session.client, 'Still Old')
     await click(action)
     await poll(session.client, `document.querySelector('.composer textarea')?.value === 'STILL OLD'`)
@@ -118,7 +112,6 @@ try {
     await click(toggle)
     await poll(session.client, `!document.querySelector(${JSON.stringify(action)})`)
     await click(card + ' [data-draft-update]')
-    await click(card + ' [data-draft-confirm-ok]')
     await poll(session.client, `document.querySelector(${JSON.stringify(`.host-plugin-card[data-plugin-id="${pluginId}"] small`)})?.textContent.includes('0.1.1') && document.querySelector(${JSON.stringify(toggle)})?.textContent==='启用'`)
     const updated = await installedPlugin()
     assert.equal(updated.version, '0.1.1')
@@ -155,7 +148,7 @@ try {
   assert.equal((await evaluate(session.client, `window.moreThanChat.invokeHostTool(${JSON.stringify(pluginId)},${JSON.stringify(installed.composerActions[0].id)},'restored')`)).text, live ? 'RESTORED' : 'restored')
   await evaluate(session.client, `window.moreThanChat.setModelSettings({clearApiKey:true})`)
   await assert.rejects(readFile(path.join(profile, 'host-private', 'model-secret.bin')), { code: 'ENOENT' })
-  console.log(JSON.stringify({ passed: true, live, packaged, model, generatedByChat: true, userConfirmed: true, transformExecuted: true, credentialEncrypted: true, credentialRestored: true, pluginRestored: true, ...(live ? {} : { requests, updatedByChat: true, cancelledConfirmation: true, disabledUpdateRestored: true, immutableVersions: true }) }))
+  console.log(JSON.stringify({ passed: true, live, packaged, model, generatedByChat: true, oneClickInstall: true, transformExecuted: true, credentialEncrypted: true, credentialRestored: true, pluginRestored: true, ...(live ? {} : { requests, updatedByChat: true, disabledUpdateRestored: true, immutableVersions: true }) }))
 } catch (error) {
   console.error(String(error.message).split(key).join('[redacted]'))
   if (session) {

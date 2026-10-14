@@ -8,6 +8,8 @@ export class ClientPluginLoader {
   #tail: Promise<unknown> = Promise.resolve()
   constructor(readonly runtime: PluginRuntime, readonly sdk: unknown, readonly load: (code: string) => Promise<ClientModule>) {}
   current(id: string): InstalledClientPackage | undefined { return this.#packages.get(id) }
+  isActive(id: string): boolean { return this.runtime.list().some(p => p.manifest.id === id && p.status === 'active') }
+  remove(id: string): Promise<void> { return this.#enqueue(async () => {await this.runtime.uninstall(id); this.#packages.delete(id)}) }
   enable(pack: InstalledClientPackage): Promise<void> {
     return this.#enqueue(async () => {
       const id = pack.manifest.id, previous = this.#packages.get(id)

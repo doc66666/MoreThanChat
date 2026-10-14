@@ -12,7 +12,7 @@ const api = {
   getClientPlugins: () => ipcRenderer.invoke('client-plugins:list'),
   importClientPlugin: () => ipcRenderer.invoke('client-plugins:import'),
   installClientDraft: (draftId: string, revision: number) => ipcRenderer.invoke('client-plugins:install-draft', {draftId, revision}),
-  authorizeClientPlugin: (id: string, digest: string) => ipcRenderer.invoke('client-plugins:authorize', id, digest),
+  saveClientPlugin: (pack: unknown, enabled: boolean) => ipcRenderer.invoke('client-plugins:save', pack, enabled),
   recoverClientInterface: () => ipcRenderer.invoke('client-plugins:recover'),
   demoPluginsEnabled: process.argv.includes('--mtc-demo-plugins'),
   getHistoryTransferStatus:async()=>parseHistoryTransferStatus(await ipcRenderer.invoke('history:status')),

@@ -80,14 +80,14 @@ pnpm verify:plugin-ui
 
 ## 2026-10-14：用户可执行界面入口
 
-`executable-client` 已接入用户目录安装与原生确认运行。它与旧声明式群插件是两种不同信任模型，不应混用：
+`executable-client` 已接入用户目录安装、直接启用及热更新。它与旧声明式群插件是两种不同信任模型，不应混用：
 
 - AI 用已有 `create_draft` / `validate_draft` 写 `{kind:"executable-client",code:"export default function activate(ctx,sdk) {...}"}`；manifest 为 `pc-ui`、`permissions:["client.trusted"]`。源码仍作为 JSON 保存，不在模型 Host 执行。
-- 用户从草稿安装，或导入 `{manifest,program}` 的 `.mtcplugin` 文件。安装只保存完整源快照与 SHA-256，不运行。点击“确认运行”后由主进程原生对话框确认精确版本，再加载自包含 ES module。
+- 用户点击“安装并启用此版本”，或导入 `{manifest,program}` 的 `.mtcplugin` 文件后直接加载自包含 ES module。软件内仅显示简短来源提醒，没有原生信任弹窗或二次运行授权。激活成功后保存完整源快照、SHA-256 和启用状态；失败保留此前磁盘版本，并尝试恢复旧运行版本。
 - `sdk.React` 是应用的同一 React 实例；`ctx.getService('ui.surfaces')` 支持 `root` 完整替换和自定义子界面；不是九个固定位置的上限。用 `React.createElement`，不直接加载 JSX/TS/npm 裸导入。需要第三方库时先打包为单模块。
 - `ctx.contribute`、`ctx.effect` 管理生命周期副作用。重复启停会撤销登记；热更新激活失败尝试恢复旧运行版本。没有登记的全局副作用、恶意代码和无限循环不受 Cordis 沙箱保护。
 - 同 renderer 的代码拥有完整客户端界面信任，可能访问聊天和现有 preload API；不是细粒度权限隔离。Node/Electron、原始凭据读取不开放，原有 CSP 外网限制保留。
-- 每次启动／重载不自动运行第三方界面。Ctrl+Shift+F12 由主进程弹出恢复确认，强制重启 renderer；不删除已存聊天或插件，但未保存输入可能丢失。无响应时也提供恢复入口。
+- 每次启动／重载自动加载用户已启用的界面插件；停用状态同样保存。旧目录没有 enabled 字段时按未启用迁移。Ctrl+Shift+F12 直接停用界面插件并创建新的聊天窗口，不再使用 forcefullyCrashRenderer + reload；不删除已存聊天或插件，但未发送输入可能丢失。这是故障入口，正常热更新不重启窗口。
 - 示例：[client-desktop.mtcplugin](../examples/client-desktop.mtcplugin)。仅供主动导入，不预装进发行版。
 
-尚未完成的能力：可执行包群审批／分发、第三方 Node Host 扩展、自动恢复启用偏好。`chat.network` 服务本身存在，但本机界面安装不能绕过中心的已审批群包／本机载入检查，不能冒称任意本机插件已获得群通信授权。DSH 插件需要接口适配，不保证原封不动加载。
+尚未完成的能力：可执行包群审批／分发、第三方 Node Host 扩展。`chat.network` 服务本身存在，但本机界面安装不能绕过中心的已审批群包／本机载入检查，不能冒称任意本机插件已获得群通信授权。DSH 插件需要接口适配，不保证原封不动加载。

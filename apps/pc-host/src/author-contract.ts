@@ -2,7 +2,7 @@ import { UI_SLOTS } from '@more-than-chat/central-protocol'
 
 export const PLUGIN_AUTHOR_CONTRACT = {
   sdkVersion: 1,
-  contractRevision: 5,
+  contractRevision: 6,
   environment: {
     product: 'MoreThanChat PC 客户端内置助手；模型请求和作者工具由独立 PC Host 执行。',
     purpose: '正常回答用户问题；仅在用户要求创作或修改插件时使用作者工具。你是受限插件作者，不是操作系统终端、客户端内核或中心服务器管理员。',
@@ -35,17 +35,17 @@ export const PLUGIN_AUTHOR_CONTRACT = {
   ],
   transformOperations: ['uppercase', 'lowercase', 'trim'],
   executableClient: {
-    status: '可创建、用户目录安装、原生确认运行、停用、同 id 热更新。仅本机，尚不可经群审批分发这种可执行包；不要用声明式群流程提交它。',
+    status: '可创建、用户目录安装并直接启用、停用、同 id 热更新；记住用户启用状态，没有额外原生信任弹窗。仅本机，尚不可经群审批分发这种可执行包；不要用声明式群流程提交它。',
     manifestExample: {manifestVersion: 1, id: 'example.my-desktop', version: '0.1.0', displayName: '我的桌面', description: '自定义完整桌面界面', targets: ['pc-ui'], engine: {moreThanChat: '^0.1.0'}, permissions: ['client.trusted'], services: {requires: ['ui.surfaces']}},
     sourceExample: {kind: 'executable-client', code: 'export default function activate(ctx, sdk) { const h = sdk.React.createElement; ctx.contribute(ctx.getService("ui.surfaces"), { id: "desktop", surface: "root", render: ({defaultView, renderSurface}) => h("div", {style:{height:"100%",display:"flex",flexDirection:"column"}}, h("header", {style:{padding:16}}, "我的工作台"), h("div", {style:{flex:1,minHeight:0}}, defaultView), renderSurface("example.footer")) }); }'},
     entry: 'source 仍是 JSON.stringify({kind:"executable-client",code:"自包含原生 ES module"})，code 默认导出 activate(ctx,sdk) 函数，可 async 并返回清理函数。不使用 JSX/TS/npm 裸导入；用 sdk.React.createElement 和 React hooks（hooks 仅用于真正的函数组件，render 返回 createElement(Component)）。依赖必须预打包到单个模块。模块顶层不要产生副作用，统一在 activate 内登记。',
-    lifecycle: 'Cordis 管理 pc-ui 生命周期。ctx.manifest/target；ctx.getService(id) 取得 manifest.services.requires 声明的已有服务；ctx.contribute(registry,contribution) 自动撤销登记；ctx.effect(disposer) 登记事件、定时器、样式清理。异步激活失败会撤销登记；同 id 更新失败尝试恢复原运行版本。没有登记或无限循环的副作用不能靠生命周期自动修复；按 Ctrl+Shift+F12 重载默认界面。每次启动不自动执行第三方界面。',
+    lifecycle: 'Cordis 管理 pc-ui 生命周期。ctx.manifest/target；ctx.getService(id) 取得 manifest.services.requires 声明的已有服务；ctx.contribute(registry,contribution) 自动撤销登记；ctx.effect(disposer) 登记事件、定时器、样式清理。异步激活失败会撤销登记；同 id 更新失败尝试恢复原运行版本，成功后才保存新版本。启动时加载用户已启用的插件。没有登记或无限循环的副作用不能靠生命周期自动修复；Ctrl+Shift+F12 停用界面插件并重新打开默认聊天。',
     surfaces: 'ui.surfaces: ctx.contribute(registry,{id,surface,priority?,render({context,defaultView,renderSurface})})。root 可完全替换整桌面，不必包含 defaultView；也可保留默认聊天再增添其他界面。插件可用 renderSurface("自定义名称",context?,fallback?) 定义任意子界面，其他插件注册同名 surface。名称小写字母开头，允许数字点连字符，最多128字符；priority 越小优先。无九位置限制。循环嵌套回退，最长32层。渲染异常回退默认视图。',
     context: 'root context 有 conversation/profile/draft/setDraft/send/server/messages/conversations/selectConversation；send() 发送当前输入框，异步状态由宿主处理。messages 是当前已加载消息，不是完整历史。默认聊天被 root 覆盖时不会自动标已读。不要在渲染期间产生消息等副作用。',
-    sdk: 'sdk.version=1，sdk.React 为客户端同一 React 实例，sdk.app 是已存在的 preload 客户端 API。恢复用 sdk.app.recoverClientInterface()（弹原生确认）。本版本不公开 Node/Electron 或凭据读取接口。CSP 不允许任意外网 fetch/WebSocket 或远程脚本，不能声称有这些权限。',
+    sdk: 'sdk.version=1，sdk.React 为客户端同一 React 实例，sdk.app 是已存在的 preload 客户端 API。恢复用 sdk.app.recoverClientInterface()（直接停用界面插件并重新打开聊天，未发送输入可能丢失）。本版本不公开 Node/Electron 或凭据读取接口。CSP 不允许任意外网 fetch/WebSocket 或远程脚本，不能声称有这些权限。',
     network: 'ctx.getService("chat.network").forPlugin(pluginId) 有 send(groupId,channel,payload)、history(groupId)、subscribe(groupId,listener)（返回取消函数）。群消息仍要求该中心、该群成员、已审批的群包及成员本机同意；本机界面安装不授予群网络授权。可执行包的群分发未完成，不要宣称本机任意 pluginId 已能跨用户同步。订阅用 ctx.effect 清理，业务持久化/迁移由插件作者设计，平台不提供业务存储服务。',
-    trust: '这是同 renderer 的完整客户端信任，不是恶意代码沙箱。能够接触页面和既有客户端 API；声明 permissions 不是细粒度隔离。必须向用户解释实际能力和风险，主进程原生确认后才能运行。禁止修改内核、窃取凭据或自动代用户审批；这些不由提示词提供安全保证。',
-    limits: 'AI 作者工具单次参数总长40000字符，建议 code 不超过24000字符。手动包 code 上限100000字符。不要把代码写进聊天正文；交 create_draft 后 validate_draft，报告“格式通过，待用户确认运行”，不虚构实际运行成功。',
+    trust: '这是同 renderer 的完整客户端信任，不是恶意代码沙箱。能够接触页面和既有客户端 API；声明 permissions 不是细粒度隔离。安装界面提供简短来源提醒，用户主动安装并启用后直接运行，不要求逐次信任授权。禁止修改内核、窃取凭据或自动代用户审批群插件；这些不由提示词提供安全保证。',
+    limits: 'AI 作者工具单次参数总长40000字符，建议 code 不超过24000字符。手动包 code 上限100000字符。不要把代码写进聊天正文；交 create_draft 后 validate_draft，报告“格式通过，可安装并启用”，不虚构实际运行成功。',
   },
   groupPlugin: {
     network: {

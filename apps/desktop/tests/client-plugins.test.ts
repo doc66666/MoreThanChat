@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { ClientPluginStore, clientPackageDigest } from '../src/main/client-plugins'
 import { ClientPluginLoader } from '../src/renderer/src/client-plugin-loader'
+import { ClientPluginController } from '../src/renderer/src/client-plugin-controller'
 import { parseExecutableClientPackage, UiSurfaceRegistry, type InstalledClientPackage } from '@more-than-chat/plugin-runtime'
 import { CordisPluginRuntime } from '@more-than-chat/runtime-cordis'
 
@@ -26,11 +27,22 @@ describe('trusted executable client packages', () => {
     const s = await store(), initial = pack(), next = pack('0.2.0')
     expect(await s.list()).toEqual([])
     await Promise.all([s.save({manifest: initial.manifest, program: initial.program}), s.save({manifest: next.manifest, program: next.program})])
-    expect(await s.list()).toEqual([next])
+    expect(await s.list()).toEqual([{...next, enabled: false}])
     expect(clientPackageDigest(next)).toBe(next.digest)
     const text = await readFile(path.join(s.directory, 'installed.json'), 'utf8')
-    expect(text).not.toContain('enabled')
-    expect(await new ClientPluginStore(path.dirname(s.directory)).list()).toEqual([next])
+    expect(JSON.parse(text)[0].enabled).toBe(false)
+    expect(await new ClientPluginStore(path.dirname(s.directory)).list()).toEqual([{...next, enabled: false}])
+  })
+  it('persists enabled choices, migrates old catalogs, and disables without deleting source', async () => {
+    const s = await store(), p = pack()
+    await s.save({manifest: p.manifest, program: p.program}, true)
+    expect((await new ClientPluginStore(path.dirname(s.directory)).list())[0]?.enabled).toBe(true)
+    await s.save({manifest: p.manifest, program: p.program})
+    expect((await s.list())[0]?.enabled).toBe(true)
+    await s.disableAll()
+    expect(await s.list()).toEqual([{...p, enabled: false}])
+    await writeFile(path.join(s.directory, 'installed.json'), JSON.stringify([p]))
+    expect(await s.list()).toEqual([{...p, enabled: false}])
   })
   it('detects disk tampering and does not silently overwrite a damaged catalog', async () => {
     const s = await store(), p = pack()
@@ -88,5 +100,73 @@ describe('trusted executable client packages', () => {
     await expect(loader.enable(pack())).rejects.toThrow('占用')
     expect(runtime.list()[0]?.trust).toBe('builtin')
     await runtime.close()
+  })
+})
+
+describe('client plugin selection and hot update transaction', () => {
+  async function fixture() {
+    const s = await store(), surfaces = new UiSurfaceRegistry()
+    const runtime = new CordisPluginRuntime({target: 'pc-ui', services: {'ui.surfaces': surfaces}})
+    const load = vi.fn(async (code: string) => ({default: (ctx: any) => {
+      ctx.contribute(surfaces, {id: 'root', surface: 'root', render: () => code})
+      if (code === 'broken') throw new Error('activation failed')
+    }}))
+    const loader = new ClientPluginLoader(runtime, {}, load)
+    const bridge = {getClientPlugins: () => s.list(), saveClientPlugin: vi.fn((p: InstalledClientPackage, enabled: boolean) => s.save({manifest: p.manifest, program: p.program}, enabled))}
+    const controller = new ClientPluginController(loader, bridge, vi.fn())
+    return {s, surfaces, runtime, loader, bridge, controller, load}
+  }
+  it('installs once, restores enabled plugins once on startup, and remembers disable', async () => {
+    const f = await fixture(), p = pack()
+    await f.controller.apply(p)
+    expect((await f.s.list())[0]?.enabled).toBe(true)
+    await f.loader.remove(p.manifest.id)
+    f.load.mockClear()
+    await Promise.all([f.controller.start(), f.controller.start()])
+    expect(f.load).toHaveBeenCalledTimes(1)
+    expect(f.loader.isActive(p.manifest.id)).toBe(true)
+    await f.controller.disable(p)
+    expect((await f.s.list())[0]?.enabled).toBe(false)
+    expect(f.surfaces.list()).toHaveLength(0)
+    await f.runtime.close()
+  })
+  it('failed hot updates preserve both the running and next-start version', async () => {
+    const f = await fixture(), good = pack('0.2.0', 'good'), bad = pack('0.3.0', 'broken')
+    await f.controller.apply(good)
+    await expect(f.controller.apply(bad)).rejects.toThrow('activation failed')
+    expect(f.loader.current(good.manifest.id)?.digest).toBe(good.digest)
+    expect(await f.s.list()).toEqual([{...good, enabled: true}])
+    expect(f.surfaces.list()).toHaveLength(1)
+    await f.runtime.close()
+  })
+  it('rolls back the runtime on save failure and permits a later successful update', async () => {
+    const f = await fixture(), a = pack('0.1.0', 'a'), b = pack('0.2.0', 'b')
+    await f.controller.apply(a)
+    f.bridge.saveClientPlugin.mockRejectedValueOnce(new Error('disk full'))
+    await expect(f.controller.apply(b)).rejects.toThrow('disk full')
+    expect(f.loader.current(a.manifest.id)?.digest).toBe(a.digest)
+    expect((await f.s.list())[0]?.digest).toBe(a.digest)
+    await f.controller.apply(b)
+    expect((await f.s.list())[0]?.digest).toBe(b.digest)
+    expect(f.surfaces.list()).toHaveLength(1)
+    await f.runtime.close()
+  })
+  it('removes an uncommitted first install if saving fails', async () => {
+    const f = await fixture()
+    f.bridge.saveClientPlugin.mockRejectedValueOnce(new Error('disk full'))
+    await expect(f.controller.apply(pack())).rejects.toThrow('disk full')
+    expect(f.runtime.list()).toHaveLength(0)
+    expect(await f.s.list()).toEqual([])
+    await f.runtime.close()
+  })
+  it('a broken startup plugin does not prevent later plugins or the default UI from loading', async () => {
+    const f = await fixture(), bad = pack('0.1.0', 'broken'), good = pack('0.2.0', 'good')
+    good.manifest.id = 'test.second'; good.digest = clientPackageDigest(good)
+    await f.s.save({manifest: bad.manifest, program: bad.program}, true)
+    await f.s.save({manifest: good.manifest, program: good.program}, true)
+    await f.controller.start()
+    expect(f.controller.errors.get(bad.manifest.id)).toContain('activation failed')
+    expect(f.loader.isActive(good.manifest.id)).toBe(true)
+    await f.runtime.close()
   })
 })

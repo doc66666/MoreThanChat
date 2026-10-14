@@ -1892,7 +1892,6 @@ function PluginPanel({
 }) {
   const [manifestJson, setManifestJson] = useState('')
   const [source, setSource] = useState('')
-  const [confirmId, setConfirmId] = useState<string | null>(null)
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside
@@ -1991,7 +1990,7 @@ function PluginPanel({
           </div>
           <p className="settings-note">
             让 More AI
-            为你创建文本动作、完整界面或实时群插件。可执行界面需确认完整客户端信任；声明式群插件仍须提交审批、成员自主载入。
+            为你创建文本动作、完整界面或实时群插件。界面插件安装后直接启用；群插件仍须提交审批、成员自主载入。
           </p>
           {(drafts?.drafts ?? []).map((item) => {
             const installed = hostPlugins.some(
@@ -2021,38 +2020,7 @@ function PluginPanel({
                   >
                     诊断
                   </button>
-                  {item.distribution==='local-client' ? <InstallClientDraft draft={item}/> : item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : confirmId === item.id ? (
-                    <div className="draft-confirm" data-draft-confirm={item.id}>
-                      <p>
-                        {installed
-                          ? '确认用这份草稿更新？失败会保留当前版本。源码不会被执行。'
-                          : '确认安装这个声明式文本工具或输入框动作？源码不会被执行。'}
-                      </p>
-                      <div className="draft-actions">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          data-draft-confirm-cancel
-                          disabled={hostBusy}
-                          onClick={() => setConfirmId(null)}
-                        >
-                          取消
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          data-draft-confirm-ok
-                          disabled={hostBusy}
-                          onClick={() => {
-                            setConfirmId(null)
-                            onInstallDraft(item.id)
-                          }}
-                        >
-                          {installed ? '确认更新' : '确认安装'}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
+                  {item.distribution==='local-client' ? <InstallClientDraft draft={item}/> : item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : (
                     <button
                       type="button"
                       className="secondary-button"
@@ -2060,7 +2028,7 @@ function PluginPanel({
                         ? { 'data-draft-update': 'true' }
                         : { 'data-draft-install': 'true' })}
                       disabled={hostBusy}
-                      onClick={() => setConfirmId(item.id)}
+                      onClick={() => onInstallDraft(item.id)}
                     >
                       {installed ? '更新' : '安装'}
                     </button>
@@ -2105,10 +2073,10 @@ function PluginPanel({
         </section>
         <div className="plugin-empty">
           <PlugZap />
-          <h3>可信插件模式</h3>
+          <h3>插件扩展</h3>
           <p>
-            可执行界面经原生信任确认后由 Cordis 管理生命周期，可以替换完整桌面。
-            它不是恶意代码沙箱；第三方 Node 后台代码尚未开放。声明式群插件仍保持受限执行。
+            界面插件由 Cordis 管理启停和热更新，可以替换完整桌面。
+            第三方 Node 后台代码尚未开放；群插件使用独立的审批与分发流程。
           </p>
         </div>
       </aside>
