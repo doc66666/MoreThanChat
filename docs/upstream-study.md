@@ -1,6 +1,19 @@
 # DeepSeek Harness / Cordis 调研记录
 
-更新日期：2026-09-02。
+更新日期：2026-10-14。
+
+## 2026-10-14：按最新上游纠正插件目标
+
+已 fetch `deepseek-ai/deepseek-harness` 的 `origin/master`，核对提交 `d743267388641bc76f17c45ce8b4c231aed1d32c`（0.2.1-alpha.2）。以下旧快照仍保留供追溯，不再代表上游当前能力。研究目录工作树没有切换；最新文件通过 `git show origin/master:<path>` 读取。
+
+- 最新 [`tool-cordis`](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/extensions/tool-cordis/README.zh.md) 主要提供只读 API 检查，创造模式配合 Plugin Manager 和随附技能编写、安装插件；不是旧快照的七个临时工具方案。
+- [`Plugin Manager`](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/boot/plugin-manager/README.zh.md) 管理 profile 中持久化组合包、启停和配置；支持本地路径与包来源，Host 代码在宿主进程执行，依赖构建脚本须单独授权。符合 Cordis 生命周期不等于恶意代码沙箱。
+- [`Slots`](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/docs/subsystems/slots.zh.md) 以唯一内建 root、插件声明的后代、替换优先级和生命周期构成整棵界面，不是固定九个可添加挂件的位置。Host/Client API 仍属于各自宿主，不能宣称任意 Harness 插件无需适配即可在 MoreThanChat 运行。
+- MoreThanChat 的目标因此明确为：可执行 Host/Client 插件包、运行时能力查询、可替换默认界面和插件自定义子区域、用户同意的本地加载、热切换／回退与宿主恢复。旧 JSON 群插件是兼容的一种形式，不是永久能力上限。
+
+本次先实现 `ui.surfaces` 的 root 替换／包装、任意命名子区域、优先级恢复和递归保护，并让 PC UI 使用现有 Cordis 生命周期适配器。测试验证完整根视图替换及卸载恢复，但尚未接通用户磁盘可执行包安装、AI 写入该包、群审批分发和独立进程恢复。不能把这个组合层称作上述完整闭环，也不能把它宣称为 Harness 包格式或 API 的直接兼容层。
+
+用户确认的非目标：不提供业务数据托管、自动备份、自动插件数据迁移或客户端自动更新。已存在的手动备份保留为可选功能，不是发行前置条件。离线转发暂存与通信所需的旧协议状态不等于业务备份；不为调整路线删除现有用户数据。远程连接维持标准 HTTPS/TLS 与现有身份认证，不自创简单加密算法，不把 TLS 宣称为端到端加密。installer 和 zip 应在完整插件链路及传输扩容完成后提供，用户自行从 GitHub 下载更新。
 
 实现基线补充（2026-10-07）：应用目前使用 `@cordisjs/core 3.18.1` 的固定 npm 产物，来源提交 `4658414e9414464ff1d08d076882fb66c1a3bb1c`；下表的 4.0 RC 是研究快照。为遵循稳定优先原则，4.0 的 Fiber API 没有进入插件 ABI，实际适配层使用 3.18.1 的 Scope 并自行保持失败回滚/清理重试契约。详见 [Cordis 适配与 CI 基线](runtime-cordis.md)。
 

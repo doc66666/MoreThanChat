@@ -74,7 +74,7 @@ import {
   startBundledPlugins,
   transportRegistry,
 } from './plugin-host'
-import { uiSlotRegistry } from './plugin-host'
+import { uiSlotRegistry, uiSurfaceRegistry } from './plugin-host'
 import type { UiSlotContribution } from '@more-than-chat/plugin-runtime'
 import type {
   AttachmentRef,
@@ -93,6 +93,7 @@ import { shouldSendOnEnter } from './composer-input'
 import { ChatComposer } from './ChatComposer'
 import { MessageAttachment } from './MessageAttachment'
 import { UiSlot } from './UiSlot'
+import { UiSurface } from './UiSurface'
 import { MessageMarkdown } from './MessageMarkdown'
 import { AppearancePicker } from './AppearancePicker'
 import { DesktopSettings } from './DesktopSettings'
@@ -117,6 +118,13 @@ function initials(value: string): string {
 
 export function App() {
   const appearance = useAppearance()
+  const [customRoot, setCustomRoot] = useState(() => Boolean(uiSurfaceRegistry.resolve('root')))
+  useLayoutEffect(() => {
+    const sync = () => setCustomRoot(Boolean(uiSurfaceRegistry.resolve('root')))
+    const dispose = uiSurfaceRegistry.subscribe(sync)
+    sync()
+    return () => { void dispose() }
+  }, [])
   const [state, setState] = useState<ChatState | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [serverState, setServerState] = useState<ServerSnapshot | null>(null)
@@ -475,7 +483,7 @@ export function App() {
   },[active?.id,chatDraft.quoteMessageId,historyRevision])
   const historic=historyWindow?.conversationId===active?.id ? historyWindow : null
   const visibleMessages=historic?.messages ?? messages
-  const reading = useChatReading(active?.id,visibleMessages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(historyFailure) || Boolean(forwardDialog) || Boolean(retractConfirm))
+  const reading = useChatReading(active?.id,visibleMessages,customRoot || showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(historyFailure) || Boolean(forwardDialog) || Boolean(retractConfirm))
   useLayoutEffect(()=>{
     if(!highlightMessage)return
     reading.pauseReading()
@@ -1112,6 +1120,7 @@ export function App() {
   }
 
   return (
+    <UiSurface registry={uiSurfaceRegistry} name="root" context={{ ...slotContext, messages: visibleMessages, conversations: readyState.conversations, selectConversation }}>
     <div className={`app-shell ${showDetails ? '' : 'details-collapsed'}`}>
       <div className="window-drag-region">
         <span className="window-title">
@@ -1609,6 +1618,7 @@ export function App() {
         </div>
       )}
     </div>
+    </UiSurface>
   )
 }
 

@@ -25,6 +25,7 @@ import {
   createMessageReference,
   messageContentDescriptor,
   RETRACTION_WINDOW_MS,
+  MAX_GROUP_MEMBERS,
 } from '@more-than-chat/central-protocol'
 
 class ApiError extends Error {
@@ -459,7 +460,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       if (!isControlRequest(request.method, route) && lifecycle.activeRequests > 224)
         fail(429, '服务器请求繁忙，请稍后重试')
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1'] })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1'] })
       if ((route === '/v1/admin/access' && request.method === 'POST') || (route === '/v1/admin/status' && request.method === 'GET')) {
         const received = Buffer.from(
             (request.headers.authorization ?? '').replace(/^Bearer /, ''),
@@ -584,6 +585,11 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       const deviceId=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.deviceId
       const supportsActions=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('message-actions-v1')??false
       const supportsGroupPrograms=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('group-program-v1')??false
+      const supportsLargeGroups=sessions.get((request.headers.authorization??'').replace(/^Bearer /,''))?.features?.includes('large-groups-v1')??false
+      if (!supportsLargeGroups && ['/v1/events','/v1/messages','/v1/directory'].includes(route)
+        && db.prepare('SELECT 1 FROM members mine WHERE mine.user_id=? AND (SELECT COUNT(*) FROM members all_members WHERE all_members.group_id=mine.group_id)>20 LIMIT 1').get(uid)) {
+        fail(409, '此身份已加入超过 20 人的群，请从项目仓库手动升级客户端；待收消息仍保留')
+      }
       if (route === '/v1/devices' && request.method === 'GET') return json(response,200,{devices:delivery.list(uid,deviceId)})
       if (route === '/v1/devices/remove' && request.method === 'POST') {
         const data=await body(request)
@@ -655,12 +661,12 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         if (
           !Array.isArray(data.memberIds) ||
           data.memberIds.length < 1 ||
-          data.memberIds.length > 19 ||
+          data.memberIds.length >= (supportsLargeGroups ? MAX_GROUP_MEMBERS : 20) ||
           data.memberIds.some(
             (id) => !validUid(id) || !isFriend(uid, id) || !allowed(id),
           )
         )
-          fail(400, '群成员必须是当前服务器的好友，群最多 20 人')
+          fail(400, `群成员必须是当前服务器的好友，群最多 ${MAX_GROUP_MEMBERS} 人`)
         const groupId = 'grp_' + randomUUID(),
           recipients = [...new Set([uid, ...data.memberIds])]
         for (const id of recipients) ensureGroupCapacity(id)
@@ -749,7 +755,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
             )
             .get(data.groupId, data.userId) ||
           !allowed(data.userId) ||
-          groupUsers(data.groupId).length >= 20
+          groupUsers(data.groupId).length >= MAX_GROUP_MEMBERS
         )
           fail(403, '无效入群申请')
         notify(() => groupUsers(data.groupId), () => {
@@ -771,7 +777,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           !validUid(data.userId) ||
           !isFriend(uid, data.userId) ||
           !allowed(data.userId) ||
-          groupUsers(data.groupId).length >= 20
+          groupUsers(data.groupId).length >= MAX_GROUP_MEMBERS
         )
           fail(403, '无法邀请该用户')
         notify(() => groupUsers(data.groupId), () => db.prepare('INSERT OR IGNORE INTO members VALUES (?,?)').run(

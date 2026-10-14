@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { parseDirectory, parseGroupPluginPack, parseRelayEvent,parseMessageReference,parseMessageRetraction } from '../src'
+import { MAX_GROUP_MEMBERS, parseMessageReceipt, parseDirectory, parseGroupPluginPack, parseRelayEvent,parseMessageReference,parseMessageRetraction } from '../src'
 const uid = 'usr_' + 'a'.repeat(64),
   groupId = 'grp_11111111-1111-4111-8111-111111111111',
   pluginId = 'gplugin_22222222-2222-4222-8222-222222222222'
 describe('central wire boundary', () => {
+  it('accepts expanded group receipts without weakening count ordering or the bound', () => {
+    const receipt = { messageId:'33333333-3333-4333-8333-333333333333', clientMessageId:'client', acceptedAt:1,
+      recipientCount:MAX_GROUP_MEMBERS-1, deliveredCount:200, readCount:100 }
+    expect(parseMessageReceipt(receipt)).toEqual(receipt)
+    for (const bad of [{recipientCount:MAX_GROUP_MEMBERS}, {readCount:201}, {deliveredCount:MAX_GROUP_MEMBERS}, {readCount:-1}]) {
+      expect(() => parseMessageReceipt({...receipt,...bad})).toThrow()
+    }
+  })
   it('accepts legacy events and validates/canonicalizes optional server trace metadata', () => {
     const e={id:'33333333-3333-4333-8333-333333333333',kind:'plugin',groupId,pluginId,channel:'state',payload:{}}
     expect(parseRelayEvent(e)).not.toHaveProperty('trace')

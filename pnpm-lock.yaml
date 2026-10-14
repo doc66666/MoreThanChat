@@ -42,6 +42,9 @@ importers:
       '@more-than-chat/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@more-than-chat/runtime-cordis':
+        specifier: workspace:*
+        version: link:../../packages/runtime-cordis
       lucide-react:
         specifier: 1.39.0
         version: 1.39.0(react@19.2.8)

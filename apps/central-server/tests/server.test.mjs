@@ -4,7 +4,7 @@ import path from 'node:path'
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCentralServer, publicUserId } from '../src/server.mjs'
-import { createMessageReference } from '@more-than-chat/central-protocol'
+import { createMessageReference, MAX_GROUP_MEMBERS, parseDirectory, parseMessageReceipt } from '@more-than-chat/central-protocol'
 import { groupGameArtifact } from '../../../scripts/fixtures/group-game.mjs'
 const fixtures = []
 afterEach(async () => {
@@ -75,6 +75,46 @@ async function befriend(f, a, b) {
 }
 
 describe('central relay contracts', () => {
+  it('delivers 256-member group messages with full receipt counts and preserves old-client pending delivery', async () => {
+    const f = await fixture()
+    const features = ['message-actions-v1', 'group-program-v1', 'large-groups-v1']
+    const a = await login(f, identity(), 'Owner', features)
+    const b = await login(f, identity(), 'Reader', features)
+    const old = await login(f, b, 'Old client')
+    const members = [b.userId]
+    f.app.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (let n = 0; n < MAX_GROUP_MEMBERS - 1; n++) {
+        const id = 'usr_' + n.toString(16).padStart(64, '0')
+        f.app.db.prepare('INSERT INTO users VALUES (?,?,?)').run(id, 'fixture-public-key', `Member ${n}`)
+        members.push(id)
+      }
+      for (const id of members) f.app.db.prepare('INSERT INTO friends VALUES (?,?,?,?)').run(...[a.userId, id].sort(), 'accepted', a.userId)
+      f.app.db.exec('COMMIT')
+    } catch (error) { f.app.db.exec('ROLLBACK'); throw error }
+    const tooMany = await request(f, 'groups', a.token, { name: 'Too large', memberIds: members })
+    expect(tooMany.status).toBe(400)
+    const group = await request(f, 'groups', a.token, { name: 'Expanded', memberIds: members.slice(0, MAX_GROUP_MEMBERS - 1) })
+    expect(group.status).toBe(200)
+    const groupId = group.data.groupId
+    expect(f.app.db.prepare('SELECT COUNT(*) AS count FROM members WHERE group_id=?').get(groupId).count).toBe(MAX_GROUP_MEMBERS)
+    expect((await request(f, 'groups/invite', a.token, { groupId, userId: members.at(-1) })).status).toBe(403)
+    const sent = await request(f, 'messages', a.token, { clientMessageId: randomUUID(), targetKind: 'group', targetId: groupId, text: 'expanded group message' })
+    expect(sent.status).toBe(200)
+    expect(f.app.db.prepare('SELECT COUNT(*) AS count FROM queue WHERE id=?').get(sent.data.messageId).count).toBe(MAX_GROUP_MEMBERS - 1)
+    const blocked = await request(f, 'events', old.token)
+    expect(blocked.status).toBe(409)
+    expect(JSON.stringify(blocked.data)).toContain('手动升级')
+    expect(f.app.db.prepare('SELECT 1 FROM queue WHERE id=? AND recipient=?').get(sent.data.messageId, b.userId)).toBeDefined()
+    const events = await request(f, 'events', b.token)
+    expect(parseDirectory(events.data.directory).groups.find(group => group.id === groupId).members).toHaveLength(MAX_GROUP_MEMBERS)
+    expect(events.data.events.some(event => event.id === sent.data.messageId)).toBe(true)
+    await request(f, 'ack', b.token, { ids: [sent.data.messageId] })
+    expect(f.app.db.prepare('SELECT COUNT(*) AS count FROM queue WHERE id=?').get(sent.data.messageId).count).toBe(MAX_GROUP_MEMBERS - 2)
+    const ownerEvents = await request(f, 'events', a.token)
+    const receipt = ownerEvents.data.events.find(event => event.receipt?.messageId === sent.data.messageId)?.receipt
+    expect(parseMessageReceipt(receipt)).toMatchObject({ recipientCount: MAX_GROUP_MEMBERS - 1, deliveredCount: 1, readCount: 0 })
+  })
   it('distributes complete authored artifacts only after approval and enforces identity, versions, atomic state and reconnect',async()=>{
     const f=await fixture(),a=await login(f,identity(),'Admin'),b=await login(f,identity(),'Author'),cKey=identity(),c=await login(f,cKey,'Player'),outsider=await login(f,identity(),'Outsider')
     await befriend(f,a,b);await befriend(f,a,c)

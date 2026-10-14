@@ -3,6 +3,7 @@ export * from './group-program.js'
 export * from './group-program-diagnostics.js'
 export const CENTRAL_PROTOCOL_VERSION = 1
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+export const MAX_GROUP_MEMBERS = 256
 export const UI_SLOTS = [
   'app.sidebar',
   'app.rail',
@@ -240,7 +241,7 @@ export function parseDirectory(value: unknown): Directory {
     const g = record(value)
     if (!validGroupId(g.id) || !validUid(g.ownerId))
       throw new Error('Invalid group')
-    const members = list(g.members, 20).map(member)
+    const members = list(g.members, MAX_GROUP_MEMBERS).map(member)
     if (!members.some((m) => m.id === g.ownerId))
       throw new Error('Invalid group owner')
     return {
@@ -412,7 +413,7 @@ export function parseMessageReceipt(value: unknown): MessageReceipt {
   if (typeof r.messageId !== 'string' || !/^[a-f0-9-]{36}$/.test(r.messageId)
     || typeof r.clientMessageId !== 'string' || !r.clientMessageId || r.clientMessageId.length > 80
     || !Number.isSafeInteger(r.acceptedAt) || Number(r.acceptedAt) < 0
-    || ![r.recipientCount, r.deliveredCount, r.readCount].every(n => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= 19)
+    || ![r.recipientCount, r.deliveredCount, r.readCount].every(n => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) < MAX_GROUP_MEMBERS)
     || Number(r.readCount) > Number(r.deliveredCount) || Number(r.deliveredCount) > Number(r.recipientCount)) throw new Error('Invalid message receipt')
   return { messageId: r.messageId, clientMessageId: r.clientMessageId, acceptedAt: Number(r.acceptedAt), recipientCount: Number(r.recipientCount), deliveredCount: Number(r.deliveredCount), readCount: Number(r.readCount),...(r.actionsSupported===undefined?{}:{actionsSupported:parseBoolean(r.actionsSupported)}),...(r.senderName===undefined?{}:{senderName:boundedText(r.senderName,80)}) }
 }

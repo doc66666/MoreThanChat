@@ -1,5 +1,13 @@
 # 插件运行时与第一个示例
 
+## 2026-10-14 可执行界面组合层
+
+PC UI 现使用 `CordisPluginRuntime`，除旧 `ui.slots` 外增加 `ui.surfaces` 服务（`UiSurfaceRegistry`）。可执行插件通过 `context.contribute(registry, {id, surface:'root', priority, render})` 替换整个默认桌面，而非只能附加九个挂件。`render` 接收 `context`、`defaultView` 和 `renderSurface(name, context?, fallback?)`，可以包装默认界面、完全替换界面或渲染任意命名的子区域。数值较小的 priority 获选，同优先级按注册先后；卸载获选贡献后恢复先前贡献或默认视图。
+
+`root` 的 context 当前提供当前会话／消息／草稿／资料、会话列表、选择会话、修改草稿、发送和中心快照。App 的状态与通信 hooks 保持运行，替换的是返回的视图。有自定义 root 时暂停默认视图的自动已读，避免插件未展示消息却被标记已读；插件视图可见性与已读 SDK 留待完整包阶段接入。render 异常通过 React boundary 返回该区域默认视图；循环区域或超过 32 层的组合返回 fallback。相同贡献 ID 的重新注册使用新实例标识，避免热换后沿用旧错误状态。激活失败与停用由 Cordis/effect 清理注册；没有安装替换模块时视觉结构保持原样。
+
+这些是可信 React/JS 模块的组合 API，不是安全沙箱：死循环、任意 DOM 操作、直接修改共享引用仍不能靠 React boundary 或 Cordis 防御。用户级可执行包读取／安装、AI 创作这种包、隔离执行与不可替换的主进程恢复入口尚未完成；暂不把这项能力加入 AI 可调用工具。旧群 JSON 程序仍使用原审批协议与九个位置，后续另接可执行包通道，不把旧包暗中升级为可执行代码。
+
 当前实现完成了可信插件的第一条真实闭环：独立插件包通过版本化 manifest 进入 catalog，应用在运行时动态加载模块，执行 `activate()`，收集其贡献，并可在不重启应用的情况下停用和再次启用。
 
 ## 已实现

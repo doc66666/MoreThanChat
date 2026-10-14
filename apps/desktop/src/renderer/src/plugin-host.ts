@@ -5,13 +5,15 @@ import {
 import { helloWorldManifest } from '@more-than-chat/plugin-hello-world/manifest'
 import {
   ContributionRegistry,
-  PluginRuntime,
+  UiSurfaceRegistry,
+  uiSurfacesServiceId,
   composerActionsServiceId,
   type ComposerAction,
   type PluginSource,
   uiSlotsServiceId,
   type UiSlotContribution,
 } from '@more-than-chat/plugin-runtime'
+import { CordisPluginRuntime } from '@more-than-chat/runtime-cordis'
 import {
   localTransportManifest,
   localTransportRuntimePlugin,
@@ -25,6 +27,7 @@ import { slotDemoManifest, slotDemoPlugin } from './slot-demo'
 export const transportRegistry = new TransportRegistry()
 export const composerActionRegistry = new ContributionRegistry<ComposerAction>()
 export const uiSlotRegistry = new ContributionRegistry<UiSlotContribution>()
+export const uiSurfaceRegistry = new UiSurfaceRegistry()
 /** Narrow group transport shared by trusted UI plugins and the data-only runtime. */
 export const chatNetworkService = {
   forPlugin: (pluginId: string) => ({
@@ -37,12 +40,13 @@ export const chatNetworkService = {
       }),
   }),
 }
-export const pluginRuntime = new PluginRuntime({
+export const pluginRuntime = new CordisPluginRuntime({
   target: 'pc-ui',
   services: {
     [chatTransportsServiceId]: transportRegistry,
     [composerActionsServiceId]: composerActionRegistry,
     [uiSlotsServiceId]: uiSlotRegistry,
+    [uiSurfacesServiceId]: uiSurfaceRegistry,
     'chat.network': chatNetworkService,
   },
 })

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { validGroupId } from '@more-than-chat/central-protocol'
+import { MAX_GROUP_MEMBERS, validGroupId } from '@more-than-chat/central-protocol'
 import { slotLabels } from './group-plugin-presentation'
 import { friendRequestIssue, selectedCurrentFriends } from './network-form'
 import { useDialogFocus } from './use-dialog-focus'
@@ -231,7 +231,7 @@ export function NetworkPanel({
             <input
               type="checkbox"
               checked={selectedMembers.includes(user.id)}
-              disabled={disabled||(!selectedMembers.includes(user.id)&&selectedMembers.length>=19)}
+              disabled={disabled||(!selectedMembers.includes(user.id)&&selectedMembers.length>=MAX_GROUP_MEMBERS-1)}
               onChange={(e) =>
                 setMembers((value) =>
                   e.target.checked
@@ -246,14 +246,14 @@ export function NetworkPanel({
         <button
           className="secondary-button"
           data-create-group
-          disabled={disabled || !groupName.trim() || !selectedMembers.length || selectedMembers.length>19}
+          disabled={disabled || !groupName.trim() || !selectedMembers.length || selectedMembers.length>=MAX_GROUP_MEMBERS}
           onClick={() =>
             void action('groups', { name: groupName.trim(), memberIds: selectedMembers },'群聊已创建，可在下方打开').then(ok=>{if(ok){setGroupName('');setMembers([])}})
           }
         >
           创建群
         </button>
-        <p className="settings-note">已选 {selectedMembers.length} 位好友；至少选 1 位，最多 19 位，加上你共 20 人。</p>
+        <p className="settings-note">已选 {selectedMembers.length} 位好友；至少选 1 位，最多 {MAX_GROUP_MEMBERS-1} 位，加上你共 {MAX_GROUP_MEMBERS} 人。</p>
         <h3>本服群聊</h3>
         {(directory?.groups ?? []).map((group) => (
           <button

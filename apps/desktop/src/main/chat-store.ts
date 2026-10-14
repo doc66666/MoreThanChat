@@ -5,7 +5,7 @@ import path from 'node:path'
 import { backup, DatabaseSync } from 'node:sqlite'
 import { redactSecretFields } from './secret-redaction'
 import { parseModelTokenUsage } from '@more-than-chat/protocol'
-import { parseMessageReference, parseMessageRetraction, validGroupId, validUid, type MessageRetraction } from '@more-than-chat/central-protocol'
+import { MAX_GROUP_MEMBERS, parseMessageReference, parseMessageRetraction, validGroupId, validUid, type MessageRetraction } from '@more-than-chat/central-protocol'
 
 type RecordValue = Record<string, unknown>
 export type HistoryRecord = { type: 'conversation'; value: RecordValue } | { type: 'message'; value: RecordValue } | { type: 'retraction'; serverId: string; value: MessageRetraction }
@@ -802,7 +802,7 @@ function validateSnapshot(value: unknown): Snapshot {
         throw new Error('Invalid message.')
       if (item.receipt !== undefined) {
         const receipt = object(item.receipt)
-        if (![receipt.recipientCount,receipt.deliveredCount,receipt.readCount].every(n => Number.isSafeInteger(n) && Number(n)>=0 && Number(n)<=19) || Number(receipt.readCount)>Number(receipt.deliveredCount) || Number(receipt.deliveredCount)>Number(receipt.recipientCount)) throw new Error('Invalid receipt')
+        if (![receipt.recipientCount,receipt.deliveredCount,receipt.readCount].every(n => Number.isSafeInteger(n) && Number(n)>=0 && Number(n)<MAX_GROUP_MEMBERS) || Number(receipt.readCount)>Number(receipt.deliveredCount) || Number(receipt.deliveredCount)>Number(receipt.recipientCount)) throw new Error('Invalid receipt')
       }
       if (item.readAt !== undefined && (!Number.isSafeInteger(item.readAt) || Number(item.readAt)<0)) throw new Error('Invalid read timestamp')
       if(item.retractedAt!==undefined&&(!Number.isSafeInteger(item.retractedAt)||Number(item.retractedAt)<0))throw new Error('Invalid retraction timestamp')

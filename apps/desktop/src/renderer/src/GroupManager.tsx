@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Directory, Group } from '@more-than-chat/central-protocol'
+import { MAX_GROUP_MEMBERS } from '@more-than-chat/central-protocol'
 export function GroupManager({group,directory,userId,connected}:{group:Group;directory:Directory;userId:string;connected:boolean}) {
   const [name,setName]=useState(group.name),[invite,setInvite]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('')
   const [confirmation,setConfirmation]=useState<{route:string;data:unknown;label:string}|null>(null)
@@ -30,9 +31,9 @@ export function GroupManager({group,directory,userId,connected}:{group:Group;dir
     {owner&&<>
       <label className="settings-field"><span>群名称</span><input data-rename-group-field disabled={disabled} maxLength={80} value={name} onChange={e=>setName(e.target.value)}/></label>
       <button className="secondary-button" data-rename-group disabled={disabled||!name.trim()||name.trim()===group.name} onClick={()=>void action('groups/rename',{groupId:group.id,name:name.trim()},'群名称已更新')}>修改群名称</button>
-      <label className="settings-field"><span>邀请好友</span><select data-invite-group disabled={disabled||group.members.length>=20} value={selectedInvite} onChange={e=>setInvite(e.target.value)}><option value="">选择本服好友</option>{available.map(friend=><option key={friend.id} value={friend.id}>{friend.displayName}</option>)}</select></label>
-      <button className="secondary-button" data-invite-group-confirm disabled={disabled||!selectedInvite||group.members.length>=20} onClick={()=>void action('groups/invite',{groupId:group.id,userId:selectedInvite},'好友已加入群聊')}>邀请加入群聊</button>
-      {(group.members.length>=20||!available.length)&&<p className="settings-note">{group.members.length>=20?'群成员已达 20 人上限。':'没有可邀请的本服好友，已有好友都在群内，或尚未添加好友。'}</p>}
+      <label className="settings-field"><span>邀请好友</span><select data-invite-group disabled={disabled||group.members.length>=MAX_GROUP_MEMBERS} value={selectedInvite} onChange={e=>setInvite(e.target.value)}><option value="">选择本服好友</option>{available.map(friend=><option key={friend.id} value={friend.id}>{friend.displayName}</option>)}</select></label>
+      <button className="secondary-button" data-invite-group-confirm disabled={disabled||!selectedInvite||group.members.length>=MAX_GROUP_MEMBERS} onClick={()=>void action('groups/invite',{groupId:group.id,userId:selectedInvite},'好友已加入群聊')}>邀请加入群聊</button>
+      {(group.members.length>=MAX_GROUP_MEMBERS||!available.length)&&<p className="settings-note">{group.members.length>=MAX_GROUP_MEMBERS?`群成员已达 ${MAX_GROUP_MEMBERS} 人上限。`:'没有可邀请的本服好友，已有好友都在群内，或尚未添加好友。'}</p>}
     </>}
     <button className="secondary-button danger-text" disabled={disabled} data-leave-group={!owner?'true':undefined} data-dissolve-group={owner?'true':undefined} onClick={()=>confirm(owner?'groups/dissolve':'groups/leave',owner?'解散 '+group.name:'退出 '+group.name)}>{owner?'解散群聊':'退出群聊'}</button>
     {confirmation&&<div className="danger-confirm"><p>确认{confirmation.label}？</p><small>{confirmation.route==='groups/transfer'?'转让后你将失去群管理和插件审批权限。':confirmation.route==='groups/dissolve'?'解散后所有成员都无法继续在此群聊天。':'此操作会改变群成员关系。'}已接收的聊天记录会保留在各自设备上。</small><div><button className="secondary-button" disabled={busy} onClick={()=>setConfirmation(null)}>取消</button><button className="primary-button" data-confirm-group-action disabled={disabled} onClick={()=>void action(confirmation.route,confirmation.data)}>确认</button></div></div>}

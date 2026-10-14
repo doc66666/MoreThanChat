@@ -411,6 +411,31 @@ export const composerActionsServiceId = 'ui.composer-actions'
 export const uiSlotsServiceId = 'ui.slots'
 /** Renderer-specific hosts decide how to render this generic, platform-neutral contribution. */
 export interface UiSlotContribution { readonly id:string; readonly slot:string; readonly order?:number; render(context:unknown):unknown }
+/** Executable UI composition, separate from the legacy data-only group placements. */
+export const uiSurfacesServiceId = 'ui.surfaces'
+export interface UiSurfaceInput {
+  readonly context: unknown
+  readonly defaultView: unknown
+  renderSurface(name: string, context?: unknown, fallback?: unknown): unknown
+}
+export interface UiSurfaceContribution {
+  readonly id: string
+  readonly surface: string
+  /** Lower priorities win. Equal priorities retain registration order. */
+  readonly priority?: number
+  render(input: UiSurfaceInput): unknown
+}
+export class UiSurfaceRegistry extends ContributionRegistry<UiSurfaceContribution> {
+  override register(ownerId: string, contribution: UiSurfaceContribution): PluginDisposer {
+    if (!/^[a-z][a-z0-9.-]{0,127}$/.test(contribution.surface)) throw new Error('Invalid UI surface name.')
+    if (typeof contribution.render !== 'function' || !Number.isFinite(contribution.priority ?? 0)) throw new Error('Invalid UI surface contribution.')
+    return super.register(ownerId, Object.freeze({ ...contribution }))
+  }
+  resolve(name: string): RegisteredContribution<UiSurfaceContribution> | undefined {
+    return this.list().filter(entry => entry.contribution.surface === name)
+      .sort((a, b) => (a.contribution.priority ?? 0) - (b.contribution.priority ?? 0))[0]
+  }
+}
 export const hostToolsServiceId = 'host.tools'
 
 /** Trusted host tool contract. Only serializable results cross the IPC boundary. */

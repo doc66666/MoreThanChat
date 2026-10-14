@@ -267,8 +267,8 @@ export class CentralClient {
       const challenge = await request('challenge', 'POST', {
         publicKey: this.identity.publicKey,
         displayName: this.#snapshot.displayName,
-        features:['message-actions-v1','group-program-v1'],
-        ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1','group-program-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
+        features:['message-actions-v1','group-program-v1','large-groups-v1'],
+        ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
       })
       if(epoch!==this.#epoch)throw new Error('连接已取消')
       const session = await request('session', 'POST', {
@@ -451,8 +451,8 @@ export class CentralClient {
             const challenge = await this.#request('challenge', 'POST', {
               publicKey: this.identity.publicKey,
               displayName: this.#snapshot.displayName,
-              features:['message-actions-v1','group-program-v1'],
-              ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1','group-program-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
+              features:['message-actions-v1','group-program-v1','large-groups-v1'],
+              ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
             })
             const session = await this.#request('session', 'POST', {
               challengeId: challenge.challengeId,
