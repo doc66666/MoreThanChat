@@ -26,7 +26,7 @@ describe('plugin author tool loop', () => {
     expect((await inspect({})).content).not.toContain('数组最多64项')
     expect(JSON.parse((await inspect({format:'legacy'})).content).contract.groupPlugin).toEqual(PLUGIN_AUTHOR_CONTRACT.groupPlugin)
     expect((await inspect({format:'unknown'})).notice.ok).toBe(false)
-    expect(AUTHOR_TOOL_DEFINITIONS[1].function.description).toContain('JavaScript')
+    expect(AUTHOR_TOOL_DEFINITIONS.find(t=>t.function.name==='create_draft')!.function.description).toContain('JavaScript')
   })
 
   it('wraps a 225-cell executable source without double JSON encoding or executing it', async () => {
@@ -79,17 +79,52 @@ describe('plugin author tool loop', () => {
     service.close()
   })
 
-  it('reserves a tools-disabled summary turn after twelve tool rounds',async()=>{
+  it('reserves a tools-disabled summary only after five consecutive failures',async()=>{
     let rounds=0,summaries=0
     const provider:ChatModelProvider={async stream(request,onDelta){
       if(request.toolsEnabled===false){summaries++;onDelta('本轮已结束，已保存的草稿可继续修订。');return {toolCalls:[]}}
-      rounds++;return {toolCalls:[{id:'inspect-'+rounds,name:'inspect_drafts',arguments:'{}'}]}
+      rounds++;return {toolCalls:[{id:'inspect-'+rounds,name:'validate_draft',arguments:'{"draftId":"missing"}'}]}
     }}
     const {service,events}=await createLoop(provider)
     service.start(startInput(),event=>events.push(event))
     await waitFor(()=>events.some(e=>e.event==='model.chat.completed'))
-    expect(rounds).toBe(12);expect(summaries).toBe(1)
+    expect(rounds).toBe(5);expect(summaries).toBe(1)
     expect(events.some(e=>e.event==='model.chat.failed')).toBe(false)
+    service.close()
+  })
+
+  it('resets the failure streak after success and continues past thirteen calls',async()=>{
+    let executed=0
+    const provider:ChatModelProvider={async stream(request,onDelta){
+      if(request.toolsEnabled===false){onDelta('连续失败，草稿保留');return {toolCalls:[]}}
+      executed++
+      return {toolCalls:[{id:'step-'+executed,name:executed<=20&&executed%5===0?'inspect_drafts':'validate_draft',arguments:executed<=20&&executed%5===0?'{}':'{"draftId":"missing"}'}]}
+    }}
+    const {service,events}=await createLoop(provider)
+    service.start(startInput(),event=>events.push(event))
+    await waitFor(()=>events.some(e=>e.event==='model.chat.completed'))
+    expect(executed).toBe(25)
+    expect(events.some(e=>e.event==='model.chat.failed')).toBe(false)
+    service.close()
+  })
+
+  it('does not truncate a successful multi-call batch and stops remaining work after five failures',async()=>{
+    let round=0
+    const provider:ChatModelProvider={async stream(request,onDelta){
+      round++
+      if(round===1)return {toolCalls:Array.from({length:8},(_,i)=>({id:'read-'+i,name:'inspect_drafts',arguments:'{}'}))}
+      if(round===2){
+        expect(request.messages.filter(m=>m.role==='tool')).toHaveLength(8)
+        return {toolCalls:[...Array.from({length:5},(_,i)=>({id:'fail-'+i,name:'validate_draft',arguments:'{"draftId":"missing"}'})),{id:'must-not-run',name:'create_draft',arguments:JSON.stringify({manifest:PLUGIN_AUTHOR_CONTRACT.executableClient.manifestExample,code:'export default function(){}'})}]}
+      }
+      expect(request.toolsEnabled).toBe(false)
+      expect(request.messages.filter(m=>m.role==='tool')).toHaveLength(14)
+      onDelta('连续失败，停止执行余下调用');return {toolCalls:[]}
+    }}
+    const {service,events,drafts}=await createLoop(provider)
+    service.start(startInput(),event=>events.push(event))
+    await waitFor(()=>events.some(e=>e.event==='model.chat.completed'))
+    expect((await drafts.inspect()).drafts).toHaveLength(0)
     service.close()
   })
 
@@ -197,7 +232,7 @@ describe('plugin author tool loop', () => {
     expect(JSON.stringify([first, second])).not.toContain('原规则')
   })
 
-  it.each(['null', '[]', '{', '{"offset":-1}', '{"offset":1.5}', '{"offset":101}', '{"offset":null}',
+  it.each(['null', '[]', '{', '{"offset":-1}', '{"offset":1.5}', '{"offset":201}', '{"offset":null}',
     '{"path":"../secret"}', '{"draftId":"../secret"}', '{"draftId":"example.note","offset":0}'])('refuses invalid inspection arguments %s', async raw => {
     const drafts = new PluginDraftService({ dataDir: await tempDir(), installedPlugins: () => [] })
     const result = await createAuthorToolExecutor(drafts).execute({ id: 'bad', name: 'inspect_drafts', arguments: raw })
@@ -406,7 +441,7 @@ describe('plugin author tool loop', () => {
     expect(events.at(-1)).toMatchObject({ payload: { text: '草稿已检查' } })
     expect(JSON.stringify(events)).not.toContain(source)
     expect(JSON.stringify(events)).not.toContain(secret)
-    expect(bodies[0]?.tools?.map(tool => tool.function?.name)).toEqual(['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'])
+    expect(bodies[0]?.tools?.map(tool => tool.function?.name)).toEqual(['list_plugins','delete_draft','uninstall_plugin','inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'])
     const inspected = events.find(event => event.event === 'model.authorTool' && event.payload.phase === 'finished')
     expect(inspected?.payload).toMatchObject({ tool: 'inspect_drafts', ok: true, pendingInstall: false, draft: null })
     expect(inspected?.payload.summary).toContain('1')
@@ -416,17 +451,17 @@ describe('plugin author tool loop', () => {
     expect((globalThis as { __mtcAuthorToolRan?: boolean }).__mtcAuthorToolRan).toBeUndefined()
   })
 
-  it('stops after the tool-call limit without running draft source', async () => {
+  it('stops a failure loop even if the provider ignores disabled tools', async () => {
     const provider: ChatModelProvider = {
       async stream() {
-        return { toolCalls: [{ id: 'call-inspect', name: 'inspect_drafts', arguments: '{}' }] }
+        return { toolCalls: [{ id: 'call-inspect', name: 'validate_draft', arguments: '{"draftId":"missing"}' }] }
       },
     }
     const { service, events } = await createLoop(provider)
     service.start(startInput(), event => events.push(event))
     await waitFor(() => events.some(event => event.event === 'model.chat.failed'))
     expect(events.some(event => event.event === 'model.chat.completed')).toBe(false)
-    expect(JSON.stringify(events)).toContain('插件作者工具调用次数已达上限')
+    expect(JSON.stringify(events)).toContain('工具已连续失败5次')
     expect((globalThis as { __mtcAuthorToolRan?: boolean }).__mtcAuthorToolRan).toBeUndefined()
   })
 

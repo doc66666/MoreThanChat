@@ -821,6 +821,9 @@ function validateSnapshot(value: unknown): Snapshot {
               'validate_draft',
               'diagnose_draft',
               'install_draft',
+              'list_plugins',
+              'delete_draft',
+              'uninstall_plugin',
               'unknown',
             ].includes(String(note.tool)) ||
             typeof note.summary !== 'string' ||

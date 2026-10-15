@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { createHostRequest, safeParseHostMessage, type HostResponse } from '@more-than-chat/protocol'
+import { createHostRequest, safeParseHostMessage, type HostResponse, type PluginManagementRequest, type PluginManagementResult } from '@more-than-chat/protocol'
 
 export interface ModelCredentials {
   read(): Promise<string | null>
@@ -25,7 +25,7 @@ export class HostCredentialClient implements ModelCredentials {
     if (!pending) return false
     clearTimeout(pending.timer)
     this.#pending.delete(response.requestId)
-    if (response.method !== pending.method || !response.ok) pending.reject(new Error('Credential service is unavailable.'))
+    if (response.method !== pending.method || !response.ok) pending.reject(new Error(pending.method==='plugins.manage'&&!response.ok?response.error.message:'Credential service is unavailable.'))
     else pending.resolve(response)
     return true
   }
@@ -37,10 +37,16 @@ export class HostCredentialClient implements ModelCredentials {
   }
   async write(apiKey: string | null): Promise<void> { await this.#request('credentials.write', { apiKey }) }
 
-  #request(method: 'credentials.read' | 'credentials.write', payload: Record<string, never> | { apiKey: string | null }): Promise<HostResponse> {
+  async managePlugins(request: PluginManagementRequest): Promise<PluginManagementResult> {
+    const response = await this.#request('plugins.manage', request)
+    if (response.ok && response.method === 'plugins.manage') return response.payload
+    throw new Error('本机插件管理不可用')
+  }
+
+  #request(method: 'credentials.read' | 'credentials.write' | 'plugins.manage', payload: Record<string, never> | { apiKey: string | null } | PluginManagementRequest): Promise<HostResponse> {
     const id = randomUUID()
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.#pending.delete(id); reject(new Error('Credential service timed out.')) }, 3000)
+      const timer = setTimeout(() => { this.#pending.delete(id); reject(new Error('本机服务请求超时。')) }, method==='plugins.manage'?15000:3000)
       this.#pending.set(id, { method, resolve, reject, timer })
       try { this.send(createHostRequest(method, id, payload)) }
       catch { clearTimeout(timer); this.#pending.delete(id); reject(new Error('Credential service is unavailable.')) }

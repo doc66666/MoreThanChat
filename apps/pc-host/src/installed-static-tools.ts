@@ -70,6 +70,13 @@ export class InstalledStaticToolStore {
     }
   }
 
+  async remove(id: string, version: string): Promise<void> {
+    const record = await this.read(id)
+    if (!record || record.manifest.version !== version) throw new Error('已安装插件已变化，请刷新后重试')
+    // Immutable versions remain local; without the current record it is not restored.
+    await rm(this.#file(id))
+  }
+
   /** Writes an immutable version file, then the current record. */
   async save(record: StoredStaticTool): Promise<void> {
     const stored = requireStored(record)

@@ -52,7 +52,7 @@ async function installComposerFirst(options: InstallOptions, plan: ComposerPlan)
   try {
     const store = options.store
     const record: StoredStaticTool = {
-      v: 1, revision: 1, enabled: true, kind: 'composer-action', manifest: plan.manifest, tool: plan.action,
+      v: 1, revision: store ? await store.nextRevision(plan.manifest.id, 0) : 1, enabled: true, kind: 'composer-action', manifest: plan.manifest, tool: plan.action,
     }
     const catalog = store
       ? await options.plugins.installStaticComposerAction(plan.manifest, plan.action, async () => { await store.save(record) })
@@ -141,7 +141,7 @@ async function installFirst(options: InstallOptions, plan: TextPlan): Promise<Pl
     const store = options.store
     const catalog = store
       ? await options.plugins.installStaticTool(plan.manifest, plan.tool, async () => {
-          await store.save({ v: 1, revision: 1, enabled: true, kind: 'text-tool', manifest: plan.manifest, tool: plan.tool })
+          await store.save({ v: 1, revision: await store.nextRevision(plan.manifest.id, 0), enabled: true, kind: 'text-tool', manifest: plan.manifest, tool: plan.tool })
         })
       : await options.plugins.installStaticTool(plan.manifest, plan.tool)
     return {

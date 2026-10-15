@@ -225,13 +225,18 @@ function absorbPart(part: unknown, into: Map<number, MutableToolCall>): void {
   if (!part || typeof part !== 'object') return
   const calls = (part as { tool_calls?: unknown }).tool_calls
   if (!Array.isArray(calls)) return
-  for (const call of calls) {
-    if (!call || typeof call !== 'object') continue
+  for (const [position, call] of calls.entries()) {
+    if (!call || typeof call !== 'object') throw invalidToolCall()
     const record = call as { index?: unknown; id?: unknown; function?: unknown }
-    const index = typeof record.index === 'number' && record.index >= 0 && record.index < 8 ? record.index : into.size
-    if (index >= 8) continue
+    // Non-streaming responses omit index; use array position, not map.size.
+    // Never silently discard the ninth (or later) tool call.
+    if (record.index !== undefined && (!Number.isSafeInteger(record.index) || Number(record.index) < 0)) throw invalidToolCall()
+    const index = record.index === undefined ? position : Number(record.index)
     const current = into.get(index) ?? { id: '', name: '', arguments: '' }
-    if (typeof record.id === 'string' && record.id.length > 0 && record.id.length <= 80) current.id = record.id
+    if (record.id !== undefined && record.id !== null && record.id !== '') {
+      if (typeof record.id !== 'string' || record.id.length > 80 || (current.id && current.id !== record.id)) throw invalidToolCall()
+      current.id = record.id
+    }
     const fn = record.function
     if (fn && typeof fn === 'object') {
       const name = (fn as { name?: unknown }).name
@@ -247,11 +252,18 @@ function absorbPart(part: unknown, into: Map<number, MutableToolCall>): void {
 }
 
 function finishToolCalls(into: Map<number, MutableToolCall>): AuthorToolCall[] {
-  return [...into.entries()].sort((left, right) => left[0] - right[0]).flatMap(([index, call]) => {
+  const ids = new Set<string>()
+  return [...into.entries()].sort((left, right) => left[0] - right[0]).map(([index, call]) => {
     const name = call.name.trim()
-    if (!name) return []
-    return [{ id: call.id.trim() || `call-${index}`, name, arguments: call.arguments }]
+    const id = call.id.trim() || `call-${index}`
+    if (!name || ids.has(id)) throw invalidToolCall()
+    ids.add(id)
+    return { id, name, arguments: call.arguments }
   })
+}
+
+function invalidToolCall(): ModelServiceError {
+  return new ModelServiceError('MODEL_REQUEST_FAILED', '模型返回的工具调用格式不完整或标识冲突，未执行该批调用。', true)
 }
 
 function extractDeltaText(value: unknown): string {

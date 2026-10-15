@@ -136,6 +136,19 @@ export class HostPluginService {
     })
   }
 
+  uninstallManaged(id: string, version: string, persistence: { disable(): Promise<void>; remove(): Promise<void> }): Promise<void> {
+    return this.#enqueue(async () => {
+      const plugin = this.#requirePlugin(id)
+      if (!this.#staticIds.has(id)) throw new Error('内置插件不能卸载')
+      if (plugin.manifest.version !== version) throw new Error('插件已更新，请重新读取列表')
+      await persistence.disable()
+      await this.#runtime.deactivate(id)
+      await persistence.remove()
+      await this.#runtime.uninstall(id)
+      this.#staticIds.delete(id); this.#composerActionIds.delete(id)
+    })
+  }
+
   setEnabled(pluginId: string, enabled: boolean): Promise<HostPluginCatalog> {
     return this.#enqueue(async () => {
       this.#requirePlugin(pluginId)

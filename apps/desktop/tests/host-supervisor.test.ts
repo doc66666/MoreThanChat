@@ -113,7 +113,29 @@ describe('HostSupervisor', () => {
     const stopped = supervisor.stop(); host.emitExit(0); await stopped
   })
 
-  it('terminates a Host that sends a parent request outside the credential whitelist', async () => {
+  it('brokers client plugin list/uninstall without exposing replies as model events', async () => {
+    const processes: FakeHostProcess[] = []
+    const manageClientPlugins = vi.fn(async (request: import('@more-than-chat/protocol').PluginManagementRequest) => {
+      if (request.action === 'uninstall') throw new Error('插件已变化，请刷新后重试')
+      return {summary:'本机插件',plugins:[{id:'example.client',version:'1.0.0',displayName:'Client',target:'client' as const,enabled:true,removable:true}]}
+    })
+    const supervisor = createSupervisor(processes, {manageClientPlugins})
+    const events: unknown[] = []
+    supervisor.subscribeEvents(event => events.push(event))
+    const started = supervisor.start(), host = processes[0]!
+    host.emitSpawn(); respondToHandshake(host); await started
+    try {
+      host.emitMessage(createHostRequest('plugins.manage','list-client',{action:'list',target:'client'}))
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({requestId:'list-client',ok:true,payload:expect.objectContaining({plugins:expect.arrayContaining([expect.objectContaining({target:'client'})])})})))
+      host.emitMessage(createHostRequest('plugins.manage','remove-client',{action:'uninstall',target:'client',id:'example.client',version:'0.1.0'}))
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({requestId:'remove-client',ok:false,error:expect.objectContaining({message:'插件已变化，请刷新后重试'})})))
+      expect(events).toEqual([])
+      expect(host.terminateCalls).toBe(0)
+      expect(manageClientPlugins).toHaveBeenCalledTimes(2)
+    } finally {const stopped=supervisor.stop(); host.emitExit(0); await stopped}
+  })
+
+  it('terminates a Host that sends a parent request outside the broker whitelist', async () => {
     const processes: FakeHostProcess[] = []
     const supervisor = createSupervisor(processes)
     const started = supervisor.start(); const host = processes[0]!

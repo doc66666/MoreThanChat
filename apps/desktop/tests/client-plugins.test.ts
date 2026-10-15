@@ -16,12 +16,65 @@ function pack(version = '0.1.0', code = 'export default function activate() {}')
 }
 async function store() {const dir = await mkdtemp(path.join(os.tmpdir(), 'mtc-client-store-')); temporary.push(dir); return new ClientPluginStore(dir)}
 describe('trusted executable client packages', () => {
+  it('uninstalls running code and durable selection without touching another plugin or restoring after restart',async()=>{
+    const s=await store(),surfaces=new UiSurfaceRegistry(),runtime=new CordisPluginRuntime({target:'pc-ui',services:{'ui.surfaces':surfaces}})
+    const cleaned=vi.fn(),loader=new ClientPluginLoader(runtime,{},async()=>({default:ctx=>{ctx.contribute(surfaces,{id:'root',surface:'root',render:()=>null});ctx.effect(cleaned)}}))
+    const controller=new ClientPluginController(loader,{getClientPlugins:()=>s.list(),saveClientPlugin:(p,e)=>s.save({manifest:p.manifest,program:p.program},e),removeClientPlugin:(id,v)=>s.remove(id,v)},()=>{})
+    try{
+      await controller.apply(pack())
+      await expect(controller.uninstall('test.desktop','9.0.0')).rejects.toThrow('变化')
+      expect(surfaces.list()).toHaveLength(1)
+      await controller.uninstall('test.desktop','0.1.0')
+      expect(surfaces.list()).toHaveLength(0);expect(cleaned).toHaveBeenCalledTimes(1)
+      expect(loader.current('test.desktop')).toBeUndefined()
+      expect(await new ClientPluginStore(path.dirname(s.directory)).list()).toEqual([])
+    }finally{await runtime.close()}
+  })
   it('requires explicit full trust and supported target/engine, rejects reserved IDs and invalid format', () => {
     for (const change of [{permissions: []}, {targets: ['pc-host']}, {id: 'builtin.replace'}, {engine: {moreThanChat: '^99.0.0'}}, {services: {requires: ['secrets']}}]) {
       const p = pack()
       expect(() => parseExecutableClientPackage({manifest: {...p.manifest, ...change}, program: p.program})).toThrow()
     }
     expect(() => parseExecutableClientPackage({manifest: pack().manifest, program: {kind: 'executable-client', code: 'x'.repeat(100001)}})).toThrow()
+  })
+  it('keeps failed cleanup visible and disabled, then permits uninstall retry',async()=>{
+    const s=await store(),surfaces=new UiSurfaceRegistry(),runtime=new CordisPluginRuntime({target:'pc-ui',services:{'ui.surfaces':surfaces}})
+    const cleanup=vi.fn().mockRejectedValueOnce(new Error('temporary cleanup failure')).mockResolvedValue(undefined)
+    const loader=new ClientPluginLoader(runtime,{},async()=>({default:ctx=>{ctx.contribute(surfaces,{id:'root',surface:'root',render:()=>null});ctx.effect(cleanup)}}))
+    const remove=vi.fn((id:string,v:string)=>s.remove(id,v))
+    const controller=new ClientPluginController(loader,{getClientPlugins:()=>s.list(),saveClientPlugin:(p,e)=>s.save({manifest:p.manifest,program:p.program},e),removeClientPlugin:remove},()=>{})
+    try{
+      await controller.apply(pack())
+      await expect(controller.uninstall('test.desktop','0.1.0')).rejects.toThrow('cleanup failed')
+      expect(remove).not.toHaveBeenCalled()
+      expect((await s.list())[0]?.enabled).toBe(false)
+      expect(controller.errors.get('test.desktop')).toContain('cleanup failed')
+      expect(loader.current('test.desktop')).toBeDefined()
+      const restartedLoader=new ClientPluginLoader(new CordisPluginRuntime({target:'pc-ui'}),{},vi.fn())
+      const restarted=new ClientPluginController(restartedLoader,{getClientPlugins:()=>s.list(),saveClientPlugin:async p=>p},()=>{})
+      await restarted.start()
+      expect(restartedLoader.load).not.toHaveBeenCalled()
+      await controller.uninstall('test.desktop','0.1.0')
+      expect(await s.list()).toEqual([])
+      expect(runtime.list()).toEqual([])
+      expect(controller.errors.has('test.desktop')).toBe(false)
+      expect(cleanup).toHaveBeenCalledTimes(2)
+    }finally{await runtime.close()}
+  })
+
+  it('keeps a disabled entry when deleting the installed record fails',async()=>{
+    const s=await store(),runtime=new CordisPluginRuntime({target:'pc-ui',services:{'ui.surfaces':new UiSurfaceRegistry()}})
+    const loader=new ClientPluginLoader(runtime,{},async()=>({default:()=>{}}))
+    const remove=vi.fn((id:string,v:string)=>s.remove(id,v)).mockRejectedValueOnce(new Error('disk write failed'))
+    const controller=new ClientPluginController(loader,{getClientPlugins:()=>s.list(),saveClientPlugin:(p,e)=>s.save({manifest:p.manifest,program:p.program},e),removeClientPlugin:remove},()=>{})
+    try{
+      await controller.apply(pack())
+      await expect(controller.uninstall('test.desktop','0.1.0')).rejects.toThrow('disk write failed')
+      expect((await s.list())[0]?.enabled).toBe(false)
+      expect(loader.isActive('test.desktop')).toBe(false)
+      await controller.uninstall('test.desktop','0.1.0')
+      expect(await s.list()).toEqual([])
+    }finally{await runtime.close()}
   })
   it('persists immutable snapshots without executing; updates only selected ID and serializes concurrent writes', async () => {
     const s = await store(), initial = pack(), next = pack('0.2.0')
@@ -138,6 +191,25 @@ describe('client plugin selection and hot update transaction', () => {
     expect(await f.s.list()).toEqual([{...good, enabled: true}])
     expect(f.surfaces.list()).toHaveLength(1)
     await f.runtime.close()
+  })
+  it('does not let a queued stale disable overwrite a hot update or resurrect an uninstalled package',async()=>{
+    const f=await fixture(),old=pack('0.1.0','old'),next=pack('0.1.0','new code same version')
+    try{
+      await f.controller.apply(old)
+      const update=f.controller.apply(next)
+      await expect(f.controller.disable(old)).rejects.toThrow('已变化')
+      await update
+      expect(await f.s.list()).toEqual([{...next,enabled:true}])
+      expect(f.loader.current(old.manifest.id)?.digest).toBe(next.digest)
+      await expect(f.controller.enableInstalled(old)).rejects.toThrow('已变化')
+      await f.controller.disable(next)
+      await f.controller.enableInstalled(next)
+      expect((await f.s.list())[0]?.enabled).toBe(true)
+      await f.s.remove(next.manifest.id,next.manifest.version)
+      await expect(f.controller.disable(next)).rejects.toThrow('已变化')
+      await expect(f.controller.enableInstalled(next)).rejects.toThrow('已变化')
+      expect(await f.s.list()).toEqual([])
+    }finally{await f.runtime.close()}
   })
   it('rolls back the runtime on save failure and permits a later successful update', async () => {
     const f = await fixture(), a = pack('0.1.0', 'a'), b = pack('0.2.0', 'b')

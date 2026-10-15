@@ -9,6 +9,18 @@ interface HostPingResult {
 }
 
 const api = {
+  managePlugins: (request:import('@more-than-chat/protocol').PluginManagementRequest):Promise<import('@more-than-chat/protocol').PluginManagementResult> => ipcRenderer.invoke('host:plugins:manage',request),
+  removeClientPlugin: (id:string,version:string):Promise<void> => ipcRenderer.invoke('client-plugins:remove',{action:'uninstall',target:'client',id,version}),
+  onClientPluginRemoval: (listener:(id:string,version:string)=>Promise<void>) => {
+    const handler=async (_event:Electron.IpcRendererEvent,value:unknown)=>{
+      const v=value as {token?:unknown;id?:unknown;version?:unknown}|null
+      if(!v||typeof v.token!=='string'||typeof v.id!=='string'||typeof v.version!=='string')return
+      try {await listener(v.id,v.version);ipcRenderer.send('client-plugins:removed',{token:v.token,ok:true})}
+      catch {ipcRenderer.send('client-plugins:removed',{token:v.token,ok:false,error:'卸载未完成，请检查插件列表中的错误并重试；未完成清理时会保留停用记录。'})}
+    }
+    ipcRenderer.on('client-plugins:remove-request',handler)
+    return()=>ipcRenderer.removeListener('client-plugins:remove-request',handler)
+  },
   getClientPlugins: () => ipcRenderer.invoke('client-plugins:list'),
   importClientPlugin: () => ipcRenderer.invoke('client-plugins:import'),
   installClientDraft: (draftId: string, revision: number) => ipcRenderer.invoke('client-plugins:install-draft', {draftId, revision}),
@@ -156,7 +168,7 @@ interface ModelClientEventBase extends ModelClientIdentity {
   partialText?: string
   errorMessage?: string
   phase?: 'started' | 'finished'
-  tool?: 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  tool?: import('@more-than-chat/protocol').AuthorToolPublicName
   ok?: boolean
   summary?: string
   pendingInstall?: boolean
@@ -235,7 +247,7 @@ const modelEventFields = new Set([
   'textDelta', 'text', 'partialText', 'errorMessage', 'usage',
   'phase', 'tool', 'ok', 'summary', 'pendingInstall', 'draft',
 ])
-const authorToolNames = new Set(['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'])
+const authorToolNames = new Set(['list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'])
 const authorToolPhases = new Set(['started', 'finished'])
 
 function parseModelSettings(value: unknown): ModelSettingsSnapshot {
@@ -335,7 +347,7 @@ function parseAuthorToolClientEvent(
     type: 'author-tool',
     ...identity,
     phase: record.phase as 'started' | 'finished',
-    tool: record.tool as 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown',
+    tool: record.tool as import('@more-than-chat/protocol').AuthorToolPublicName,
     ok: record.ok,
     summary,
     pendingInstall: record.pendingInstall && draft !== null,

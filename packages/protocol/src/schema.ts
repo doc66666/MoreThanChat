@@ -1,9 +1,9 @@
-import { MODEL_MAX_REQUESTS } from './model-limits';
+import { MODEL_USAGE_MAX_COUNT } from './model-limits';
 
 const protocolVersion = { const: 1 } as const;
 const nonEmptyString = { type: "string", minLength: 1, pattern: ".*\\S.*" } as const;
 const requestId = { ...nonEmptyString, maxLength: 256 } as const;
-const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke'] as const;
+const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke', 'plugins.manage'] as const;
 const modelMethods = ['model.getSettings', 'model.setSettings', 'model.chat.start', 'model.chat.cancel'] as const;
 const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose', 'pluginDrafts.install', 'pluginDrafts.exportGroup', 'pluginDrafts.exportClient'] as const;
 const credentialMethods = ['credentials.read', 'credentials.write'] as const;
@@ -36,8 +36,8 @@ const modelUsage = { type: 'object', additionalProperties: false,
     inputTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
     outputTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
     totalTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
-    reportedRequests: { type: 'integer', minimum: 1, maximum: MODEL_MAX_REQUESTS },
-    requestCount: { type: 'integer', minimum: 1, maximum: MODEL_MAX_REQUESTS },
+    reportedRequests: { type: 'integer', minimum: 1, maximum: MODEL_USAGE_MAX_COUNT },
+    requestCount: { type: 'integer', minimum: 1, maximum: MODEL_USAGE_MAX_COUNT },
   },
 } as const;
 const streamIdentityProperties = {
@@ -150,6 +150,8 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
   title: "MoreThanChat Host Protocol v1",
   description: "Platform-neutral IPC protocol shared by desktop and future Android hosts.",
   oneOf: [
+    { $ref: '#/$defs/pluginManageRequest' },
+    { $ref: '#/$defs/pluginManageResponse' },
     { $ref: "#/$defs/handshakeRequest" },
     { $ref: "#/$defs/pingRequest" },
     { $ref: "#/$defs/shutdownRequest" },
@@ -197,6 +199,12 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/pluginDraftExportClientResponse' },
   ],
   $defs: {
+    pluginManageRequest: request('plugins.manage', { oneOf: [
+      {type:'object',additionalProperties:false,required:['action','target'],properties:{action:{const:'list'},target:{enum:['all','client']}}},
+      {type:'object',additionalProperties:false,required:['action','target','id','revision'],properties:{action:{const:'delete-draft'},target:{const:'draft'},id:{type:'string',pattern:'^[a-z0-9][a-z0-9.-]{0,127}$'},revision:{type:'integer',minimum:1}}},
+      {type:'object',additionalProperties:false,required:['action','target','id','version'],properties:{action:{const:'uninstall'},target:{enum:['host','client']},id:{type:'string',pattern:'^[a-z0-9][a-z0-9.-]{0,127}$'},version:{type:'string',minLength:1,maxLength:32}}},
+    ]}),
+    pluginManageResponse: response('plugins.manage', {type:'object',additionalProperties:false,required:['summary','plugins'],properties:{summary:{type:'string',maxLength:500},plugins:{type:'array',maxItems:200,items:{type:'object',additionalProperties:false,required:['id','version','displayName','target','enabled','removable'],properties:{id:{type:'string',maxLength:128},version:{type:'string',maxLength:32},displayName:{type:'string',maxLength:80},target:{enum:['host','client']},enabled:{type:'boolean'},removable:{type:'boolean'}}}}}}),
     protocolError: {
       type: "object",
       additionalProperties: false,
@@ -537,7 +545,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
           properties: {
             ...streamRefProperties,
             phase: { enum: ['started', 'finished'] },
-            tool: { enum: ['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'] },
+            tool: { enum: ['list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'] },
             ok: { type: 'boolean' },
             summary: { type: 'string', minLength: 1, maxLength: 240 },
             pendingInstall: { type: 'boolean' },

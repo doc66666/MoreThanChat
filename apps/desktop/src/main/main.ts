@@ -22,7 +22,7 @@ import { CentralClient } from './central-client'
 import { ClientIdentity } from './identity-store'
 import { activeProfile, profilePath, listProfiles, restoreProfile, selectProfile } from './identity-profiles'
 import { AttachmentStore } from './attachments'
-import { createHostRequest, parseHostMessage } from '@more-than-chat/protocol'
+import { createHostRequest, parseHostMessage, parsePluginManagementRequest, type PluginManagementRequest, type PluginManagementResult } from '@more-than-chat/protocol'
 import { DesktopIntegration } from './desktop-integration'
 import { exportHistory, restoreHistory } from './history-transfer'
 import { createHash } from 'node:crypto'
@@ -149,6 +149,27 @@ function requestInterfaceRecovery(): void {
 }
 app.on('second-instance', () => openChatWindow())
 
+async function manageClientPlugins(request: PluginManagementRequest): Promise<PluginManagementResult> {
+  if (request.target !== 'client') throw new Error('仅允许本机界面插件管理')
+  if (request.action === 'list') return {summary:'本机可执行界面插件列表。',plugins:(await clientPlugins.list()).map(p=>({id:p.manifest.id,version:p.manifest.version,displayName:p.manifest.displayName,target:'client',enabled:p.enabled===true,removable:true}))}
+  if (request.action !== 'uninstall') throw new Error('无效管理操作')
+  const window=mainWindow
+  if (!window || window.isDestroyed()) throw new Error('请先打开客户端窗口再卸载')
+  await new Promise<void>((resolve,reject)=>{
+    const token=crypto.randomUUID()
+    const cleanup=()=>{clearTimeout(timer);ipcMain.removeListener('client-plugins:removed',ack)}
+    const ack=(event:IpcMainEvent,result:unknown)=>{
+      const value=result as {token?:unknown;ok?:unknown;error?:unknown}|null
+      if(event.sender!==window.webContents||event.senderFrame!==window.webContents.mainFrame||value?.token!==token)return
+      cleanup(); if(value.ok===true)resolve(); else reject(new Error(typeof value.error==='string'?value.error.slice(0,200):'卸载未完成，请检查插件列表'))
+    }
+    const timer=setTimeout(()=>{cleanup();reject(new Error('卸载响应超时，请检查插件列表；不会自动重复操作'))},10000)
+    ipcMain.on('client-plugins:removed',ack)
+    window.webContents.send('client-plugins:remove-request',{token,id:request.id,version:request.version})
+  })
+  return {summary:'本机界面插件已卸载并清理运行贡献。草稿和群内分发不受影响。',plugins:[]}
+}
+
 function registerIpc(): void {
   const clientTask = async <T,>(work: () => Promise<T>): Promise<T> => {
     if (clientPluginBusy || identityBusy || windowClosing || quitRequested || recoveryPending) throw new Error('已有插件或窗口操作正在进行')
@@ -156,6 +177,17 @@ function registerIpc(): void {
     try { return await work() } finally { clientPluginBusy = false }
   }
   ipcMain.handle('client-plugins:list', event => {assertTrustedIpc(event); return clientPlugins.list()})
+  ipcMain.handle('client-plugins:remove', (event, value:unknown) => {
+    assertTrustedIpc(event)
+    const request=parsePluginManagementRequest(value)
+    if(request.action!=='uninstall'||request.target!=='client')throw new Error('无效卸载请求')
+    return clientTask(()=>clientPlugins.remove(request.id,request.version))
+  })
+  ipcMain.handle('host:plugins:manage', (event,value:unknown) => {
+    assertTrustedIpc(event)
+    if(!hostSupervisor)throw new Error('PC Host 尚未就绪')
+    return hostSupervisor.managePlugins(parsePluginManagementRequest(value))
+  })
   ipcMain.handle('client-plugins:import', event => {
     assertTrustedIpc(event)
     return clientTask(async () => {
@@ -737,6 +769,7 @@ function startHostSupervisor(): void {
     moduleDir: __dirname,
   })
   hostSupervisor = new HostSupervisor({
+    manageClientPlugins,
     clientVersion: app.getVersion(),
     credentials: new EncryptedCredentialStore(
       path.join(dataDirectory, 'host-private'),
@@ -782,6 +815,7 @@ function startHostSupervisor(): void {
 
 async function createWindow(previous?: BrowserWindow): Promise<void> {
   const window = new BrowserWindow({
+    icon: path.join(app.getAppPath(),'assets','icon.png'),
     width: 1260,
     height: 820,
     minWidth: 900,

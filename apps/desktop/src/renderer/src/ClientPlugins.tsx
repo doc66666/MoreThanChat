@@ -14,6 +14,14 @@ export function getClientPluginLoader(): ClientPluginLoader {
 }
 const changed = () => window.dispatchEvent(new Event('client-plugins-changed'))
 const errorText = (error: unknown) => error instanceof Error ? error.message : '插件操作失败'
+export function ManagePluginButton({request,label}: {request:import('@more-than-chat/protocol').PluginManagementRequest;label:string}) {
+  const [busy,setBusy]=useState(false),[notice,setNotice]=useState('')
+  return <span><button className="secondary-button" data-plugin-manage disabled={busy} onClick={async()=>{
+    setBusy(true);setNotice('')
+    try {const result=await window.moreThanChat.managePlugins(request);setNotice(result.summary)}
+    catch(error){setNotice(errorText(error))}finally{setBusy(false);window.dispatchEvent(new Event('local-plugins-managed'))}
+  }}>{busy?'处理中…':label}</button>{notice&&<small role="status">{notice}</small>}</span>
+}
 let controller: ClientPluginController | undefined
 export function getClientPluginController(): ClientPluginController {
   return controller ??= new ClientPluginController(getClientPluginLoader(), window.moreThanChat, changed)
@@ -71,12 +79,15 @@ export function ClientPlugins({snapshot:serverSnapshot}:{snapshot:ServerSnapshot
         {snapshot?.error && <p role="alert">{snapshot.error}</p>}
         <div className="draft-actions">
           {(!active || update) && <button className="secondary-button" disabled={busy} onClick={() => void run(async () => {
-            await clientPluginController.apply(pack)
+            await clientPluginController.enableInstalled(pack)
             setNotice('已启用。')
           })}>{update ? '应用更新' : '启用'}</button>}
           {(current || pack.enabled) && <button className="secondary-button" disabled={busy || !active && !pack.enabled && snapshot?.status !== 'failed'} onClick={() => void run(async () => {
             await clientPluginController.disable(pack); setNotice('已停用。')
           })}>停用界面插件</button>}
+          <button className="secondary-button" data-client-uninstall disabled={busy} onClick={()=>void run(async()=>{
+            await clientPluginController.uninstall(pack.manifest.id,pack.manifest.version);setNotice('已卸载本机插件，草稿与群内分享保留。')
+          })}>卸载</button>
         </div>
         <ShareClientPlugin snapshot={serverSnapshot} pack={pack}/>
       </div>

@@ -8,7 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react'
-import { ClientPlugins, InstallClientDraft } from './ClientPlugins'
+import { ClientPlugins, InstallClientDraft, ManagePluginButton, getClientPluginController } from './ClientPlugins'
 import { SharedPluginChoices, useSharedClientPlugins } from './SharedClientPlugins'
 import { directPluginScope, pluginScopeMembers } from '@more-than-chat/central-protocol'
 import {
@@ -297,6 +297,16 @@ export function App() {
     }
   }, [])
 
+  useEffect(()=>window.moreThanChat.onClientPluginRemoval((id,version)=>getClientPluginController().uninstall(id,version)),[])
+  useEffect(()=>{
+    const refresh=()=>{
+      void window.moreThanChat.inspectPluginDrafts().then(setPluginDrafts).catch(()=>undefined)
+      void window.moreThanChat.getHostPlugins().then(catalog=>setHostPlugins(catalog.plugins)).catch(()=>undefined)
+    }
+    window.addEventListener('local-plugins-managed',refresh)
+    return()=>window.removeEventListener('local-plugins-managed',refresh)
+  },[])
+
   useEffect(() => {
     let active = true
     let receivedEvent = false
@@ -402,7 +412,7 @@ export function App() {
       if (
         event.type === 'author-tool' &&
         event.phase === 'finished' &&
-        event.draft
+        (event.draft || ['delete_draft','uninstall_plugin'].includes(event.tool))
       ) {
         void window.moreThanChat
           .inspectPluginDrafts()
@@ -411,6 +421,7 @@ export function App() {
               setPluginDrafts(inspection)
           })
           .catch(() => undefined)
+        window.dispatchEvent(new Event('local-plugins-managed'))
       }
       setState((current) =>
         current
@@ -1162,7 +1173,7 @@ export function App() {
 
       <nav className="app-rail" aria-label="主导航">
         <button className="brand-mark" aria-label="MoreThanChat">
-          <span>M</span>
+          <img src="mtc-icon.svg" alt="MTC" width="40" height="40" style={{borderRadius:8}}/>
         </button>
         <div className="rail-actions">
           <RailButton active icon={<MessageCircleMore />} label="聊天" />
@@ -1900,6 +1911,14 @@ function PluginPanel({
 }) {
   const [manifestJson, setManifestJson] = useState('')
   const [source, setSource] = useState('')
+  const [removableHostIds, setRemovableHostIds] = useState<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    let active = true
+    void window.moreThanChat.managePlugins({action:'list',target:'all'}).then(result => {
+      if (active) setRemovableHostIds(new Set(result.plugins.filter(p=>p.target==='host'&&p.removable).map(p=>p.id)))
+    }).catch(()=>undefined)
+    return () => {active=false}
+  },[hostPlugins])
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside
@@ -1968,6 +1987,7 @@ function PluginPanel({
                 <small>
                   {plugin.id} · {plugin.version} · 独立后台进程
                 </small>
+                {removableHostIds.has(plugin.id) && <ManagePluginButton label="卸载本机插件" request={{action:'uninstall',target:'host',id:plugin.id,version:plugin.version}}/>}
                 {plugin.error && (
                   <span className="plugin-error">{plugin.error}</span>
                 )}
@@ -2028,6 +2048,7 @@ function PluginPanel({
                   >
                     诊断
                   </button>
+                  <ManagePluginButton label="删除草稿" request={{action:'delete-draft',target:'draft',id:item.id,revision:item.revision}}/>
                   {item.distribution==='local-client' ? <InstallClientDraft draft={item} snapshot={serverSnapshot}/> : item.distribution==='group' ? <GroupDraftSubmission key={`${serverSnapshot?.serverId}:${item.id}:${item.revision}`} draft={item} snapshot={serverSnapshot}/> : (
                     <button
                       type="button"

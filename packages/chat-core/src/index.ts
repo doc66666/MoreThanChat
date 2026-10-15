@@ -28,7 +28,7 @@ export interface Conversation {
 
 export interface AuthorToolNote {
   phase: 'started' | 'finished'
-  tool: 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  tool: 'list_plugins' | 'delete_draft' | 'uninstall_plugin' | 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
   ok: boolean
   summary: string
   pendingInstall: boolean

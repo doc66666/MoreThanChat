@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   HOST_PROTOCOL_V1_JSON_SCHEMA,
   HOST_PROTOCOL_VERSION,
-  MODEL_MAX_REQUESTS,
+  MODEL_USAGE_MAX_COUNT,
   ProtocolValidationError,
   assertResponseForRequest,
   createHostErrorResponse,
@@ -37,16 +37,29 @@ it('validates optional usage while keeping old completed events compatible', () 
   expect(() => parseModelTokenUsage({ ...usage, apiKey: 'forbidden' })).toThrow();
 });
 
-it.each([6, 7, 11, 13])('accepts completion usage for %i requests including the summary turn', requestCount => {
+it.each([6, 7, 11, 13, 40, 1000])('accepts completion usage for %i requests without a fixed execution budget', requestCount => {
   const usage = { inputTokens: 12, outputTokens: 4, totalTokens: 16, reportedRequests: requestCount, requestCount };
   expect(parseModelTokenUsage(usage)).toEqual(usage);
   expect(parseModelTokenUsage({ ...usage, reportedRequests: 1 })).toMatchObject({ requestCount });
 });
 
-it('rejects usage beyond the shared request budget and inconsistent reports', () => {
-  const usage = { inputTokens: 12, outputTokens: 4, totalTokens: 16, reportedRequests: 1, requestCount: MODEL_MAX_REQUESTS };
-  expect(() => parseModelTokenUsage({ ...usage, requestCount: MODEL_MAX_REQUESTS + 1 })).toThrow();
-  expect(() => parseModelTokenUsage({ ...usage, reportedRequests: MODEL_MAX_REQUESTS + 1 })).toThrow();
+it('rejects usage outside wire integer bounds and inconsistent reports', () => {
+  const usage = { inputTokens: 12, outputTokens: 4, totalTokens: 16, reportedRequests: 1, requestCount: MODEL_USAGE_MAX_COUNT };
+  expect(() => parseModelTokenUsage({ ...usage, requestCount: MODEL_USAGE_MAX_COUNT + 1 })).toThrow();
+  expect(() => parseModelTokenUsage({ ...usage, reportedRequests: MODEL_USAGE_MAX_COUNT + 1 })).toThrow();
+});
+
+it('roundtrips local plugin management and safely rejects malformed targets', () => {
+  const request = createHostRequest('plugins.manage','management',{action:'uninstall',target:'client',id:'example.game',version:'1.0.0'});
+  expect(parseHostMessage(request)).toEqual(request);
+  const response = createHostSuccessResponse(request,{summary:'removed',plugins:[]});
+  expect(parseHostMessage(response)).toEqual(response);
+  for (const payload of [
+    {action:'uninstall',target:'server',id:'example.game',version:'1.0.0'},
+    {action:'delete-draft',target:'draft',id:'../other',revision:1},
+    {action:'delete-draft',target:'draft',id:'example.game',revision:0},
+    {action:'list',target:'all',extra:true},
+  ]) expect(safeParseHostMessage({...request,payload}).success).toBe(false);
 });
 
 describe("Host protocol v1", () => {
@@ -212,7 +225,7 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(45);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(47);
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.pluginDraftExportClientRequest).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.pluginDraftExportClientResponse).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();

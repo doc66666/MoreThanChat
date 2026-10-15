@@ -58,7 +58,7 @@ describe('Host bundle entry', () => {
     expect(path.resolve(desktopDir, build?.directories?.output ?? '')).toBe(path.resolve(desktopDir, '../../.artifacts/desktop-release'))
     expect(build?.linux?.target).toBe('dir')
     expect(build?.win?.target).toBe('dir')
-    expect(build?.win?.signAndEditExecutable).toBe(false)
+    expect(build?.win?.signAndEditExecutable).toBe(true)
     const hook = readFileSync(path.join(desktopDir, 'scripts', 'copy-host-resources.cjs'), 'utf8')
     expect(hook.includes("'.artifacts', 'host-resources'")).toBe(true)
     expect(hook.includes("'pc-host'")).toBe(true)

@@ -1,4 +1,5 @@
 import { app, Menu, nativeImage, Notification, Tray, type BrowserWindow } from 'electron'
+import path from 'node:path'
 import { ChatNotifications, unreadCount, type IncomingNotice, type NotificationCard } from './chat-notifications'
 import { DesktopPreferenceStore } from './desktop-preferences'
 import type { CentralClient } from './central-client'
@@ -119,14 +120,10 @@ export class DesktopIntegration {
 
 // A small code-native icon, with a distinct unread dot. No downloaded assets.
 function trayImage(unread: boolean) {
-  const size=32, pixels=Buffer.alloc(size*size*4)
+  const size=32, icon=nativeImage.createFromPath(path.join(app.getAppPath(),'assets','icon.png')).resize({width:size,height:size,quality:'good'}), pixels=icon.toBitmap()
   for(let y=0;y<size;y++)for(let x=0;x<size;x++){
-    const cornerX=Math.max(5-x,0,x-26),cornerY=Math.max(5-y,0,y-26)
-    if(cornerX*cornerX+cornerY*cornerY>25)continue
-    let [r,g,b]=[192,104,71]
-    if((x>=7&&x<=24&&y>=8&&y<=21)||(x>=9&&x<=14&&y>=21&&y<=25&&x+y<=35))[r,g,b]=[250,249,246]
-    if((y===13||y===17)&&x>=11&&x<=21)[r,g,b]=[192,104,71]
-    if(unread&&(x-25)**2+(y-7)**2<=30)[r,g,b]=[110,185,162]
+    if(!unread||(x-26)**2+(y-5)**2>16)continue
+    const [r,g,b]=[234,94,80]
     const offset=(y*size+x)*4;pixels[offset]=b;pixels[offset+1]=g;pixels[offset+2]=r;pixels[offset+3]=255
   }
   return nativeImage.createFromBitmap(pixels,{width:size,height:size})

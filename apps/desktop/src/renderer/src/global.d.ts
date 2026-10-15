@@ -24,7 +24,7 @@ export interface ModelClientIdentity {
 export interface ModelAuthorToolClientEvent extends ModelClientIdentity {
   type: 'author-tool'
   phase: 'started' | 'finished'
-  tool: 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  tool: import('@more-than-chat/protocol').AuthorToolPublicName
   ok: boolean
   summary: string
   pendingInstall: boolean
@@ -77,6 +77,9 @@ declare global {
       exportChatHistory(password:string):Promise<HistoryExportResult|null>
       importChatHistory(password:string):Promise<HistoryImportResult|null>
       getDesktopSettings():Promise<DesktopSettings>
+      managePlugins(request:import('@more-than-chat/protocol').PluginManagementRequest):Promise<import('@more-than-chat/protocol').PluginManagementResult>
+      removeClientPlugin(id:string,version:string):Promise<void>
+      onClientPluginRemoval(listener:(id:string,version:string)=>Promise<void>):()=>void
       configureDesktop(value:Partial<DesktopPreferences>):Promise<DesktopSettings>
       testNotification():Promise<void>
       hideToTray():Promise<void>

@@ -13,7 +13,7 @@ await mkdir(path.join(root,'.artifacts'),{recursive:true})
 const directory=await mkdtemp(path.join(root,'.artifacts/shared-client-flow-'))
 const executable=process.env.MTC_TEST_PACKAGED_EXE||createRequire(path.join(desktop,'package.json'))('electron')
 const pack=JSON.parse(await readFile(path.join(root,'examples/shared-tic-tac-toe.mtcplugin'),'utf8'))
-let authoredPack=pack,modelRequests=0,modelError=null
+let authoredPack=pack,modelRequests=0,modelError=null,managementRevision=null
 // Deterministic OpenAI-compatible model fixture exercises the actual chat/tool loop.
 // This is not a claim that a live DeepSeek model authored this fixture.
 const modelServer=createServer(async(req,res)=>{
@@ -22,11 +22,20 @@ const modelServer=createServer(async(req,res)=>{
     const parsed=JSON.parse(body);modelRequests++
     assert(parsed.messages.some(m=>m.role==='system'&&m.content.includes('sdk.network.send')&&m.content.includes('私聊')),'Missing built-in executable author contract')
     const tools=parsed.messages.filter(m=>m.role==='tool')
+    if(managementRevision!==null){
+      const steps=['list_plugins','delete_draft','uninstall_plugin','list_plugins'],tool=steps[tools.length]
+      if(tools.length===1)assert(JSON.parse(tools[0].content).plugins.some(p=>p.id===pack.manifest.id&&p.target==='client'),'AI must see actual installed executable plugins')
+      if(tools.length===4)assert(!JSON.parse(tools[3].content).plugins.some(p=>p.id===pack.manifest.id&&p.target==='client'),'AI must see the completed uninstall')
+      const args=tool==='delete_draft'?{draftId:pack.manifest.id,revision:managementRevision}:tool==='uninstall_plugin'?{target:'client',id:pack.manifest.id,version:pack.manifest.version}:{}
+      const delta=tool?{tool_calls:[{index:0,id:'manage-'+modelRequests,function:{name:tool,arguments:JSON.stringify(args)}}]}:{content:'已删除草稿并卸载本机插件；已分发的群聊插件没有撤回。'}
+      res.writeHead(200,{'content-type':'text/event-stream'});res.end(`data: ${JSON.stringify({choices:[{delta,finish_reason:tool?'tool_calls':'stop'}]})}\n\ndata: [DONE]\n\n`)
+      return
+    }
     const updating=authoredPack.manifest.version!=='0.1.0'
-    // Twelve tool rounds plus the tools-disabled summary, all reporting usage.
+    // Twelve successful tool rounds plus a normal summary, all reporting usage.
     // v0.2.1 passed no-usage fixtures but killed Host on this completion event.
     const steps=updating?['inspect_drafts','create_draft','validate_draft',...Array(9).fill('inspect_drafts')]:['create_draft','validate_draft',...Array(10).fill('inspect_drafts')],tool=steps[tools.length]
-    if(tools.length===12)assert.equal(parsed.tools,undefined,'Summary must disable tools')
+    if(tools.length===12)assert(Array.isArray(parsed.tools),'Successful calls must not exhaust a fixed budget')
     const baseRevision=updating&&tools.length?JSON.parse(tools[0].content).draft.revision:0
     const args=tool==='create_draft'?{manifest:authoredPack.manifest,code:authoredPack.program.code,baseRevision}:{draftId:pack.manifest.id}
     const delta=tool?{tool_calls:[{index:0,id:'shared-'+modelRequests,function:{name:tool,arguments:JSON.stringify(args)}}]}:{content:'已创建并校验可执行井字棋草稿。可本机安装或申请分享到好友／群聊。'}
@@ -146,6 +155,22 @@ try{
   await writeFile(path.join(root,'.artifacts',process.env.MTC_TEST_PACKAGED_EXE?'shared-client-packaged.png':'shared-client.png'),Buffer.from(capture.data,'base64'))
   await action(a,'friends/remove',{userId:b2.id});await open(a,c.id,'direct');await poll(a,'!document.querySelector("[data-shared-game]")')
   evidence.push('switching conversations removes owned UI; ending friendship removes shared direct approval')
+  managementRevision=a.revision
+  const managementGeneration=await value(a,"document.querySelector('.host-status').dataset.hostGeneration")
+  await closePanel(a)
+  await value(a,`[...document.querySelectorAll('.conversation-item')].find(n=>n.textContent.includes('More AI')).click()`)
+  await value(a,`(()=>{window.__sharedTerminal=null;window.__sharedTools=[];const node=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(node,'读取实际已安装插件，删除共享井字棋草稿，并卸载本机井字棋；不要撤回群内分发。');node.dispatchEvent(new Event('input',{bubbles:true}));})()`)
+  await click(a,'.send-button');await poll(a,'Boolean(window.__sharedTerminal)')
+  assert.equal((await value(a,'window.__sharedTerminal')).type,'completed',modelError||'Management model loop failed')
+  for(const tool of ['list_plugins','delete_draft','uninstall_plugin'])assert(await value(a,`window.__sharedTools.some(e=>e.tool===${JSON.stringify(tool)}&&e.phase==='finished'&&e.ok)`),'Management tool failed: '+tool)
+  assert(!(await value(a,'window.moreThanChat.inspectPluginDrafts()')).drafts.some(d=>d.id===pack.manifest.id))
+  assert(!(await value(a,'window.moreThanChat.getClientPlugins()')).some(p=>p.manifest.id===pack.manifest.id))
+  assert.equal(await value(a,"document.querySelector('.host-status').dataset.hostGeneration"),managementGeneration)
+  await plugins(a)
+  assert.equal(await value(a,`Boolean(document.querySelector('[data-draft-id="${pack.manifest.id}"]'))`),false)
+  assert.equal(await value(a,`Boolean(document.querySelector('[data-client-plugin="${pack.manifest.id}"]'))`),false)
+  await open(a,group);await board(a,'········X');await board(c,'········X')
+  evidence.push('AI local management: real installed client catalog, exact-revision draft deletion, parent/renderer uninstall acknowledgment, refreshed UI and list, unchanged Host generation; shared group instances and peers remain usable')
   passed=true
 }finally{
   for(const s of sessions)await close(s)

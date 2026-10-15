@@ -1,5 +1,6 @@
 import { chmod, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { parse } from 'acorn'
 import { parseExecutableClientPackage, validatePluginManifest, type PluginManifestV1 } from '@more-than-chat/plugin-runtime'
 import type {
@@ -77,12 +78,12 @@ export class PluginDraftService {
           issues: assessed.issues,
         }
       }
-      const revision = await this.#nextRevision(assessed.manifest.id)
+      const { latest, next: revision } = await this.#revisionState(assessed.manifest.id)
       // Compare and append in the same Host queue, including ordinary UI saves.
       // Public/manual callers retain their existing append behavior; AI calls always
       // supply a base (zero for creation), so omission cannot bypass the guard.
       if (input.baseRevision !== undefined && (!Number.isSafeInteger(input.baseRevision)
-        || input.baseRevision < 0 || input.baseRevision !== revision - 1)) {
+        || input.baseRevision < 0 || input.baseRevision !== latest)) {
         throw new PluginDraftError('DRAFT_REVISION_CONFLICT', '草稿已变化或未提供当前修订号；请重新读取后合并修改。')
       }
       const updatedAt = Date.now()
@@ -102,6 +103,19 @@ export class PluginDraftService {
 
   validate(draftId: string): Promise<PluginDraftReport> {
     return this.#report(draftId, 'validate')
+  }
+
+  delete(draftId: string, revision: number): Promise<void> {
+    return this.#enqueue(async () => {
+      const stored = await this.#readLatest(draftId)
+      if (stored.revision !== revision) throw new PluginDraftError('DRAFT_REVISION_CONFLICT', '草稿已变化，请重新读取后删除。')
+      const source = this.#draftDirectory(draftId)
+      if ((await lstat(source)).isSymbolicLink()) throw new Error('草稿目录无效')
+      const trash = path.join(this.#root, '.deleted')
+      await mkdir(trash, {recursive:true,mode:0o700})
+      if ((await lstat(trash)).isSymbolicLink()) throw new Error('回收目录无效')
+      await rename(source, path.join(trash, `${draftId}-r${revision}-${randomUUID()}`))
+    })
   }
 
   diagnose(draftId: string): Promise<PluginDraftReport> {
@@ -219,7 +233,7 @@ export class PluginDraftService {
     return summaries.slice(0, 100)
   }
 
-  async #nextRevision(id: string): Promise<number> {
+  async #revisionState(id: string): Promise<{ latest: number; next: number }> {
     const directory = this.#draftDirectory(id)
     let highest = 0
     try {
@@ -232,7 +246,21 @@ export class PluginDraftService {
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
-    return highest + 1
+    const latest = highest
+    // A recreated ID starts from baseRevision=0, but must not reuse a revision
+    // that an old delete request could still refer to (including after restart).
+    try {
+      const prefix = `${id}-r`
+      for (const name of await readdir(path.join(this.#root, '.deleted'))) {
+        if (!name.startsWith(prefix)) continue
+        const match = /^(\d+)-[0-9a-f-]+$/.exec(name.slice(prefix.length))
+        const revision = match ? Number(match[1]) : 0
+        if (Number.isSafeInteger(revision) && revision > highest) highest = revision
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    return { latest, next: highest + 1 }
   }
 
   async #readLatest(id: string): Promise<StoredRevision> {

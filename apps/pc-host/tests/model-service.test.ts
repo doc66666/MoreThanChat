@@ -145,6 +145,27 @@ describe('ModelService', () => {
     }
   })
 
+  it('cancels a long successful tool loop without executing the next call or losing the completed tool notice',async()=>{
+    let requests=0,executed=0,release!:()=>void
+    const directory=await tempDir(),events:HostEventMessage[]=[]
+    const provider:ChatModelProvider={async stream(){requests++;return {toolCalls:[{id:'call-'+requests,name:'inspect_drafts',arguments:'{}'}]}}}
+    const service=new ModelService({dataDir:directory,generation:1,providers:{mock:provider},authorTools:{async execute(){
+      executed++
+      if(executed===20)await new Promise<void>(resolve=>{release=resolve})
+      return {content:'ok',notice:{tool:'inspect_drafts',ok:true,summary:'ok',pendingInstall:false,draft:null}}
+    }}})
+    try{
+      await service.load()
+      service.start(startInput(),event=>events.push(event))
+      await waitFor(()=>executed===20)
+      service.cancel('stream-1');release()
+      await waitFor(()=>events.some(e=>e.event==='model.chat.cancelled'))
+      expect(requests).toBe(20);expect(executed).toBe(20)
+      expect(events.filter(e=>e.event==='model.authorTool'&&e.payload.phase==='finished')).toHaveLength(20)
+      expect(events.some(e=>e.event==='model.chat.completed'||e.event==='model.chat.failed')).toBe(false)
+    }finally{release?.();service.close()}
+  })
+
   it('redacts a credential that a compatible endpoint echoes in an error body', async () => {
     const fetchImpl: typeof fetch = async (_input, init) => {
       const headers = new Headers(init?.headers)

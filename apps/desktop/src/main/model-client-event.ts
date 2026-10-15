@@ -10,7 +10,7 @@ export interface ModelClientIdentity {
 export interface ModelAuthorToolClientEvent extends ModelClientIdentity {
   type: 'author-tool'
   phase: 'started' | 'finished'
-  tool: 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  tool: import('@more-than-chat/protocol').AuthorToolPublicName
   ok: boolean
   summary: string
   pendingInstall: boolean

@@ -39,6 +39,7 @@ export interface HostSupervisorOptions {
   readonly restartDelaysMs?: readonly number[]
   readonly stableResetMs?: number
   readonly credentials?: { read(): Promise<string | null>; write(key: string | null): Promise<void> }
+  readonly manageClientPlugins?: (request: HostRequestPayloadMap['plugins.manage']) => Promise<HostResponsePayloadMap['plugins.manage']>
 }
 
 export interface HostPingResult {
@@ -94,6 +95,7 @@ export class HostSupervisor {
   readonly #restartDelaysMs: readonly number[]
   readonly #stableResetMs: number
   readonly #credentials: HostSupervisorOptions['credentials']
+  readonly #manageClientPlugins: HostSupervisorOptions['manageClientPlugins']
   readonly #listeners = new Set<(status: HostStatusSnapshot) => void>()
   readonly #eventListeners = new Set<(event: HostEventMessage) => void>()
   readonly #pending = new Map<string, PendingRequest>()
@@ -119,10 +121,15 @@ export class HostSupervisor {
     this.#restartDelaysMs = options.restartDelaysMs ?? defaultRestartDelays
     this.#stableResetMs = options.stableResetMs ?? 10_000
     this.#credentials = options.credentials
+    this.#manageClientPlugins = options.manageClientPlugins
   }
 
   getStatus(): HostStatusSnapshot {
     return cloneStatus(this.#status)
+  }
+
+  managePlugins(request: HostRequestPayloadMap['plugins.manage']): Promise<HostResponsePayloadMap['plugins.manage']> {
+    return this.#request('plugins.manage',request,20000)
   }
 
   subscribe(listener: (status: HostStatusSnapshot) => void): () => void {
@@ -413,6 +420,13 @@ export class HostSupervisor {
   }
 
   async #handleCredentialRequest(binding: ProcessBinding, request: HostRequest): Promise<void> {
+    if (request.method === 'plugins.manage' && request.payload.target === 'client' && this.#manageClientPlugins) {
+      let response: unknown
+      try { response = createHostSuccessResponse(request, await this.#manageClientPlugins(request.payload)) }
+      catch (error) { response = createHostErrorResponse(request,{code:'INVALID_PAYLOAD',message:error instanceof Error?error.message:'插件管理失败',retryable:true}) }
+      if(this.#isCurrent(binding)&&!binding.terminating)binding.process.send(response)
+      return
+    }
     if (request.method !== 'credentials.read' && request.method !== 'credentials.write') {
       this.#terminateFailedBinding(binding, { code: 'UNKNOWN_METHOD', message: 'Host sent an unauthorized parent request.', retryable: false })
       return

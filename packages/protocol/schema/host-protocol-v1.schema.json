@@ -5,6 +5,12 @@
   "description": "Platform-neutral IPC protocol shared by desktop and future Android hosts.",
   "oneOf": [
     {
+      "$ref": "#/$defs/pluginManageRequest"
+    },
+    {
+      "$ref": "#/$defs/pluginManageResponse"
+    },
+    {
       "$ref": "#/$defs/handshakeRequest"
     },
     {
@@ -141,6 +147,201 @@
     }
   ],
   "$defs": {
+    "pluginManageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "plugins.manage"
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "target"
+              ],
+              "properties": {
+                "action": {
+                  "const": "list"
+                },
+                "target": {
+                  "enum": [
+                    "all",
+                    "client"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "target",
+                "id",
+                "revision"
+              ],
+              "properties": {
+                "action": {
+                  "const": "delete-draft"
+                },
+                "target": {
+                  "const": "draft"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9.-]{0,127}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "target",
+                "id",
+                "version"
+              ],
+              "properties": {
+                "action": {
+                  "const": "uninstall"
+                },
+                "target": {
+                  "enum": [
+                    "host",
+                    "client"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9.-]{0,127}$"
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "pluginManageResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "plugins.manage"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "summary",
+            "plugins"
+          ],
+          "properties": {
+            "summary": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "plugins": {
+              "type": "array",
+              "maxItems": 200,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "version",
+                  "displayName",
+                  "target",
+                  "enabled",
+                  "removable"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "version": {
+                    "type": "string",
+                    "maxLength": 32
+                  },
+                  "displayName": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "target": {
+                    "enum": [
+                      "host",
+                      "client"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "removable": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "protocolError": {
       "type": "object",
       "additionalProperties": false,
@@ -535,6 +736,7 @@
             "plugins.list",
             "plugins.setEnabled",
             "tools.invoke",
+            "plugins.manage",
             "model.getSettings",
             "model.setSettings",
             "model.chat.start",
@@ -1855,12 +2057,12 @@
                 "reportedRequests": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 13
+                  "maximum": 1000000000
                 },
                 "requestCount": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 13
+                  "maximum": 1000000000
                 }
               }
             }
@@ -3322,6 +3524,9 @@
             },
             "tool": {
               "enum": [
+                "list_plugins",
+                "delete_draft",
+                "uninstall_plugin",
                 "inspect_drafts",
                 "create_draft",
                 "validate_draft",

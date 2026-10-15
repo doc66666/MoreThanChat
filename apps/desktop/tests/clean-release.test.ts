@@ -19,5 +19,5 @@ it('keeps example plugins available only in explicit QA mode', async () => {
 
 it('packages runtime files rather than sources, test fixtures or user profiles', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  expect(manifest.build.files).toEqual(['dist-main/**/*', 'dist-renderer/**/*', 'package.json'])
+  expect(manifest.build.files).toEqual(['dist-main/**/*', 'dist-renderer/**/*', 'assets/**/*', 'package.json'])
 })

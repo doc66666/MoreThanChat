@@ -9,8 +9,10 @@ import type {
 } from '@more-than-chat/protocol'
 import { PluginDraftError, type PluginDraftService } from './plugin-drafts'
 import { DEFAULT_PLUGIN_AUTHOR_CONTRACT, PLUGIN_AUTHOR_CONTRACT } from './author-contract'
+import { parsePluginManagementRequest } from '@more-than-chat/protocol'
+import type { ManagePlugins } from './plugin-management'
 
-export const AUTHOR_TOOL_NAMES = ['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'] as const
+export const AUTHOR_TOOL_NAMES = ['list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'] as const
 
 export type AuthorToolName = (typeof AUTHOR_TOOL_NAMES)[number]
 
@@ -39,6 +41,9 @@ export interface AuthorToolExecutor {
 }
 
 const PROGRESS: Record<AuthorToolPublicName, string> = {
+  list_plugins:'正在读取本机已安装插件…',
+  delete_draft:'正在删除指定草稿…',
+  uninstall_plugin:'正在卸载指定本机插件…',
   inspect_drafts: '正在检查插件草稿…',
   create_draft: '正在创建插件草稿…',
   validate_draft: '正在校验插件草稿…',
@@ -51,13 +56,16 @@ const MAX_ARGUMENTS = 40_000
 const MAX_RESULT = 16_000
 
 export const AUTHOR_TOOL_DEFINITIONS = [
+  {type:'function',function:{name:'list_plugins',description:'读取真实本机已安装的 Host 和可执行界面插件，含 target、版本、是否可卸载；不是草稿，也不代表群成员的安装情况。',parameters:{type:'object',additionalProperties:false,properties:{}}}},
+  {type:'function',function:{name:'delete_draft',description:'仅在用户要求删除时删除指定草稿的所有修订，移入本机回收目录。先 inspect_drafts 获取最新 revision，不删除已安装插件或群副本。目标模糊时先问清，不批量猜测删除。',parameters:{type:'object',additionalProperties:false,required:['draftId','revision'],properties:{draftId:{type:'string'},revision:{type:'integer',minimum:1}}}}},
+  {type:'function',function:{name:'uninstall_plugin',description:'仅在用户要求卸载时移除指定本机插件并清理运行界面。先 list_plugins，按返回的 target、id、version 精确卸载。内置插件不能卸载；不删除草稿或撤回已分发的群插件。',parameters:{type:'object',additionalProperties:false,required:['target','id','version'],properties:{target:{enum:['host','client']},id:{type:'string'},version:{type:'string'}}}}},
   {
     type: 'function',
     function: {
       name: 'inspect_drafts',
       description: '无参数读取 SDK 和草稿摘要；offset 翻页；draftId 读取本用户草稿最新修订的完整内容供修改，不安装或执行。',
       parameters: { type: 'object', additionalProperties: false, properties: {
-        offset: { type: 'integer', minimum: 0, maximum: 100 },
+        offset: { type: 'integer', minimum: 0, maximum: 200 },
         draftId: { type: 'string', maxLength: 128 },
         format: { type: 'string', enum: ['executable', 'legacy'], description: '默认 executable；仅修改旧声明式插件时使用 legacy。' },
       } },
@@ -114,7 +122,7 @@ export function authorToolStarted(name: string): AuthorToolNotice {
   return { tool, ok: true, summary: PROGRESS[tool], pendingInstall: false, draft: null }
 }
 
-export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorToolExecutor {
+export function createAuthorToolExecutor(drafts: PluginDraftService, manage?: ManagePlugins): AuthorToolExecutor {
   return {
     async execute(call) {
       if (call.arguments.length > MAX_ARGUMENTS) return refusal(publicTool(call.name), '工具参数过长，已拒绝。源码没有执行。')
@@ -124,7 +132,21 @@ export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorTool
       if (!isAuthorTool(call.name)) return refusal('unknown', '没有这个作者工具。模型不能安装插件，源码也不会执行。')
       const source = sourceArgument(call)
       try {
-        if (call.name === 'inspect_drafts') return await inspectForAuthor(drafts, call.arguments)
+        if (call.name === 'inspect_drafts') return await inspectForAuthor(drafts, call.arguments, manage)
+        if (call.name === 'list_plugins' || call.name === 'uninstall_plugin' || call.name === 'delete_draft') {
+          const args=JSON.parse(call.arguments)
+          if (!args || typeof args!=='object' || Array.isArray(args)) return refusal(call.name,'管理参数必须是对象')
+          const allowed=call.name==='list_plugins'?[]:call.name==='delete_draft'?['draftId','revision']:['id','target','version']
+          if(Object.keys(args).length!==allowed.length||Object.keys(args).some(k=>!allowed.includes(k)))return refusal(call.name,'管理参数不完整或包含额外字段，未执行。')
+          const request=call.name==='list_plugins'
+            ? parsePluginManagementRequest({...args,action:'list',target:'all'})
+            : call.name==='delete_draft'
+              ? parsePluginManagementRequest({action:'delete-draft',target:'draft',...Object.fromEntries(Object.entries(args).map(([k,v])=>[k==='draftId'?'id':k,v]))})
+              : parsePluginManagementRequest({action:'uninstall',...args})
+          if (!manage) return refusal(call.name,'本机插件管理服务不可用，未执行删除。')
+          const result=await manage(request)
+          return {content:JSON.stringify(result),notice:{tool:call.name,ok:true,summary:result.summary,pendingInstall:false,draft:null}}
+        }
         const result = await dispatch(drafts, call.name, call.arguments)
         let notice = noticeFrom(call.name, result, source)
         let installationIssues: readonly PluginDraftIssue[] = []
@@ -151,6 +173,7 @@ export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorTool
         }
       }
       catch (error) {
+        if(['list_plugins','delete_draft','uninstall_plugin'].includes(call.name) && error instanceof Error) return refusal(call.name,redactToolResult(error.message,''))
         if (error instanceof PluginDraftError && error.code === 'DRAFT_REVISION_CONFLICT') {
           return refusal(call.name, '草稿未保存：修订号冲突。请 inspect_drafts({draftId}) 重新读取最新内容，合并用户修改后用该 revision 作为 baseRevision 保存；不要只更换数字重试。')
         }
@@ -161,7 +184,7 @@ export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorTool
   }
 }
 
-async function inspectForAuthor(drafts: PluginDraftService, raw: string): Promise<AuthorToolExecution> {
+async function inspectForAuthor(drafts: PluginDraftService, raw: string, manage?: ManagePlugins): Promise<AuthorToolExecution> {
   const args: unknown = JSON.parse(raw)
   if (!args || typeof args !== 'object' || Array.isArray(args)) return refusal('inspect_drafts', '检查参数必须是对象。')
   const input = args as Record<string, unknown>
@@ -180,17 +203,18 @@ async function inspectForAuthor(drafts: PluginDraftService, raw: string): Promis
       summary: '已读取草稿最新修订供修改；未安装、提交或执行。', pendingInstall: false, draft: null } }
   }
   const offset = 'offset' in input ? input.offset : 0
-  if (!Number.isSafeInteger(offset) || typeof offset !== 'number' || offset < 0 || offset > 100) {
-    return refusal('inspect_drafts', 'offset 必须是 0 到 100 的整数。')
+  if (!Number.isSafeInteger(offset) || typeof offset !== 'number' || offset < 0 || offset > 200) {
+    return refusal('inspect_drafts', 'offset 必须是 0 到 200 的整数。')
   }
   const result = await drafts.inspect()
+  const installed = manage ? (await manage({action:'list',target:'all'})).plugins.map(p=>({...p,status:p.enabled?'active':'inactive'})) : result.installed
   const size = 4
   const content = JSON.stringify({ contract: input.format === 'legacy' ? PLUGIN_AUTHOR_CONTRACT : DEFAULT_PLUGIN_AUTHOR_CONTRACT,
-    installed: result.installed.slice(offset, offset + size).map(({ id, version, status }) => ({ id, version, status })),
+    installed: installed.slice(offset, offset + size),
     drafts: result.drafts.slice(offset, offset + size).map(({ id, version, revision, ok }) => ({ id, version, revision, ok })),
-    counts: { installed: result.installed.length, drafts: result.drafts.length },
-    pagination: { offset, pageSize: size, catalogLimit: 100,
-      nextOffset: offset + size < Math.max(result.installed.length, result.drafts.length) ? offset + size : null },
+    counts: { installed: installed.length, drafts: result.drafts.length },
+    pagination: { offset, pageSize: size, catalogLimit: 200,
+      nextOffset: offset + size < Math.max(installed.length, result.drafts.length) ? offset + size : null },
   })
   if (content.length > MAX_RESULT) return refusal('inspect_drafts', '草稿目录超出响应上限。')
   return { content: redactToolResult(content, ''), notice: {

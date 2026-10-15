@@ -6,6 +6,7 @@ import { PluginDraftError, PluginDraftService } from './plugin-drafts'
 import { InstalledStaticToolStore, restoreInstalledStaticTools } from './installed-static-tools'
 import { installConfirmedTextTool } from './static-tool-install'
 import { createAuthorToolExecutor } from './author-tools'
+import { createPluginManagement } from './plugin-management'
 import { ModelService } from './model-service'
 import { HostCredentialClient } from './credential-client'
 import { ModelServiceError, sanitizeProviderText } from './model-error'
@@ -41,11 +42,12 @@ const drafts = new PluginDraftService({
     status: plugin.status,
   })),
 })
+const managePlugins = createPluginManagement(drafts, plugins, staticTools, request => credentials.managePlugins(request))
 const model = new ModelService({
   defaultProviderMode: demoPluginsEnabled ? 'mock' : 'openai-compatible',
   dataDir: hostDataDir,
   generation,
-  authorTools: createAuthorToolExecutor(drafts),
+  authorTools: createAuthorToolExecutor(drafts, managePlugins),
   credentials,
 })
 const pluginsReady = plugins.start().then(() => restoreInstalledStaticTools(staticTools, plugins))
@@ -91,6 +93,9 @@ async function handleRequest(request: HostRequest): Promise<void> {
   }
 
   switch (request.method) {
+    case 'plugins.manage':
+      parentPort.postMessage(createHostSuccessResponse(request, await managePlugins(request.payload)))
+      return
     case 'host.handshake': {
       if (!request.payload.supportedProtocolVersions.includes(HOST_PROTOCOL_VERSION)) {
         parentPort.postMessage(createHostErrorResponse(request, {

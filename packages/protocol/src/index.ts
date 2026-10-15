@@ -1,5 +1,7 @@
-import { MODEL_MAX_REQUESTS } from './model-limits';
-export { MODEL_MAX_TOOL_ROUNDS, MODEL_MAX_REQUESTS } from './model-limits';
+import { MODEL_USAGE_MAX_COUNT } from './model-limits';
+import { parsePluginManagementRequest, parsePluginManagementResult, type PluginManagementRequest, type PluginManagementResult } from './plugin-management';
+export * from './plugin-management';
+export { MODEL_MAX_CONSECUTIVE_TOOL_FAILURES, MODEL_USAGE_MAX_COUNT } from './model-limits';
 
 export const HOST_PROTOCOL_VERSION = 1 as const;
 
@@ -8,6 +10,7 @@ export const HOST_METHODS = [
   "diagnostics.ping",
   "host.shutdown",
   "plugins.list",
+  "plugins.manage",
   "plugins.setEnabled",
   "tools.invoke",
   "model.getSettings",
@@ -205,6 +208,7 @@ export interface PluginDraftInstallResult {
 }
 
 export interface HostRequestPayloadMap {
+  "plugins.manage": PluginManagementRequest;
   "host.handshake": {
     clientName: string;
     clientVersion: string;
@@ -246,6 +250,7 @@ export interface HostRequestPayloadMap {
 }
 
 export interface HostResponsePayloadMap {
+  "plugins.manage": PluginManagementResult;
   "host.handshake": {
     selectedProtocolVersion: typeof HOST_PROTOCOL_VERSION;
     hostName: string;
@@ -278,6 +283,9 @@ export interface HostResponsePayloadMap {
 }
 
 export const AUTHOR_TOOL_PUBLIC_NAMES = [
+  "list_plugins",
+  "delete_draft",
+  "uninstall_plugin",
   "inspect_drafts",
   "create_draft",
   "validate_draft",
@@ -781,7 +789,7 @@ export const parseModelTokenUsage = (value: unknown): ModelTokenUsage => {
   for (const field of fields) if (!Number.isSafeInteger(object[field]) || Number(object[field]) < 0 || Number(object[field]) > 1_000_000_000) {
     throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid token usage', `${path}.${field}`);
   }
-  if (Number(object.reportedRequests) < 1 || Number(object.reportedRequests) > Number(object.requestCount) || Number(object.requestCount) > MODEL_MAX_REQUESTS || Number(object.totalTokens) !== Number(object.inputTokens) + Number(object.outputTokens)) {
+  if (Number(object.reportedRequests) < 1 || Number(object.reportedRequests) > Number(object.requestCount) || Number(object.requestCount) > MODEL_USAGE_MAX_COUNT || Number(object.totalTokens) !== Number(object.inputTokens) + Number(object.outputTokens)) {
     throw new ProtocolValidationError('INVALID_PAYLOAD', 'Inconsistent token usage', path);
   }
   return object as unknown as ModelTokenUsage;
@@ -1100,6 +1108,7 @@ const parseRequestPayload = <M extends HostMethod>(
   value: unknown,
 ): HostRequestPayloadMap[M] => {
   switch (method) {
+    case 'plugins.manage': return parsePluginManagementRequest(value) as HostRequestPayloadMap[M];
     case 'credentials.read': {
       const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
       assertKeys(object, [], [], '$.payload', 'INVALID_PAYLOAD');
@@ -1231,6 +1240,7 @@ const parseResponsePayload = <M extends HostMethod>(
   value: unknown,
 ): HostResponsePayloadMap[M] => {
   switch (method) {
+    case 'plugins.manage': return parsePluginManagementResult(value) as HostResponsePayloadMap[M];
     case 'credentials.read': return parseCredential(value) as HostResponsePayloadMap[M];
     case 'credentials.write': {
       const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');

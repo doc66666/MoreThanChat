@@ -41,6 +41,16 @@ export class ClientPluginStore {
     this.#tail = task.catch(() => undefined)
     return task
   }
+
+  remove(id: string, version: string): Promise<void> {
+    const task = this.#tail.then(async () => {
+      const installed = await this.#read(), current = installed.find(p => p.manifest.id === id)
+      if (!current || current.manifest.version !== version) throw new Error('插件已变化，请刷新列表后重试')
+      await this.#write(installed.filter(p => p.manifest.id !== id))
+    })
+    this.#tail = task.catch(() => undefined)
+    return task
+  }
   async #write(contents: InstalledClientPackage[]): Promise<void> {
     await mkdir(this.directory, {recursive: true, mode: 0o700})
     if (!(await lstat(this.directory)).isDirectory()) throw new Error('插件目录不可用')

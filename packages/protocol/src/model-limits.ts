@@ -1,4 +1,4 @@
-// Shared by the producer, receiver and published schema. The final request
-// summarizes the result without tools, so it must count towards token usage.
-export const MODEL_MAX_TOOL_ROUNDS = 12;
-export const MODEL_MAX_REQUESTS = MODEL_MAX_TOOL_ROUNDS + 1;
+// There is no total tool-round budget. Stop only a consecutive failure streak.
+export const MODEL_MAX_CONSECUTIVE_TOOL_FAILURES = 5;
+// Wire-format bound for integer counters, not a model execution budget.
+export const MODEL_USAGE_MAX_COUNT = 1_000_000_000;

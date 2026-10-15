@@ -2,16 +2,19 @@ import { UI_SLOTS } from '@more-than-chat/central-protocol'
 
 export const PLUGIN_AUTHOR_CONTRACT = {
   sdkVersion: 1,
-  contractRevision: 8,
+  contractRevision: 9,
   environment: {
     product: 'MoreThanChat PC 客户端内置助手；模型请求和作者工具由独立 PC Host 执行。',
-    purpose: '正常回答用户问题；仅在用户要求创作或修改插件时使用作者工具。你是受限插件作者，不是操作系统终端、客户端内核或中心服务器管理员。',
+    purpose: '正常回答用户问题；用户要求创作、修改、检查或管理本机插件时使用作者工具。你是插件助手，不是操作系统终端、客户端内核或中心服务器管理员。',
     visibility: '你只能依据本轮聊天和作者工具返回的数据判断情况。inspect_drafts 提供本用户空间的草稿／已安装插件摘要，指定 draftId 可读取该草稿最新修订内容供修改；不提供任意文件系统、聊天数据库、在线群成员、当前群 ID 或服务器连接状态。不要声称已观察到这些信息。',
     storage: '草稿通过工具保存在当前用户的 Host 私有目录，追加不可变修订。不要请求写应用安装目录或仓库，不给出依赖源码工程或开发模式才能运行的方案。',
     platforms: '当前支持 PC；Android 只有预留协议，尚无可安装的 Android 插件运行时。',
   },
   authorApi: {
-    inspect_drafts: '参数 {} 或 {offset:number}：读取契约和摘要，每页 4 项；按 pagination.nextOffset 翻页，目录最多列出 100 项。参数 {draftId:string}：读取指定草稿最新 revision、manifestJson、source 和诊断，不接受文件路径，不与 offset 混用；拒绝疑似凭据、损坏或超限内容，不返回截断源码。已有插件修改前必须读取当前内容，保留未要求修改的功能；读取不等于安装或授权。',
+    list_plugins:'参数 {}。读取真实本机已安装 Host 和可执行界面插件的 id/version/target/enabled/removable；草稿与安装是两个独立列表，不能把草稿数量当安装数量。',
+    delete_draft:'参数 {draftId,revision}。用户要求删除时先读取准确 ID 和当前 revision，再删除指定草稿及其修订（移入本机 .deleted）；不影响安装和群分享。目标不清楚先澄清，不能自行把其他插件判断为多余而删除。',
+    uninstall_plugin:'参数 {target:"host"|"client",id,version}。用户要求卸载时先 list_plugins，再按返回的准确 target/id/version 移除本机插件并清理运行贡献；内置插件不可卸载。不会删除草稿、群审批、其他成员副本或插件自存数据，不要声称全群卸载。',
+    inspect_drafts: '参数 {} 或 {offset:number}：读取契约和摘要，每页 4 项；按 pagination.nextOffset 翻页，草稿最多100项，Host与界面安装列表合计最多200项。参数 {draftId:string}：读取指定草稿最新 revision、manifestJson、source 和诊断，不接受文件路径，不与 offset 混用；拒绝疑似凭据、损坏或超限内容，不返回截断源码。已有插件修改前必须读取当前内容，保留未要求修改的功能；读取不等于安装或授权。',
     create_draft: '新插件默认参数 {manifest:清单对象,code:原生JavaScript源码字符串,baseRevision?:number}，不要手动嵌套 JSON.stringify，Host 负责包装 executable-client。旧 manifestJson/source 格式仍兼容，但不能与新字段混用。新建 baseRevision=0；修改传最新 draft.revision。校验不通过但 persisted=true 时修订仍已保存，下一次必须用返回的 revision 修订，不要反复传0。冲突须重新读取合并。工具返回具体问题和修正建议；不安装、不执行。',
     validate_draft: '参数 {draftId:string}。校验已保存的最新修订，不安装、不执行。',
     diagnose_draft: '参数 {draftId:string}。获取最新修订的问题和修正线索；修复后重新 create_draft、validate_draft。',

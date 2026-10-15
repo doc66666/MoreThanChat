@@ -4,10 +4,33 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { readServerSentEvents, createOpenAiCompatibleProvider } from '../src/openai-compatible'
 import { ModelService } from '../src/model-service'
-import { parseHostMessage, MODEL_MAX_REQUESTS, type HostEventMessage } from '@more-than-chat/protocol'
+import { parseHostMessage, type HostEventMessage } from '@more-than-chat/protocol'
 
 describe('provider token reporting', () => {
-  it.each([7, 11, MODEL_MAX_REQUESTS])('emits protocol-valid usage after %i real provider-adapter requests', async requestCount => {
+  it('executes all twenty adapter calls in one response without truncating the tool transcript',async()=>{
+    const dir=await mkdtemp(path.join(tmpdir(),'mtc-batch-'))
+    let requests=0,executed=0
+    const provider=createOpenAiCompatibleProvider(async(_url,init)=>{
+      const body=JSON.parse(String(init?.body));requests++
+      if(requests===2){
+        expect(body.messages.filter((m:any)=>m.role==='tool')).toHaveLength(20)
+        expect(body.messages.find((m:any)=>m.tool_calls)?.tool_calls).toHaveLength(20)
+      }
+      const delta=requests===1?{tool_calls:Array.from({length:20},(_,i)=>({index:i,id:'call-'+i,type:'function',function:{name:'inspect_drafts',arguments:'{}'}}))}:{content:'done'}
+      return new Response(`data: ${JSON.stringify({choices:[{delta,finish_reason:requests===1?'tool_calls':'stop'}]})}\n\ndata: [DONE]\n\n`,{headers:{'content-type':'text/event-stream'}})
+    })
+    const service=new ModelService({dataDir:dir,generation:1,authorTools:{execute:async()=>{executed++;return {content:'ok',notice:{tool:'inspect_drafts',ok:true,summary:'ok',pendingInstall:false,draft:null}}}},providers:{mock:{stream:(request,delta)=>provider.stream({...request,apiKey:'fixture-only'},delta)}}})
+    try{
+      await service.load()
+      await new Promise<void>((resolve,reject)=>service.start({streamId:'batch',conversationId:'test',assistantMessageId:'reply',messages:[{role:'user',content:'check'}]},event=>{
+        if(event.event==='model.chat.completed')resolve()
+        if(event.event==='model.chat.failed')reject(new Error(event.payload.error.message))
+      }))
+      expect(executed).toBe(20);expect(requests).toBe(2)
+    }finally{service.close();await rm(dir,{recursive:true,force:true})}
+  })
+
+  it.each([7, 11, 13, 30])('emits protocol-valid usage after %i real provider-adapter requests', async requestCount => {
     const dir = await mkdtemp(path.join(tmpdir(), 'mtc-usage-'))
     let calls=0
     const events: HostEventMessage[]=[]
@@ -15,12 +38,12 @@ describe('provider token reporting', () => {
       calls++
       const request=JSON.parse(String(init?.body))
       const last=calls===requestCount
-      if(calls===MODEL_MAX_REQUESTS) expect(request.tools).toBeUndefined()
+      expect(request.tools).toBeDefined()
       const delta=last ? {content:'completed'} : {tool_calls:[{index:0,id:'tool-'+calls,type:'function',function:{name:'inspect_drafts',arguments:'{}'}}]}
       return new Response(`data: ${JSON.stringify({choices:[{delta,finish_reason:last?'stop':'tool_calls'}]})}\n\ndata: ${JSON.stringify({choices:[],usage:{prompt_tokens:10,completion_tokens:4,total_tokens:14}})}\n\ndata: [DONE]\n\n`,{headers:{'content-type':'text/event-stream'}})
     })
     // In-memory adapter only: no network requests, credentials or user profile.
-    const service=new ModelService({dataDir:dir,generation:1,providers:{mock:{stream:(request,delta)=>provider.stream({...request,apiKey:'fixture-only'},delta)}}})
+    const service=new ModelService({dataDir:dir,generation:1,authorTools:{execute:async()=>({content:'ok',notice:{tool:'inspect_drafts',ok:true,summary:'ok',pendingInstall:false,draft:null}})},providers:{mock:{stream:(request,delta)=>provider.stream({...request,apiKey:'fixture-only'},delta)}}})
     try {
       await service.load()
       await new Promise<void>((resolve,reject)=>{

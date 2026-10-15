@@ -1,15 +1,32 @@
 import { expect, it, vi } from 'vitest'
-const mocks=vi.hoisted(()=>({api:null as any,invoke:vi.fn(),on:vi.fn()}))
-vi.mock('electron',()=>({contextBridge:{exposeInMainWorld:(_name:string,api:unknown)=>{mocks.api=api}},ipcRenderer:{invoke:mocks.invoke,on:mocks.on,removeListener:vi.fn()}}))
+const mocks=vi.hoisted(()=>({api:null as any,invoke:vi.fn(),on:vi.fn(),send:vi.fn(),removeListener:vi.fn()}))
+vi.mock('electron',()=>({contextBridge:{exposeInMainWorld:(_name:string,api:unknown)=>{mocks.api=api}},ipcRenderer:{invoke:mocks.invoke,on:mocks.on,send:mocks.send,removeListener:mocks.removeListener}}))
 import '../src/main/preload'
 
-it.each([7,11,13])('delivers %i-request completion through the actual preload bridge',requestCount=>{
+it.each([7,11,13,30,1000])('delivers %i-request completion through the actual preload bridge',requestCount=>{
   const listener=vi.fn(),dispose=mocks.api.onModelChatEvent(listener)
   const handler=mocks.on.mock.calls.at(-1)![1]
   const event={type:'completed',streamId:'s',conversationId:'c',assistantMessageId:'a',generation:1,text:'done',usage:{inputTokens:10,outputTokens:4,totalTokens:14,reportedRequests:requestCount,requestCount}}
   handler({},event)
   expect(listener).toHaveBeenCalledWith(event)
   dispose()
+})
+it('waits for client cleanup before acknowledging uninstall, and reports failure accurately',async()=>{
+  let finish!:()=>void
+  const listener=vi.fn(()=>new Promise<void>(resolve=>{finish=resolve}))
+  const dispose=mocks.api.onClientPluginRemoval(listener)
+  const handler=mocks.on.mock.calls.at(-1)![1]
+  mocks.send.mockClear()
+  const pending=handler({},{token:'operation',id:'example.client',version:'1.0.0'})
+  expect(listener).toHaveBeenCalledWith('example.client','1.0.0')
+  expect(mocks.send).not.toHaveBeenCalled()
+  finish();await pending
+  expect(mocks.send).toHaveBeenLastCalledWith('client-plugins:removed',{token:'operation',ok:true})
+  listener.mockRejectedValueOnce(new Error('cleanup failed'))
+  await handler({},{token:'failed',id:'example.client',version:'1.0.0'})
+  expect(mocks.send).toHaveBeenLastCalledWith('client-plugins:removed',expect.objectContaining({token:'failed',ok:false}))
+  dispose()
+  expect(mocks.removeListener).toHaveBeenLastCalledWith('client-plugins:remove-request',handler)
 })
 it('rejects inconsistent or malformed usage at the preload boundary',()=>{
   const listener=vi.fn(),dispose=mocks.api.onModelChatEvent(listener)

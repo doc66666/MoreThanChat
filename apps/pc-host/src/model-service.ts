@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   createHostEvent,
-  MODEL_MAX_TOOL_ROUNDS,
+  MODEL_MAX_CONSECUTIVE_TOOL_FAILURES,
   type HostEventMessage,
   type HostRequestPayloadMap,
   type ModelChatMessage,
@@ -27,8 +27,6 @@ export const DEFAULT_MODEL_BASE_URL = 'https://api.deepseek.com'
 export const DEFAULT_MODEL_NAME = 'deepseek-flash'
 const MAX_REPLY_CHARS = 500_000
 const MAX_DELTA_CHARS = 100_000
-const MAX_TOOL_ROUNDS = MODEL_MAX_TOOL_ROUNDS
-const MAX_TOOL_CALLS = 4
 
 export interface ModelServiceOptions {
   defaultProviderMode?: ModelProviderMode
@@ -200,7 +198,8 @@ export class ModelService {
       const transcript: ProviderMessage[] = buildModelTranscript(stream.messages)
       const usage: ModelTokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, requestCount: 0, reportedRequests: 0 }
       let unresolvedTools = false
-      for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+      let consecutiveFailures = 0
+      while (true) {
         if (stream.cancelRequested || stream.controller.signal.aborted) {
           this.#finishCancelled(stream)
           return
@@ -209,8 +208,8 @@ export class ModelService {
           baseUrl: stream.settings.baseUrl,
           model: stream.settings.model,
           apiKey: secret,
-          messages: round === MAX_TOOL_ROUNDS ? [...transcript, {role:'user',content:'【宿主收尾阶段】本轮工具预算已用完。不要再调用工具。根据真实工具结果说明草稿是否已保存、是否通过校验、仍需修正的问题；不要宣称未完成的安装或测试。用户可以下一轮继续修订，已保存的草稿不会丢失。'}] : transcript,
-          toolsEnabled: round < MAX_TOOL_ROUNDS,
+          messages: consecutiveFailures >= MODEL_MAX_CONSECUTIVE_TOOL_FAILURES ? [...transcript, {role:'user',content:'【宿主收尾阶段】工具已连续失败5次，本次停止自动尝试。不要再调用工具。说明实际结果和错误；已保存草稿不丢失，用户可继续修订。不要宣称未完成的操作。'}] : transcript,
+          toolsEnabled: consecutiveFailures < MODEL_MAX_CONSECUTIVE_TOOL_FAILURES,
           signal: stream.controller.signal,
         }
         const turn = await provider.stream(request, delta => this.#appendDelta(stream, delta))
@@ -222,14 +221,14 @@ export class ModelService {
           usage.totalTokens += turn.usage.totalTokens
         }
         if (stream.state !== 'running') return
-        const calls = (turn?.toolCalls ?? []).slice(0, MAX_TOOL_CALLS)
+        const calls = turn?.toolCalls ?? []
         if (calls.length === 0) {
           unresolvedTools = false
           break
         }
         unresolvedTools = true
-        if (round === MAX_TOOL_ROUNDS) break
-        await this.#recordToolRound(stream, transcript, calls, secret)
+        if (consecutiveFailures >= MODEL_MAX_CONSECUTIVE_TOOL_FAILURES) break
+        consecutiveFailures = await this.#recordToolRound(stream, transcript, calls, secret, consecutiveFailures)
         if (stream.state !== 'running') return
       }
       if (stream.cancelRequested) {
@@ -237,7 +236,7 @@ export class ModelService {
         return
       }
       if (unresolvedTools) {
-        this.#finishFailed(stream, new ModelServiceError('MODEL_REQUEST_FAILED', '插件作者工具调用次数已达上限。已保存的草稿仍在插件面板，可发送“继续修订”读取最新草稿后继续；尚未安装。', true), secret)
+        this.#finishFailed(stream, new ModelServiceError('MODEL_REQUEST_FAILED', '工具已连续失败5次，已停止自动尝试。已保存的草稿仍在，可发送“继续修订”。', true), secret)
         return
       }
       if (!stream.text.trim()) {
@@ -258,7 +257,7 @@ export class ModelService {
     }
   }
 
-  async #recordToolRound(stream: ActiveStream, transcript: ProviderMessage[], calls: readonly AuthorToolCall[], secret: string): Promise<void> {
+  async #recordToolRound(stream: ActiveStream, transcript: ProviderMessage[], calls: readonly AuthorToolCall[], secret: string, failures: number): Promise<number> {
     transcript.push({
       role: 'assistant',
       content: '',
@@ -267,16 +266,17 @@ export class ModelService {
     for (const call of calls) {
       if (stream.cancelRequested || stream.controller.signal.aborted) {
         this.#finishCancelled(stream)
-        return
+        return failures
       }
       this.#emitAuthorTool(stream, 'started', authorToolStarted(call.name), secret)
-      const execution = this.#authorTools
+      const execution = this.#authorTools && failures < MODEL_MAX_CONSECUTIVE_TOOL_FAILURES
         ? await this.#authorTools.execute(call)
         : {
-            content: '作者工具不可用。源码没有执行。',
-            notice: { ...authorToolStarted(call.name), ok: false, summary: '作者工具不可用。源码没有执行。' },
+            content: '工具不可用或已连续失败5次，本次未执行。',
+            notice: { ...authorToolStarted(call.name), ok: false, summary: '工具不可用或已连续失败5次，本次未执行。' },
           }
-      if (stream.state !== 'running') return
+      if (stream.state !== 'running') return failures
+      failures = execution.notice.ok ? 0 : failures + 1
       this.#emitAuthorTool(stream, 'finished', execution.notice, secret)
       transcript.push({
         role: 'tool',
@@ -285,6 +285,7 @@ export class ModelService {
         content: redactSecret(execution.content, secret),
       })
     }
+    return failures
   }
 
   #emitAuthorTool(stream: ActiveStream, phase: 'started' | 'finished', notice: AuthorToolNotice, secret: string): void {
