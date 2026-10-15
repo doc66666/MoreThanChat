@@ -313,7 +313,9 @@ function parseClientUsage(value: unknown): ModelTokenUsage {
   const fields = ['inputTokens', 'outputTokens', 'totalTokens', 'reportedRequests', 'requestCount']
   assertExactKeys(record, fields, 'Invalid token usage.')
   for (const field of fields) if (!Number.isSafeInteger(record[field]) || Number(record[field]) < 0 || Number(record[field]) > 1000000000) throw new Error('Invalid token usage.')
-  if (Number(record.totalTokens) !== Number(record.inputTokens) + Number(record.outputTokens) || Number(record.reportedRequests) < 1 || Number(record.reportedRequests) > Number(record.requestCount) || Number(record.requestCount) > 6) throw new Error('Invalid token usage.')
+  // HostSupervisor already enforces the shared request budget. This sandboxed
+  // bridge validates the data shape and arithmetic, not a second, stale budget.
+  if (Number(record.totalTokens) !== Number(record.inputTokens) + Number(record.outputTokens) || Number(record.reportedRequests) < 1 || Number(record.reportedRequests) > Number(record.requestCount)) throw new Error('Invalid token usage.')
   return record as unknown as ModelTokenUsage
 }
 
