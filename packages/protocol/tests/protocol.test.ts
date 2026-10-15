@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   HOST_PROTOCOL_V1_JSON_SCHEMA,
   HOST_PROTOCOL_VERSION,
+  MODEL_MAX_REQUESTS,
   ProtocolValidationError,
   assertResponseForRequest,
   createHostErrorResponse,
@@ -34,6 +35,18 @@ it('validates optional usage while keeping old completed events compatible', () 
   expect(() => parseModelTokenUsage({ ...usage, totalTokens: 99 })).toThrow();
   expect(() => parseModelTokenUsage({ ...usage, requestCount: 0 })).toThrow();
   expect(() => parseModelTokenUsage({ ...usage, apiKey: 'forbidden' })).toThrow();
+});
+
+it.each([6, 7, 11, 13])('accepts completion usage for %i requests including the summary turn', requestCount => {
+  const usage = { inputTokens: 12, outputTokens: 4, totalTokens: 16, reportedRequests: requestCount, requestCount };
+  expect(parseModelTokenUsage(usage)).toEqual(usage);
+  expect(parseModelTokenUsage({ ...usage, reportedRequests: 1 })).toMatchObject({ requestCount });
+});
+
+it('rejects usage beyond the shared request budget and inconsistent reports', () => {
+  const usage = { inputTokens: 12, outputTokens: 4, totalTokens: 16, reportedRequests: 1, requestCount: MODEL_MAX_REQUESTS };
+  expect(() => parseModelTokenUsage({ ...usage, requestCount: MODEL_MAX_REQUESTS + 1 })).toThrow();
+  expect(() => parseModelTokenUsage({ ...usage, reportedRequests: MODEL_MAX_REQUESTS + 1 })).toThrow();
 });
 
 describe("Host protocol v1", () => {

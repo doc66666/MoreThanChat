@@ -4,9 +4,37 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { readServerSentEvents, createOpenAiCompatibleProvider } from '../src/openai-compatible'
 import { ModelService } from '../src/model-service'
-import type { HostEventMessage } from '@more-than-chat/protocol'
+import { parseHostMessage, MODEL_MAX_REQUESTS, type HostEventMessage } from '@more-than-chat/protocol'
 
 describe('provider token reporting', () => {
+  it.each([7, 11, MODEL_MAX_REQUESTS])('emits protocol-valid usage after %i real provider-adapter requests', async requestCount => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'mtc-usage-'))
+    let calls=0
+    const events: HostEventMessage[]=[]
+    const provider=createOpenAiCompatibleProvider(async (_url,init) => {
+      calls++
+      const request=JSON.parse(String(init?.body))
+      const last=calls===requestCount
+      if(calls===MODEL_MAX_REQUESTS) expect(request.tools).toBeUndefined()
+      const delta=last ? {content:'completed'} : {tool_calls:[{index:0,id:'tool-'+calls,type:'function',function:{name:'inspect_drafts',arguments:'{}'}}]}
+      return new Response(`data: ${JSON.stringify({choices:[{delta,finish_reason:last?'stop':'tool_calls'}]})}\n\ndata: ${JSON.stringify({choices:[],usage:{prompt_tokens:10,completion_tokens:4,total_tokens:14}})}\n\ndata: [DONE]\n\n`,{headers:{'content-type':'text/event-stream'}})
+    })
+    // In-memory adapter only: no network requests, credentials or user profile.
+    const service=new ModelService({dataDir:dir,generation:1,providers:{mock:{stream:(request,delta)=>provider.stream({...request,apiKey:'fixture-only'},delta)}}})
+    try {
+      await service.load()
+      await new Promise<void>((resolve,reject)=>{
+        service.start({streamId:'usage',conversationId:'test',assistantMessageId:'reply',messages:[{role:'user',content:'hi'}]},event=>{
+          try { parseHostMessage(event); events.push(event) } catch(error) { reject(error); return }
+          if(event.event==='model.chat.completed')resolve()
+          if(event.event==='model.chat.failed')reject(new Error(event.payload.error.message))
+        })
+      })
+      expect(calls).toBe(requestCount)
+      expect(events.at(-1)).toMatchObject({event:'model.chat.completed',payload:{usage:{requestCount,reportedRequests:requestCount,inputTokens:10*requestCount,outputTokens:4*requestCount,totalTokens:14*requestCount}}})
+    } finally { service.close(); await rm(dir,{recursive:true,force:true}) }
+  })
+
   it('reads usage-only SSE chunks after the finish marker and does not estimate missing usage', async () => {
     const seen: unknown[] = []
     const body = new Response('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}\n\ndata: [DONE]\n\n').body!

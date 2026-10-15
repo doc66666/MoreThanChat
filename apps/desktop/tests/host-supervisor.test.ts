@@ -77,6 +77,26 @@ afterEach(() => {
 })
 
 describe('HostSupervisor', () => {
+  it.each([7, 11, 13])('delivers %i-request completion usage without terminating or restarting Host', async requestCount => {
+    const processes: FakeHostProcess[] = []
+    const supervisor = createSupervisor(processes)
+    const events: unknown[] = []
+    supervisor.subscribeEvents(event => events.push(event))
+    const started = supervisor.start(); const host = processes[0]!
+    host.emitSpawn(); respondToHandshake(host); await started
+    try {
+      const event = createHostEvent('model.chat.completed', {
+        streamId:'usage', conversationId:'test', assistantMessageId:'reply', generation:1, text:'completed',
+        usage:{inputTokens:10*requestCount,outputTokens:2*requestCount,totalTokens:12*requestCount,reportedRequests:requestCount,requestCount},
+      })
+      host.emitMessage(event)
+      expect(events).toEqual([event])
+      expect(host.terminateCalls).toBe(0)
+      expect(supervisor.getStatus()).toEqual({state:'ready',generation:1})
+      expect(processes).toHaveLength(1)
+    } finally { const stopped=supervisor.stop(); host.emitExit(0); await stopped }
+  })
+
   it('brokers private credential replies without broadcasting them to UI events', async () => {
     const processes: FakeHostProcess[] = []
     const write = vi.fn(async (_key: string | null) => undefined)

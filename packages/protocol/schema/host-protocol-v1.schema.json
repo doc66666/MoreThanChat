@@ -1855,12 +1855,12 @@
                 "reportedRequests": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 6
+                  "maximum": 13
                 },
                 "requestCount": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 6
+                  "maximum": 13
                 }
               }
             }

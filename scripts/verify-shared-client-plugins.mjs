@@ -21,13 +21,16 @@ const modelServer=createServer(async(req,res)=>{
     let body='';for await(const chunk of req)body+=chunk
     const parsed=JSON.parse(body);modelRequests++
     assert(parsed.messages.some(m=>m.role==='system'&&m.content.includes('sdk.network.send')&&m.content.includes('私聊')),'Missing built-in executable author contract')
-    const tools=parsed.messages.slice(parsed.messages.findLastIndex(m=>m.role==='user')+1).filter(m=>m.role==='tool')
+    const tools=parsed.messages.filter(m=>m.role==='tool')
     const updating=authoredPack.manifest.version!=='0.1.0'
-    const steps=updating?['inspect_drafts','create_draft','validate_draft']:['create_draft','validate_draft'],tool=steps[tools.length]
+    // Twelve tool rounds plus the tools-disabled summary, all reporting usage.
+    // v0.2.1 passed no-usage fixtures but killed Host on this completion event.
+    const steps=updating?['inspect_drafts','create_draft','validate_draft',...Array(9).fill('inspect_drafts')]:['create_draft','validate_draft',...Array(10).fill('inspect_drafts')],tool=steps[tools.length]
+    if(tools.length===12)assert.equal(parsed.tools,undefined,'Summary must disable tools')
     const baseRevision=updating&&tools.length?JSON.parse(tools[0].content).draft.revision:0
     const args=tool==='create_draft'?{manifest:authoredPack.manifest,code:authoredPack.program.code,baseRevision}:{draftId:pack.manifest.id}
     const delta=tool?{tool_calls:[{index:0,id:'shared-'+modelRequests,function:{name:tool,arguments:JSON.stringify(args)}}]}:{content:'已创建并校验可执行井字棋草稿。可本机安装或申请分享到好友／群聊。'}
-    res.writeHead(200,{'content-type':'text/event-stream'});res.end(`data: ${JSON.stringify({choices:[{delta,finish_reason:tool?'tool_calls':'stop'}]})}\n\ndata: [DONE]\n\n`)
+    res.writeHead(200,{'content-type':'text/event-stream'});res.end(`data: ${JSON.stringify({choices:[{delta,finish_reason:tool?'tool_calls':'stop'}]})}\n\ndata: ${JSON.stringify({choices:[],usage:{prompt_tokens:10,completion_tokens:4,total_tokens:14}})}\n\ndata: [DONE]\n\n`)
   }catch(error){modelError=String(error);res.writeHead(500);res.end('Model fixture failed')}
 })
 await new Promise(resolve=>modelServer.listen(0,'127.0.0.1',resolve))
@@ -53,12 +56,17 @@ async function plugins(s){await closePanel(s);await click(s,'button[title="插�
 async function open(s,target,kind='group') {await closePanel(s);await click(s,'button[title="联系人"]');await click(s,`[data-${kind==='group'?'group':'friend'}="${target}"]`)}
 async function createDraft(s,p){
   authoredPack=p
+  const generation=await value(s,"document.querySelector('.host-status').dataset.hostGeneration")
   await closePanel(s)
   await value(s,`window.moreThanChat.setModelSettings({baseUrl:'http://127.0.0.1:${modelServer.address().port}',model:'qa-executable-author',providerMode:'openai-compatible',apiKey:'qa-only-shared-model-token'})`)
   await value(s,`[...document.querySelectorAll('.conversation-item')].find(n=>n.textContent.includes('More AI')).click()`)
-  await value(s,`(()=>{window.__sharedTerminal=null;window.__sharedTools=[];window.moreThanChat.onModelChatEvent(e=>{if(e.type==='author-tool')window.__sharedTools.push(e);if(['completed','failed','cancelled'].includes(e.type))window.__sharedTerminal=e.type;});const node=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(node,'创建或更新可执行共享井字棋 ${p.manifest.version}，用于本机、群聊和私聊；调用作者工具并校验草稿。');node.dispatchEvent(new Event('input',{bubbles:true}));})()`)
+  await value(s,`(()=>{window.__sharedTerminal=null;window.__sharedTools=[];window.moreThanChat.onModelChatEvent(e=>{if(e.type==='author-tool')window.__sharedTools.push(e);if(['completed','failed','cancelled'].includes(e.type))window.__sharedTerminal=e;});const node=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(node,'创建或更新可执行共享井字棋 ${p.manifest.version}，用于本机、群聊和私聊；调用作者工具并校验草稿。');node.dispatchEvent(new Event('input',{bubbles:true}));})()`)
   await click(s,'.send-button');await poll(s,'Boolean(window.__sharedTerminal)')
-  assert.equal(await value(s,'window.__sharedTerminal'),'completed',modelError||'Model loop failed')
+  const terminal=await value(s,'window.__sharedTerminal')
+  assert.equal(terminal.type,'completed',modelError||'Model loop failed')
+  assert.deepEqual(terminal.usage,{inputTokens:130,outputTokens:52,totalTokens:182,reportedRequests:13,requestCount:13})
+  assert.equal(await value(s,"document.querySelector('.host-status').dataset.hostGeneration"),generation,'Host restarted during authoring')
+  assert.equal(await value(s,"document.querySelector('.host-status').dataset.hostState"),'ready')
   const tools=await value(s,'window.__sharedTools')
   for(const tool of ['create_draft','validate_draft'])assert(tools.some(e=>e.tool===tool&&e.phase==='finished'&&e.ok),'Tool did not succeed: '+tool)
   const draft=(await value(s,'window.moreThanChat.inspectPluginDrafts()')).drafts.find(d=>d.id===p.manifest.id)

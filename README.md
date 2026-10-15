@@ -1,7 +1,7 @@
 # MoreThanChat
 一切皆插件的聊天应用，或许你的企鹅已经过时了！
 
-最新修复版：[v0.2.1 下载](https://github.com/doc66666/MoreThanChat/releases/tag/v0.2.1) · [发行说明](docs/releases/v0.2.1.md)。修正 AI 默认插件路径，直接提交 JavaScript 源码，增加语法诊断与修订流程；旧声明式格式继续兼容。真实模型与下载运行体验由用户验收。
+最新修复版：[v0.2.2 下载](https://github.com/doc66666/MoreThanChat/releases/tag/v0.2.2) · [发行说明](docs/releases/v0.2.2.md)。修复多轮 AI 创作完成时 Token 统计被旧协议拒绝、Host 重启并误显示取消的问题。保留 v0.2.1 的可执行插件默认路径与语法诊断。
 
 当前 v0.2.0 支持同一份 AI 可执行界面插件本机使用、向群申请由管理员批准分发，以及向好友申请由对方同意后分发。成员各自选择载入，通过中心事件接口同步；可改造整个界面，不限固定插槽。见 [共享插件 SDK 与验收](docs/plugin-runtime.md#2026-10-14同一可执行包的本机群聊私聊闭环)，回归命令 `pnpm verify:shared-plugins`。旧 v0.1.0 内测标签保持不变。
 

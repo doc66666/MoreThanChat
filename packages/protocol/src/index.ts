@@ -1,3 +1,6 @@
+import { MODEL_MAX_REQUESTS } from './model-limits';
+export { MODEL_MAX_TOOL_ROUNDS, MODEL_MAX_REQUESTS } from './model-limits';
+
 export const HOST_PROTOCOL_VERSION = 1 as const;
 
 export const HOST_METHODS = [
@@ -778,7 +781,7 @@ export const parseModelTokenUsage = (value: unknown): ModelTokenUsage => {
   for (const field of fields) if (!Number.isSafeInteger(object[field]) || Number(object[field]) < 0 || Number(object[field]) > 1_000_000_000) {
     throw new ProtocolValidationError('INVALID_PAYLOAD', 'Invalid token usage', `${path}.${field}`);
   }
-  if (Number(object.reportedRequests) < 1 || Number(object.reportedRequests) > Number(object.requestCount) || Number(object.requestCount) > 6 || Number(object.totalTokens) !== Number(object.inputTokens) + Number(object.outputTokens)) {
+  if (Number(object.reportedRequests) < 1 || Number(object.reportedRequests) > Number(object.requestCount) || Number(object.requestCount) > MODEL_MAX_REQUESTS || Number(object.totalTokens) !== Number(object.inputTokens) + Number(object.outputTokens)) {
     throw new ProtocolValidationError('INVALID_PAYLOAD', 'Inconsistent token usage', path);
   }
   return object as unknown as ModelTokenUsage;

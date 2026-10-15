@@ -1,3 +1,5 @@
+import { MODEL_MAX_REQUESTS } from './model-limits';
+
 const protocolVersion = { const: 1 } as const;
 const nonEmptyString = { type: "string", minLength: 1, pattern: ".*\\S.*" } as const;
 const requestId = { ...nonEmptyString, maxLength: 256 } as const;
@@ -34,8 +36,8 @@ const modelUsage = { type: 'object', additionalProperties: false,
     inputTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
     outputTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
     totalTokens: { type: 'integer', minimum: 0, maximum: 1000000000 },
-    reportedRequests: { type: 'integer', minimum: 1, maximum: 6 },
-    requestCount: { type: 'integer', minimum: 1, maximum: 6 },
+    reportedRequests: { type: 'integer', minimum: 1, maximum: MODEL_MAX_REQUESTS },
+    requestCount: { type: 'integer', minimum: 1, maximum: MODEL_MAX_REQUESTS },
   },
 } as const;
 const streamIdentityProperties = {

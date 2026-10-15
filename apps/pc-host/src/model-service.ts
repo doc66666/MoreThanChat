@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   createHostEvent,
+  MODEL_MAX_TOOL_ROUNDS,
   type HostEventMessage,
   type HostRequestPayloadMap,
   type ModelChatMessage,
@@ -26,7 +27,7 @@ export const DEFAULT_MODEL_BASE_URL = 'https://api.deepseek.com'
 export const DEFAULT_MODEL_NAME = 'deepseek-flash'
 const MAX_REPLY_CHARS = 500_000
 const MAX_DELTA_CHARS = 100_000
-const MAX_TOOL_ROUNDS = 12
+const MAX_TOOL_ROUNDS = MODEL_MAX_TOOL_ROUNDS
 const MAX_TOOL_CALLS = 4
 
 export interface ModelServiceOptions {
