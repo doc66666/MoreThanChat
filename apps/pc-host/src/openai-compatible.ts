@@ -24,6 +24,7 @@ export interface ProviderChatRequest {
   apiKey: string
   messages: readonly ProviderMessage[]
   signal: AbortSignal
+  toolsEnabled?: boolean
 }
 
 export interface ChatModelProvider {
@@ -70,8 +71,7 @@ export function createOpenAiCompatibleProvider(fetchImpl: typeof fetch = globalT
           body: JSON.stringify({
             model: request.model,
             messages: request.messages.map(toApiMessage),
-            tools: AUTHOR_TOOL_DEFINITIONS,
-            tool_choice: 'auto',
+            ...(request.toolsEnabled === false ? {} : {tools: AUTHOR_TOOL_DEFINITIONS, tool_choice: 'auto'}),
             max_tokens: 8192,
             // Official DeepSeek enables thinking by default. Our compact author
             // loop uses non-thinking mode; no provider-specific field elsewhere.

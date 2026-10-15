@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "acorn": "8.15.0",
     "@more-than-chat/central-protocol": "workspace:*",
     "@more-than-chat/runtime-cordis": "workspace:*",
     "@more-than-chat/plugin-runtime": "workspace:*",

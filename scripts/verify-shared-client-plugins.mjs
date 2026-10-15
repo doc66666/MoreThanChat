@@ -25,7 +25,7 @@ const modelServer=createServer(async(req,res)=>{
     const updating=authoredPack.manifest.version!=='0.1.0'
     const steps=updating?['inspect_drafts','create_draft','validate_draft']:['create_draft','validate_draft'],tool=steps[tools.length]
     const baseRevision=updating&&tools.length?JSON.parse(tools[0].content).draft.revision:0
-    const args=tool==='create_draft'?{manifestJson:JSON.stringify(authoredPack.manifest),source:JSON.stringify(authoredPack.program),baseRevision}:{draftId:pack.manifest.id}
+    const args=tool==='create_draft'?{manifest:authoredPack.manifest,code:authoredPack.program.code,baseRevision}:{draftId:pack.manifest.id}
     const delta=tool?{tool_calls:[{index:0,id:'shared-'+modelRequests,function:{name:tool,arguments:JSON.stringify(args)}}]}:{content:'已创建并校验可执行井字棋草稿。可本机安装或申请分享到好友／群聊。'}
     res.writeHead(200,{'content-type':'text/event-stream'});res.end(`data: ${JSON.stringify({choices:[{delta,finish_reason:tool?'tool_calls':'stop'}]})}\n\ndata: [DONE]\n\n`)
   }catch(error){modelError=String(error);res.writeHead(500);res.end('Model fixture failed')}

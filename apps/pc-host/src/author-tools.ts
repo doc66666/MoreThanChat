@@ -8,7 +8,7 @@ import type {
   PluginDraftSummary,
 } from '@more-than-chat/protocol'
 import { PluginDraftError, type PluginDraftService } from './plugin-drafts'
-import { PLUGIN_AUTHOR_CONTRACT } from './author-contract'
+import { DEFAULT_PLUGIN_AUTHOR_CONTRACT, PLUGIN_AUTHOR_CONTRACT } from './author-contract'
 
 export const AUTHOR_TOOL_NAMES = ['inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'] as const
 
@@ -59,6 +59,7 @@ export const AUTHOR_TOOL_DEFINITIONS = [
       parameters: { type: 'object', additionalProperties: false, properties: {
         offset: { type: 'integer', minimum: 0, maximum: 100 },
         draftId: { type: 'string', maxLength: 128 },
+        format: { type: 'string', enum: ['executable', 'legacy'], description: '默认 executable；仅修改旧声明式插件时使用 legacy。' },
       } },
     },
   },
@@ -66,12 +67,13 @@ export const AUTHOR_TOOL_DEFINITIONS = [
     type: 'function',
     function: {
       name: 'create_draft',
-      description: '保存 JSON 声明式插件。新建 baseRevision=0（可省略）；修改必须填写读取到的 revision。冲突时重新读取合并，不自动覆盖。保存后校验，用户确认安装。',
+      description: '创建可执行 JavaScript 插件，默认提交 manifest 对象和 code 字符串，不需要嵌套 JSON。可本机安装，也可分享群聊/私聊。新建 baseRevision=0；修订传最近返回的 revision。格式和语法校验不执行代码。旧 manifestJson/source 仅用于兼容。',
       parameters: {
         type: 'object',
         additionalProperties: false,
-        required: ['manifestJson', 'source'],
         properties: {
+          manifest: { type: 'object', description: '默认传清单对象。pc-ui、permissions:["client.trusted"]、engine.moreThanChat:"^0.1.0"；完整字段见 inspect_drafts。' },
+          code: { type: 'string', description: '默认传原生 JavaScript ES module 源码；export default activate(ctx,sdk)，不使用 JSX/TS。由宿主自动包装为 executable-client。' },
           manifestJson: { type: 'string' },
           source: { type: 'string' },
           baseRevision: { type: 'integer', minimum: 0 },
@@ -139,7 +141,9 @@ export function createAuthorToolExecutor(drafts: PluginDraftService): AuthorTool
           notice = { ...notice, pendingInstall: installable,
             ...(installable ? {} : { ok: false, summary: '草稿已保存，但格式不符合安装要求。请读取 SDK 契约后修订。' }) }
         }
+        if (!notice.ok && 'issues' in result && result.issues.length) notice = {...notice, summary: clampSummary(redactToolResult(`${result.summary} ${result.issues[0]!.message}`, source))}
         const content = { ...result, ...('issues' in result ? { issues: result.issues.slice(0, 6) } : {}),
+          repair: notice.ok ? null : { baseRevision: notice.draft?.revision ?? null, hint: notice.draft ? '本次草稿已保存。根据 issues 修正，使用本结果 draft.revision 作为 baseRevision；无需为同一错误额外调用 diagnose_draft。若发生修订冲突，再 inspect_drafts 读取合并。' : '本次没有保存草稿。修正参数后重试；新可执行插件直接提交 manifest 对象和 code 字符串。' },
           installable: notice.pendingInstall, installationIssues: installationIssues.slice(0, 6), installationHint: notice.summary }
         return {
           content: cap(redactToolResult(JSON.stringify(content), source)),
@@ -161,7 +165,8 @@ async function inspectForAuthor(drafts: PluginDraftService, raw: string): Promis
   const args: unknown = JSON.parse(raw)
   if (!args || typeof args !== 'object' || Array.isArray(args)) return refusal('inspect_drafts', '检查参数必须是对象。')
   const input = args as Record<string, unknown>
-  if (Object.keys(input).some(key => key !== 'offset' && key !== 'draftId')
+  if (Object.keys(input).some(key => !['offset','draftId','format'].includes(key))
+    || ('format' in input && !['executable','legacy'].includes(input.format as string))
     || ('draftId' in input && 'offset' in input)) return refusal('inspect_drafts', '只接受 offset 翻页，或 draftId 读取草稿，不能混用。')
   if ('draftId' in input) {
     if (typeof input.draftId !== 'string') return refusal('inspect_drafts', '草稿 ID 无效。')
@@ -180,7 +185,7 @@ async function inspectForAuthor(drafts: PluginDraftService, raw: string): Promis
   }
   const result = await drafts.inspect()
   const size = 4
-  const content = JSON.stringify({ contract: PLUGIN_AUTHOR_CONTRACT,
+  const content = JSON.stringify({ contract: input.format === 'legacy' ? PLUGIN_AUTHOR_CONTRACT : DEFAULT_PLUGIN_AUTHOR_CONTRACT,
     installed: result.installed.slice(offset, offset + size).map(({ id, version, status }) => ({ id, version, status })),
     drafts: result.drafts.slice(offset, offset + size).map(({ id, version, revision, ok }) => ({ id, version, revision, ok })),
     counts: { installed: result.installed.length, drafts: result.drafts.length },
@@ -257,12 +262,16 @@ async function dispatch(drafts: PluginDraftService, name: AuthorToolName, raw: s
   if (name === 'validate_draft') return drafts.validate(readDraftId(raw))
   if (name === 'diagnose_draft') return drafts.diagnose(readDraftId(raw))
   const args = parseObject(raw)
-  const manifestJson = typeof args.manifestJson === 'string' ? args.manifestJson : ''
-  const source = typeof args.source === 'string' ? args.source : ''
+  const direct = 'manifest' in args || 'code' in args
+  if (direct && ('manifestJson' in args || 'source' in args || !args.manifest || typeof args.manifest !== 'object' || Array.isArray(args.manifest) || typeof args.code !== 'string')) {
+    return { persisted:false,draft:null,ok:false,summary:'请提交 manifest 对象和 code 字符串；不要与旧 manifestJson/source 混用。本次未保存。',issues:[] }
+  }
+  const manifestJson = direct ? JSON.stringify(args.manifest) : typeof args.manifestJson === 'string' ? args.manifestJson : ''
+  const source = direct ? JSON.stringify({kind:'executable-client',code:args.code}) : typeof args.source === 'string' ? args.source : ''
   const baseRevision = 'baseRevision' in args ? args.baseRevision : 0
   if (!manifestJson.trim() || typeof baseRevision !== 'number' || !Number.isSafeInteger(baseRevision) || baseRevision < 0
-    || Object.keys(args).some(key => !['manifestJson', 'source', 'baseRevision'].includes(key))) {
-    return { persisted: false, draft: null, ok: false, summary: '工具参数无效。源码没有执行。', issues: [] }
+    || Object.keys(args).some(key => !['manifest', 'code', 'manifestJson', 'source', 'baseRevision'].includes(key))) {
+    return { persisted: false, draft: null, ok: false, summary: '工具参数无效或 JSON 不完整。请提交 manifest 对象、code 字符串和非负整数 baseRevision。本次未保存，源码没有执行。', issues: [] }
   }
   return drafts.create({ manifestJson, source, baseRevision })
 }
@@ -288,7 +297,8 @@ function parseObject(raw: string): Record<string, unknown> {
 
 function sourceArgument(call: AuthorToolCall): string {
   if (call.name !== 'create_draft') return ''
-  const source = parseObject(call.arguments).source
+  const args = parseObject(call.arguments)
+  const source = args.code ?? args.source
   return typeof source === 'string' ? source : ''
 }
 

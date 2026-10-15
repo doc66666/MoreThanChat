@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HostEventMessage } from '@more-than-chat/protocol'
-import { createAuthorToolExecutor } from '../src/author-tools'
+import { AUTHOR_TOOL_DEFINITIONS, createAuthorToolExecutor } from '../src/author-tools'
+import { DEFAULT_PLUGIN_AUTHOR_CONTRACT, PLUGIN_AUTHOR_CONTRACT } from '../src/author-contract'
 import { ModelService } from '../src/model-service'
 import { createMockProvider, createOpenAiCompatibleProvider, type ChatModelProvider } from '../src/openai-compatible'
 import { PluginDraftService } from '../src/plugin-drafts'
@@ -18,6 +19,80 @@ afterEach(async () => {
 })
 
 describe('plugin author tool loop', () => {
+  it('defaults to executable authoring and only returns the old interpreter contract on request', async () => {
+    const executor=createAuthorToolExecutor(new PluginDraftService({dataDir:await tempDir(),installedPlugins:()=>[]}))
+    const inspect=(args:unknown)=>executor.execute({id:'inspect',name:'inspect_drafts',arguments:JSON.stringify(args)})
+    expect(JSON.parse((await inspect({})).content).contract).toEqual(DEFAULT_PLUGIN_AUTHOR_CONTRACT)
+    expect((await inspect({})).content).not.toContain('数组最多64项')
+    expect(JSON.parse((await inspect({format:'legacy'})).content).contract.groupPlugin).toEqual(PLUGIN_AUTHOR_CONTRACT.groupPlugin)
+    expect((await inspect({format:'unknown'})).notice.ok).toBe(false)
+    expect(AUTHOR_TOOL_DEFINITIONS[1].function.description).toContain('JavaScript')
+  })
+
+  it('wraps a 225-cell executable source without double JSON encoding or executing it', async () => {
+    const drafts=new PluginDraftService({dataDir:await tempDir(),installedPlugins:()=>[]})
+    const executor=createAuthorToolExecutor(drafts)
+    const code='globalThis.__mtcAuthorToolRan = true;\nexport default function activate(ctx,sdk) { const cells=Array(225).fill(null); const text="引号\\\"和换行\\n"; ctx.contribute(ctx.getService("ui.surfaces"), {id:"board",surface:"root",render:()=>sdk.React.createElement("div",null,text,...cells.map((_,i)=>sdk.React.createElement("button",{key:i},i)))}); }'
+    const manifest=PLUGIN_AUTHOR_CONTRACT.executableClient.manifestExample
+    const result=await executor.execute({id:'create',name:'create_draft',arguments:JSON.stringify({manifest,code})})
+    expect(result.notice.ok).toBe(true)
+    expect(result.notice.draft?.revision).toBe(1)
+    const saved=await drafts.readForAuthor(manifest.id)
+    expect(JSON.parse(saved.source)).toEqual({kind:'executable-client',code})
+    expect((globalThis as {__mtcAuthorToolRan?:boolean}).__mtcAuthorToolRan).toBeUndefined()
+  })
+
+  it('returns syntax diagnostics and the saved revision so a failed draft can be repaired immediately', async () => {
+    const drafts=new PluginDraftService({dataDir:await tempDir(),installedPlugins:()=>[]})
+    const executor=createAuthorToolExecutor(drafts),manifest=PLUGIN_AUTHOR_CONTRACT.executableClient.manifestExample
+    const create=(code:string,baseRevision=0)=>executor.execute({id:'create',name:'create_draft',arguments:JSON.stringify({manifest,code,baseRevision})})
+    const broken=await create('export default function activate( {')
+    expect(broken.notice.ok).toBe(false)
+    expect(broken.notice.summary).toContain('Unexpected token')
+    expect(JSON.parse(broken.content)).toMatchObject({persisted:true,repair:{baseRevision:1}})
+    const fixed=await create('export default function activate(ctx,sdk) {}',1)
+    expect(fixed.notice).toMatchObject({ok:true,draft:{revision:2}})
+    const missing=await create('const x = 1;',2)
+    expect(missing.notice.summary).toContain('默认导出')
+  })
+
+  it('rejects mixed old/new inputs without saving or replacing any draft',async()=>{
+    const drafts=new PluginDraftService({dataDir:await tempDir(),installedPlugins:()=>[]})
+    const result=await createAuthorToolExecutor(drafts).execute({id:'create',name:'create_draft',arguments:JSON.stringify({manifest:PLUGIN_AUTHOR_CONTRACT.executableClient.manifestExample,code:'export default function(){}',source:'{}'})})
+    expect(result.notice.ok).toBe(false)
+    expect((await drafts.inspect()).drafts).toHaveLength(0)
+  })
+
+  it('allows repair work beyond the old six-round cutoff',async()=>{
+    const provider:ChatModelProvider={async stream(request,onDelta){
+      const round=request.messages.filter(m=>m.role==='tool').length
+      const call=(name:string,args:unknown)=>({toolCalls:[{id:'call-'+round,name,arguments:JSON.stringify(args)}]})
+      if(round<6)return call('inspect_drafts',{})
+      if(round===6)return call('create_draft',{manifest:PLUGIN_AUTHOR_CONTRACT.executableClient.manifestExample,code:'export default function activate() {}'})
+      if(round===7)return call('validate_draft',{draftId:PLUGIN_AUTHOR_CONTRACT.executableClient.manifestExample.id})
+      onDelta('草稿已保存并通过校验，等待用户安装');return {toolCalls:[]}
+    }}
+    const {service,events,drafts}=await createLoop(provider)
+    service.start(startInput(),event=>events.push(event))
+    await waitFor(()=>events.some(e=>e.event==='model.chat.completed'))
+    expect((await drafts.inspect()).drafts[0]?.ok).toBe(true)
+    service.close()
+  })
+
+  it('reserves a tools-disabled summary turn after twelve tool rounds',async()=>{
+    let rounds=0,summaries=0
+    const provider:ChatModelProvider={async stream(request,onDelta){
+      if(request.toolsEnabled===false){summaries++;onDelta('本轮已结束，已保存的草稿可继续修订。');return {toolCalls:[]}}
+      rounds++;return {toolCalls:[{id:'inspect-'+rounds,name:'inspect_drafts',arguments:'{}'}]}
+    }}
+    const {service,events}=await createLoop(provider)
+    service.start(startInput(),event=>events.push(event))
+    await waitFor(()=>events.some(e=>e.event==='model.chat.completed'))
+    expect(rounds).toBe(12);expect(summaries).toBe(1)
+    expect(events.some(e=>e.event==='model.chat.failed')).toBe(false)
+    service.close()
+  })
+
   it('rejects stale or missing bases and lets the author re-read and merge without losing user changes', async () => {
     const directory = await tempDir()
     const drafts = new PluginDraftService({ dataDir: directory, installedPlugins: () => [] })

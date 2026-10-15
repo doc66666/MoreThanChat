@@ -7,6 +7,7 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 
 export const requiredHostModules = [
+  'acorn',
   '@more-than-chat/protocol',
   '@more-than-chat/plugin-runtime',
   '@more-than-chat/runtime-cordis',

@@ -4,12 +4,13 @@ import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import type { HostEventMessage, ModelChatMessage } from '@more-than-chat/protocol'
 import { parseGroupArtifact, transition } from '@more-than-chat/central-protocol'
-import { PLUGIN_AUTHOR_CONTRACT } from '../src/author-contract'
+import { DEFAULT_PLUGIN_AUTHOR_CONTRACT, PLUGIN_AUTHOR_CONTRACT } from '../src/author-contract'
 import { AUTHOR_TOOL_NAMES, createAuthorToolExecutor } from '../src/author-tools'
 import { BUILTIN_ASSISTANT_PROMPT, buildModelTranscript } from '../src/model-context'
 import { ModelService } from '../src/model-service'
 import { MemoryModelCredentials } from '../src/credential-client'
 import { PluginDraftService } from '../src/plugin-drafts'
+import { createOpenAiCompatibleProvider } from '../src/openai-compatible'
 
 const roots: string[] = [], services: ModelService[] = []
 afterEach(async () => {
@@ -22,6 +23,17 @@ const history: ModelChatMessage[] = [
   { role:'system', content:'Another saved notice' },
   { role:'user', content:'帮我写一个实时多人计数插件' },
 ]
+
+it('omits API tool definitions on the final summary request', async()=>{
+  let body:Record<string,unknown>={}
+  const provider=createOpenAiCompatibleProvider(async(_url,init)=>{
+    body=JSON.parse(String(init?.body))
+    return new Response(JSON.stringify({choices:[{message:{content:'草稿可继续修订'},finish_reason:'stop'}]}),{headers:{'content-type':'application/json'}})
+  })
+  await provider.stream({baseUrl:'https://model.example.test/v1',model:'test',apiKey:'test-only-key',messages:[{role:'user',content:'总结'}],signal:new AbortController().signal,toolsEnabled:false},()=>{})
+  expect(body).not.toHaveProperty('tools')
+  expect(body).not.toHaveProperty('tool_choice')
+})
 
 it.each(([[], [{role:'user',content:'你好'}], history] as ModelChatMessage[][]).map(messages=>({messages})))('always injects one Host-owned system contract without changing history: %#', ({messages}) => {
   const before = structuredClone(messages), transcript = buildModelTranscript(messages)
@@ -40,7 +52,10 @@ it('keeps documented author tools and the realtime example aligned with executab
   const group = PLUGIN_AUTHOR_CONTRACT.groupPlugin
   const artifact = parseGroupArtifact({manifest:group.manifestExample, program:group.sourceExample})
   expect(transition(artifact.program, {state:{count:0}, actor:'member', members:['member'], event:{}}, 'increment')).toEqual({count:1})
-  for (const capability of ['chat.network', 'expectedRevision', 'digest', 'history', 'subscribe', 'Android', 'exactly-once']) expect(BUILTIN_ASSISTANT_PROMPT).toContain(capability)
+  for (const capability of ['chat.network', 'digest', 'history', 'subscribe', 'Android', 'sdk.network', 'manifest,code']) expect(BUILTIN_ASSISTANT_PROMPT).toContain(capability)
+  expect(BUILTIN_ASSISTANT_PROMPT).not.toContain('数组最多64项')
+  expect(BUILTIN_ASSISTANT_PROMPT).not.toContain('columns:1到8')
+  expect(BUILTIN_ASSISTANT_PROMPT).toContain('15×15')
   expect(BUILTIN_ASSISTANT_PROMPT).toContain('提示词不是沙箱')
 })
 
@@ -84,7 +99,7 @@ it.each(['https://api.deepseek.com', 'https://model.example.test/v1'])('sends th
     expect(JSON.stringify(body)).not.toContain('unit-test-credential')
     for (const result of body.messages.filter(message=>message.role==='tool')) {
       // Prevent growth of the built-in contract from silently truncating inspect JSON.
-      expect(JSON.parse(result.content).contract).toEqual(PLUGIN_AUTHOR_CONTRACT)
+      expect(JSON.parse(result.content).contract).toEqual(DEFAULT_PLUGIN_AUTHOR_CONTRACT)
     }
   }
 })

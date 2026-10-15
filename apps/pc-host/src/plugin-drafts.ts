@@ -1,5 +1,6 @@
 import { chmod, lstat, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { parse } from 'acorn'
 import { parseExecutableClientPackage, validatePluginManifest, type PluginManifestV1 } from '@more-than-chat/plugin-runtime'
 import type {
   PluginDraftCreateResult,
@@ -352,7 +353,12 @@ function assessDraft(manifestJson: string, source: string, installed: readonly I
   if (manifest) {
     const executable = manifest.permissions.includes('client.trusted')
     if (executable) {
-      try { parseExecutableClientPackage({manifest, program: JSON.parse(source)}) }
+      try {
+        const pack = parseExecutableClientPackage({manifest, program: JSON.parse(source)})
+        // Parse only: never import/evaluate uninstalled author code in the Host.
+        const module = parse(pack.program.code, {ecmaVersion:'latest', sourceType:'module'})
+        if (!module.body.some(node=>node.type==='ExportDefaultDeclaration' || (node.type==='ExportNamedDeclaration' && node.specifiers.some(spec=>spec.exported.type==='Identifier' && spec.exported.name==='default')))) throw new Error('可执行插件必须默认导出 activate(ctx,sdk) 函数。')
+      }
       catch (error) { issues.push(finding('error', 'NOT_INSTALLABLE', error instanceof Error ? error.message : '无效可执行界面插件')) }
     }
     else if (manifest.targets.includes('pc-ui')) {

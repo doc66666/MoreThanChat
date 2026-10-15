@@ -112,6 +112,9 @@ importers:
       '@more-than-chat/runtime-cordis':
         specifier: workspace:*
         version: link:../../packages/runtime-cordis
+      acorn:
+        specifier: 8.15.0
+        version: 8.15.0
     devDependencies:
       '@types/node':
         specifier: 24.13.3
@@ -844,6 +847,11 @@ packages:
   abbrev@4.0.0:
     resolution: {integrity: sha512-a1wflyaL0tHtJSmLSOVybYhy22vRih4eduhhrkcjgrWGnRfrZtovJ2FRjxuTtkkj47O/baf0R86QU5OuYpz8fA==}
     engines: {node: ^20.17.0 || >=22.9.0}
+
+  acorn@8.15.0:
+    resolution: {integrity: sha512-NZyJarBfL7nWwIq+FDL6Zp/yHEhePMNnnJ0y3qfieCrmNvYct8uvtiV41UvlSe6apAfk0fY1FbWx+NwfmpvtTg==}
+    engines: {node: '>=0.4.0'}
+    hasBin: true
 
   agent-base@6.0.0:
     resolution: {integrity: sha512-j1Q7cSCqN+AwrmDd+pzgqc0/NpC655x2bUf5ZjRIO77DcNBFmh+OgRNzF6OKdCC9RSCb19fGd99+bhXFdkRNqw==}
@@ -2968,6 +2976,8 @@ snapshots:
   '@xmldom/xmldom@0.9.12': {}
 
   abbrev@4.0.0: {}
+
+  acorn@8.15.0: {}
 
   agent-base@6.0.0(supports-color@10.2.2):
     dependencies:

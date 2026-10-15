@@ -2,7 +2,7 @@ import { UI_SLOTS } from '@more-than-chat/central-protocol'
 
 export const PLUGIN_AUTHOR_CONTRACT = {
   sdkVersion: 1,
-  contractRevision: 7,
+  contractRevision: 8,
   environment: {
     product: 'MoreThanChat PC 客户端内置助手；模型请求和作者工具由独立 PC Host 执行。',
     purpose: '正常回答用户问题；仅在用户要求创作或修改插件时使用作者工具。你是受限插件作者，不是操作系统终端、客户端内核或中心服务器管理员。',
@@ -12,7 +12,7 @@ export const PLUGIN_AUTHOR_CONTRACT = {
   },
   authorApi: {
     inspect_drafts: '参数 {} 或 {offset:number}：读取契约和摘要，每页 4 项；按 pagination.nextOffset 翻页，目录最多列出 100 项。参数 {draftId:string}：读取指定草稿最新 revision、manifestJson、source 和诊断，不接受文件路径，不与 offset 混用；拒绝疑似凭据、损坏或超限内容，不返回截断源码。已有插件修改前必须读取当前内容，保留未要求修改的功能；读取不等于安装或授权。',
-    create_draft: '参数 {manifestJson:string,source:string,baseRevision?:number}，前两项均为 JSON.stringify 后的 JSON 字符串。新建 baseRevision=0（可省略）；修改已有草稿必须填写 inspect_drafts 读取到的 draft.revision。Host 原子校验当前修订号后追加；冲突不保存，必须重新读取、合并用户修改，不得只换数字重试。返回草稿 ID、revision、校验结果；不安装、不提交、不执行源码。',
+    create_draft: '新插件默认参数 {manifest:清单对象,code:原生JavaScript源码字符串,baseRevision?:number}，不要手动嵌套 JSON.stringify，Host 负责包装 executable-client。旧 manifestJson/source 格式仍兼容，但不能与新字段混用。新建 baseRevision=0；修改传最新 draft.revision。校验不通过但 persisted=true 时修订仍已保存，下一次必须用返回的 revision 修订，不要反复传0。冲突须重新读取合并。工具返回具体问题和修正建议；不安装、不执行。',
     validate_draft: '参数 {draftId:string}。校验已保存的最新修订，不安装、不执行。',
     diagnose_draft: '参数 {draftId:string}。获取最新修订的问题和修正线索；修复后重新 create_draft、validate_draft。',
   },
@@ -38,7 +38,7 @@ export const PLUGIN_AUTHOR_CONTRACT = {
     status: '同一份代码可本机安装、停用、同 id 热更新，也可从草稿或已安装插件申请分享至好友／群聊。群管理员批准；私聊必须由另一人批准。分发后每人自主载入，不会自动执行，没有额外原生信任弹窗。批准新版本后各端选择载入新版，旧版停止同步与运行。',
     manifestExample: {manifestVersion: 1, id: 'example.my-desktop', version: '0.1.0', displayName: '我的桌面', description: '自定义完整桌面界面', targets: ['pc-ui'], engine: {moreThanChat: '^0.1.0'}, permissions: ['client.trusted'], services: {requires: ['ui.surfaces']}},
     sourceExample: {kind: 'executable-client', code: 'export default function activate(ctx, sdk) { const h = sdk.React.createElement; ctx.contribute(ctx.getService("ui.surfaces"), { id: "desktop", surface: "root", render: ({defaultView, renderSurface}) => h("div", {style:{height:"100%",display:"flex",flexDirection:"column"}}, h("header", {style:{padding:16}}, "我的工作台"), h("div", {style:{flex:1,minHeight:0}}, defaultView), renderSurface("example.footer")) }); }'},
-    entry: 'source 仍是 JSON.stringify({kind:"executable-client",code:"自包含原生 ES module"})，code 默认导出 activate(ctx,sdk) 函数，可 async 并返回清理函数。不使用 JSX/TS/npm 裸导入；用 sdk.React.createElement 和 React hooks（hooks 仅用于真正的函数组件，render 返回 createElement(Component)）。依赖必须预打包到单个模块。模块顶层不要产生副作用，统一在 activate 内登记。',
+    entry: '通过 create_draft({manifest,code,baseRevision}) 直接提交清单对象和自包含原生 ES module 源码字符串。Host 自动生成 source 包装，不要手工套第二层 JSON。code 默认导出 activate(ctx,sdk)，可 async 并返回清理函数。不使用 JSX/TS/npm 裸导入；用 sdk.React.createElement 和 React hooks（hooks 仅用于函数组件，render 返回 createElement(Component)）。副作用在 activate 内登记并清理。',
     lifecycle: 'Cordis 管理 pc-ui 生命周期。ctx.manifest/target；ctx.getService(id) 取得 manifest.services.requires 声明的已有服务；ctx.contribute(registry,contribution) 自动撤销登记；ctx.effect(disposer) 登记事件、定时器、样式清理。异步激活失败会撤销登记；同 id 更新失败尝试恢复原运行版本，成功后才保存新版本。启动时加载用户已启用的插件。没有登记或无限循环的副作用不能靠生命周期自动修复；Ctrl+Shift+F12 停用界面插件并重新打开默认聊天。',
     surfaces: 'ui.surfaces: ctx.contribute(registry,{id,surface,priority?,render({context,defaultView,renderSurface})})。root 可完全替换整桌面，不必包含 defaultView；也可保留默认聊天再增添其他界面。插件可用 renderSurface("自定义名称",context?,fallback?) 定义任意子界面，其他插件注册同名 surface。名称小写字母开头，允许数字点连字符，最多128字符；priority 越小优先。无九位置限制。循环嵌套回退，最长32层。渲染异常回退默认视图。',
     context: 'root context 有 conversation/profile/draft/setDraft/send/server/messages/conversations/selectConversation；send() 发送当前输入框，异步状态由宿主处理。messages 是当前已加载消息，不是完整历史。默认聊天被 root 覆盖时不会自动标已读。不要在渲染期间产生消息等副作用。',
@@ -85,10 +85,23 @@ export const PLUGIN_AUTHOR_CONTRACT = {
     limits: 'source 不超过24000字符，最多24状态字段/16动作/每动作32更新/8文本/16按钮/4网格；数组最多64项、状态8000字符、每次状态动作10000步运算。仅 pc-ui；协议保持平台无关但 Android 尚未实现。多人游戏宜使用 join 动作让两位成员主动占座，避免自动选群主。用通用表达式定义规则和胜负，不选择内置 tic-tac-toe。',
   },
   instructions: [
-    'create_draft 的 manifestJson 和 source 都是 JSON.stringify 后的字符串；可执行界面的 JS 放在 source 对象的 code 字段，不支持裸 JS 或 TS。',
+    '新插件默认选择可执行 JavaScript 路径，直接 create_draft({manifest,code})；只有用户明确要求旧声明式格式或修改旧插件才读取 legacy 契约。15×15 五子棋用225格普通 JS 数组即可，不存在64格或8000字符业务状态上限，不可擅自改成8×8四子棋。',
     '严格使用示例字段，不添加额外字段；id 使用小写字母数字、点或连字符。',
     'transform 对当前输入框文本执行操作并替换输入框；text-action 追加固定文本。',
     '创建后调用 validate_draft，失败时读取 diagnose_draft 并追加修订；用户确认安装，模型不能安装。',
     '更新使用相同 manifest id 和递增语义版本。自由 UI、多用户游戏优先使用 executableClient；同一包兼容本机与共享模式。声明式群插件才使用 groupPlugin 契约，不要把其九位置或状态机限制套在可执行插件上。用户尚未审批、载入或验收时，不宣称已经完成这些动作。',
   ],
+} as const
+
+// Legacy state-machine details are opt-in. Mixing them into every request led
+// authors to mistake that interpreter's limits for executable JS limitations.
+export const DEFAULT_PLUGIN_AUTHOR_CONTRACT = {
+  sdkVersion: PLUGIN_AUTHOR_CONTRACT.sdkVersion,
+  contractRevision: PLUGIN_AUTHOR_CONTRACT.contractRevision,
+  environment: PLUGIN_AUTHOR_CONTRACT.environment,
+  authorApi: PLUGIN_AUTHOR_CONTRACT.authorApi,
+  capabilityBoundary: {...PLUGIN_AUTHOR_CONTRACT.capabilityBoundary, local:'新建插件默认使用 executableClient，可重塑整个桌面、HTML/CSS/React 和自定义子界面。旧声明式文本工具需按需读取 legacy 契约。任意 pc-host 后台脚本尚未开放，不要将界面脚本当作 Node。'},
+  executableClient: PLUGIN_AUTHOR_CONTRACT.executableClient,
+  instructions: PLUGIN_AUTHOR_CONTRACT.instructions,
+  legacyDiscovery: '只有维护旧声明式插件时调用 inspect_drafts({format:"legacy"})。新游戏与自由界面默认使用可执行插件，不按旧解释器的数组、网格、状态大小限制降级用户需求。',
 } as const
