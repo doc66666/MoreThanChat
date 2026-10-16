@@ -121,13 +121,6 @@ function initials(value: string): string {
 
 export function App() {
   const appearance = useAppearance()
-  const [customRoot, setCustomRoot] = useState(() => Boolean(uiSurfaceRegistry.resolve('root')))
-  useLayoutEffect(() => {
-    const sync = () => setCustomRoot(Boolean(uiSurfaceRegistry.resolve('root')))
-    const dispose = uiSurfaceRegistry.subscribe(sync)
-    sync()
-    return () => { void dispose() }
-  }, [])
   const [state, setState] = useState<ChatState | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [serverState, setServerState] = useState<ServerSnapshot | null>(null)
@@ -210,7 +203,7 @@ export function App() {
     if(target){
       setShowSettings(false);setShowServer(false);setShowPlugins(false);setShowMessageSearch(false);setShowNewChat(false)
       setForwardDialog(null);setRetractConfirm(null)
-      historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null)
+      returnToLatest()
     }
     void window.moreThanChat.navigationApplied(navigation.id).catch(()=>undefined)
     setNavigation(null)
@@ -513,7 +506,8 @@ export function App() {
     enteredConversation.current=active.id
     setEntryUnread(active.unread>0?{id:active.id,count:active.unread,first:state?.history?.[active.id]?.firstUnreadId??messages.find(m=>m.role==='peer'&&!m.readAt)?.id??null}:null)
   },[active?.id])
-  const reading = useChatReading(active?.id,visibleMessages,customRoot || showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(historyFailure) || Boolean(forwardDialog) || Boolean(retractConfirm),active?.unread)
+  const historyPositioning=Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(historyFailure)
+  const reading = useChatReading(active?.id,visibleMessages,showMessageSearch || showSettings || showPlugins || showServer || showNewChat || historyPositioning || Boolean(forwardDialog) || Boolean(retractConfirm),active?.unread,historyPositioning)
   useLayoutEffect(()=>{
     if(!highlightMessage)return
     reading.pauseReading()
@@ -638,7 +632,10 @@ export function App() {
   }
   function returnToLatest() {
     historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null);setHighlightMessage(null)
-    requestAnimationFrame(()=>reading.jumpToLatest())
+    const navigation=historyRequestRef.current,conversationId=stateRef.current?.activeConversationId
+    requestAnimationFrame(()=>{
+      if(navigation===historyRequestRef.current&&stateRef.current?.activeConversationId===conversationId)reading.jumpToLatest()
+    })
   }
   function followLocalSend(conversationId:string) {
     const navigation=historyRequestRef.current
@@ -1366,8 +1363,8 @@ export function App() {
           {renderSlot('chat.header')}
         </div>
 
-        <section className="message-scroll" aria-live="polite" ref={reading.scrollRef} onScroll={reading.onScroll}>
-          <div ref={reading.contentRef} className="message-timeline">
+        <section className="message-scroll" aria-live="polite" ref={reading.bindScroll} onScroll={reading.onScroll}>
+          <div ref={reading.bindContent} className="message-timeline">
           {(historic?.hasOlder ?? state.history?.[active.id]?.hasOlder)&&<button className="history-more" data-history-older disabled={historyBusy} onClick={()=>void loadHistory(active.id,{before:(historic?.before ?? state.history?.[active.id]?.before)!})}>{historyBusy?'加载中…':'查看更早的消息'}</button>}
           {historic&&<button className="history-more" data-history-latest onClick={returnToLatest}>正在浏览历史 · 返回最新消息{active.unread>0?' · '+active.unread:''}</button>}
           {visibleMessages.length === 0 ? (
@@ -1408,7 +1405,7 @@ export function App() {
           <div ref={reading.endRef} />
           </div>
         </section>
-        {(!reading.atBottom||historic)&&<button className="jump-latest" onClick={returnToLatest}>回到最新消息{active.unread>0?' · '+active.unread:''}</button>}
+        {(!reading.atBottom||historyPositioning)&&<button className="jump-latest" onClick={returnToLatest}>回到最新消息{active.unread>0?' · '+active.unread:''}</button>}
 
         <footer
           className="composer-wrap"

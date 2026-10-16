@@ -7,8 +7,8 @@
 Linux：
 
 ```sh
-tar -xzf MoreThanChat-central-server-0.4.0-linux-x64.tar.gz
-cd MoreThanChat-central-server-0.4.0-linux-x64
+tar -xzf MoreThanChat-central-server-0.4.1-linux-x64.tar.gz
+cd MoreThanChat-central-server-0.4.1-linux-x64
 ./mtc-server.sh init --mode public --port 8787 --name "我的聊天服务器"
 ./start.sh
 ./mtc-server.sh status

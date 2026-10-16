@@ -1,7 +1,7 @@
 {
   "name": "@more-than-chat/desktop",
   "productName": "MoreThanChat",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "main": "dist-main/main.js",
@@ -74,6 +74,7 @@
     "concurrently": "10.0.5",
     "electron": "43.5.1",
     "electron-builder": "26.15.3",
+    "happy-dom": "21.0.1",
     "typescript": "5.9.3",
     "vite": "7.3.1",
     "vitest": "4.1.11",

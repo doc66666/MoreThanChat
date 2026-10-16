@@ -6,7 +6,7 @@ import type { HostEventMessage, ModelChatMessage } from '@more-than-chat/protoco
 import { parseGroupArtifact, transition } from '@more-than-chat/central-protocol'
 import { DEFAULT_PLUGIN_AUTHOR_CONTRACT, PLUGIN_AUTHOR_CONTRACT } from '../src/author-contract'
 import { AUTHOR_TOOL_NAMES, createAuthorToolExecutor } from '../src/author-tools'
-import { BUILTIN_ASSISTANT_PROMPT, buildModelTranscript } from '../src/model-context'
+import { BUILTIN_ASSISTANT_PROMPT, CURRENT_ASSISTANT_CAPABILITIES, HISTORICAL_ASSISTANT_PREFIX, buildModelTranscript } from '../src/model-context'
 import { ModelService } from '../src/model-service'
 import { MemoryModelCredentials } from '../src/credential-client'
 import { PluginDraftService } from '../src/plugin-drafts'
@@ -23,6 +23,25 @@ const history: ModelChatMessage[] = [
   { role:'system', content:'Another saved notice' },
   { role:'user', content:'帮我写一个实时多人计数插件' },
 ]
+
+it('explicitly invalidates old assistant capability refusals without deleting or rewriting saved history',()=>{
+  const old:ModelChatMessage[]=[
+    {role:'user',content:'你能查看聊天记录吗'},
+    {role:'assistant',content:'我没有任何读取聊天记录的工具，只有插件管理接口。'},
+    {role:'assistant',content:'没有 list_conversations，没有 send_chat_message，代用户联系别人越界。'},
+    {role:'user',content:'帮我给好友发一条信息“1”'},
+  ]
+  const snapshot=structuredClone(old),transcript=buildModelTranscript(old)
+  expect(old).toEqual(snapshot)
+  expect(transcript.at(-1)).toEqual(old.at(-1))
+  for(const message of transcript.filter(m=>m.role==='assistant'))expect(message.content).toMatch(HISTORICAL_ASSISTANT_PREFIX)
+  for(const tool of AUTHOR_TOOL_NAMES)expect(CURRENT_ASSISTANT_CAPABILITIES).toContain(tool)
+  expect(BUILTIN_ASSISTANT_PROMPT).toContain('不依赖用户打开目标聊天窗口')
+  expect(BUILTIN_ASSISTANT_PROMPT).toContain('不能以“代用户联系别人本身越界”为由拒绝')
+  expect(DEFAULT_PLUGIN_AUTHOR_CONTRACT.environment.purpose).toContain('不仅是插件助手')
+  expect(DEFAULT_PLUGIN_AUTHOR_CONTRACT.capabilityBoundary.forbidden).toContain('按用户要求读取或发送聊天消息是受支持的直接操作')
+  expect(DEFAULT_PLUGIN_AUTHOR_CONTRACT.executableClient.context).toContain('不限制模型的直接聊天工具')
+})
 
 it('omits API tool definitions on the final summary request', async()=>{
   let body:Record<string,unknown>={}
