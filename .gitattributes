@@ -1,0 +1,3 @@
+# Startup scripts must work after checkout and packaging on either platform.
+deploy/central/*.sh text eol=lf
+deploy/central/*.cmd text eol=crlf

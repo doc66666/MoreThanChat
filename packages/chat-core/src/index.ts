@@ -28,7 +28,7 @@ export interface Conversation {
 
 export interface AuthorToolNote {
   phase: 'started' | 'finished'
-  tool: 'list_plugins' | 'delete_draft' | 'uninstall_plugin' | 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
+  tool: 'list_conversations' | 'read_chat_history' | 'read_chat_attachment' | 'send_chat_message' | 'list_plugins' | 'delete_draft' | 'uninstall_plugin' | 'inspect_drafts' | 'create_draft' | 'validate_draft' | 'diagnose_draft' | 'install_draft' | 'unknown'
   ok: boolean
   summary: string
   pendingInstall: boolean
@@ -84,7 +84,7 @@ export interface ChatState {
   conversations: Conversation[]
   messages: Record<string, ChatMessage[]>
   activeConversationId: string
-  history?: Record<string, { before: number | null; after: number | null; hasOlder: boolean; hasNewer: boolean }>
+  history?: Record<string, { before: number | null; after: number | null; hasOlder: boolean; hasNewer: boolean; firstUnreadId?:string|null }>
 }
 
 export interface OutgoingMessage {
@@ -93,6 +93,7 @@ export interface OutgoingMessage {
   text: string
   createdAt: number
   attachmentId?: string
+  attachmentRef?: ChatMessage['attachment']
   quoteMessageId?: string
 }
 

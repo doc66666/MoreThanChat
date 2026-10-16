@@ -47,7 +47,7 @@ const model = new ModelService({
   defaultProviderMode: demoPluginsEnabled ? 'mock' : 'openai-compatible',
   dataDir: hostDataDir,
   generation,
-  authorTools: createAuthorToolExecutor(drafts, managePlugins),
+  authorTools: createAuthorToolExecutor(drafts, managePlugins, request=>credentials.accessChat(request)),
   credentials,
 })
 const pluginsReady = plugins.start().then(() => restoreInstalledStaticTools(staticTools, plugins))

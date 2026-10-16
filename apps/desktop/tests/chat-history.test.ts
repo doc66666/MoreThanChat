@@ -18,6 +18,18 @@ function history(count:number,body='历史消息') {
 }
 
 describe('bounded SQLite history',()=>{
+  it('resumes an empty conversation from -1 without losing position zero, including after reopen',async()=>{
+    const dir=await folder(),store=await open(dir),state=history(0),id=state.activeConversationId
+    store.save(state)
+    expect(store.messagePage(id,{after:-1}).after).toBeNull()
+    store.save(history(113))
+    store.close();stores.splice(stores.indexOf(store),1)
+    const reopened=await open(dir),seen:unknown[]=[];let cursor=-1
+    for(;;){const page=reopened.messagePage(id,{after:cursor,limit:31});seen.push(...page.messages.map(m=>m.id));if(!page.hasNewer)break;cursor=page.after!}
+    expect(seen).toEqual(history(113).messages[id]!.map(m=>m.id))
+    expect(()=>reopened.messagePage(id,{after:-2})).toThrow()
+    expect(()=>reopened.messagePage(id,{before:-1})).toThrow()
+  })
   it('migrates a history larger than 8 MiB, keeps a backup and loads only the newest page',async()=>{
     const dir=await folder(),state=history(1400,'large-history '+ 'x'.repeat(6500)),raw=JSON.stringify(state)
     expect(Buffer.byteLength(raw)).toBeGreaterThan(8*1024*1024)
@@ -90,7 +102,10 @@ describe('bounded SQLite history',()=>{
     for(const m of state.messages[id]!){m.id=randomUUID();m.serverId='server'}
     store.save(state,undefined,{authoritative:true})
     expect(store.load()!.messages[id]).toHaveLength(50)
+    expect(store.firstUnread(id)).toBe(state.messages[id]![0]!.id)
+    expect(store.loadView()!.history[id]?.firstUnreadId).toBe(state.messages[id]![0]!.id)
     expect(store.markConversationRead(id)).toBe(true)
+    expect(store.firstUnread(id)).toBeNull()
     expect(store.message(state.messages[id]![0]!.id)?.readAt).toBeGreaterThan(0)
     expect(store.load()!.conversations[0]!.unread).toBe(0)
     expect(store.pendingReads('server')).toHaveLength(100)

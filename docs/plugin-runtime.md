@@ -137,3 +137,68 @@ export default function activate(ctx, sdk) {
 示例 [shared-tic-tac-toe.mtcplugin](../examples/shared-tic-tac-toe.mtcplugin) 用同一份源码演示单机、群、私聊，完整 root 包装、主动占座、退座、胜负、新局释放席位、hello/snapshot 与插件自行 localStorage 存档；不预装。示例是可信成员协作游戏，不承诺对恶意对手的防作弊。
 
 验收命令 `pnpm verify:shared-plugins`：真实 Electron / preload / Host / Cordis / Blob ESM / 中心 SQLite，三个隔离用户，通过聊天模型工具循环生成与修订草稿、从用户界面分享／审批／载入。模型为确定性 OpenAI-compatible 测试端，不冒充本轮真实 DeepSeek 生成。支持 `MTC_TEST_PACKAGED_EXE` 验收打包后的实际 EXE。
+
+## 聊天记录、附件与代发接口
+
+内置助手现有四个工具：`list_conversations`、`read_chat_history`、`read_chat_attachment`、`send_chat_message`。它们通过 Host → 主进程访问当前身份的本机 SQLite 和附件库，不直接操作数据库或任意文件。读取不会标已读，发送复用普通聊天的持久队列、重试、去重与送达回执。工具说明随每轮模型请求注入。
+
+助手收到的历史页使用 `before / after / hasOlder / hasNewer`，不使用附件的 `nextOffset`；分页应原样回传对应游标。工具结果脱敏按 JSON 字符串值处理，聊天内容中的令牌样式文本不会破坏消息列表或分页结构。发送请求超时或回执中断时，错误结果保留原 `conversationId / clientMessageId` 并提示先核对历史；结果不明不等于未入队，不能另建 ID 重发。停止 AI 后不再执行该批余下工具，已经入队的消息不撤销。
+
+本机及共享可执行界面插件使用同一个 `sdk.chat`：
+
+```js
+const page = await sdk.chat.request({ action: 'list', limit: 30 })
+// 会话 ID 必须取自返回列表，不等同于 sdk.conversation.id 的插件同步 scope。
+const conversationId = page.conversations[0]?.id
+if (conversationId) {
+  const history = await sdk.chat.request({ action: 'history', conversationId, limit: 50 })
+  // 更早页：before: history.before；更晚页：after: history.after。
+  // 定位消息：around: messageId；三个定位字段互斥。
+}
+ctx.effect(sdk.chat.subscribe(projection => {
+  // projection 包含 conversations/messages/history；它不是单条消息通知。
+  // 同一条消息可能因目录、回执或已读更新多次出现。
+}))
+// 用户启用的回复规则决定是否发送；一次逻辑发送固定复用这个 ID。
+// await sdk.chat.request({action:'send',conversationId,
+//   clientMessageId:crypto.randomUUID(),text:'回复内容'})
+```
+
+- `list`：`offset? / limit?`，返回 `conversations / nextOffset`。只列好友与群，本机可能保留已离开的会话；`available:false` 不表示可以继续发送。
+- `history`：`conversationId / before? / after? / around? / limit?`，返回消息与分页游标，默认最新50条，最多100条，另有页面字节预算。`after:-1` 从第一条正向读取（包含位置0），空页游标为 `null`；游标仅适用于当前设备的对应会话，不是时间戳。消息包含类型、发送者、时间、状态、引用、撤回状态和附件元数据；这是本机已保存历史，不是中心永久存档。
+- `attachment`：`conversationId / messageId / format / offset? / limit?`。只接受该会话已有且未撤回的附件消息。`text` 为 UTF-8 解码（offset/limit 单位 UTF-16 字符）；`base64` 为任意文件原始字节（offset/limit 单位字节）；两者返回 `nextOffset`，分块最多65536。`image` 无分页参数，返回 `image:{mime,data}`。助手会把它作为多模态图片传给模型，而不是把 base64 保存进聊天正文。视觉理解取决于模型；PDF、Office 文档、音频等原始字节仍需要适合的解析器或模型，不能把读取成功当作解析成功。
+- `send`：`conversationId / clientMessageId / text / attachmentMessageId?`；最后一项可附带同一会话已有附件。相同逻辑发送的重试复用相同 ID 和内容，不能每次生成新 ID。`queued:true` 只表示进入本机可靠队列，不能宣称接收方已经收到。
+
+客户端只提供会话查询、聊天记录／附件读取和主动发送接口，不预装自动回复插件，不内置回复规则、任务调度或插件业务存储。用户如果需要自动回复，可以自行编写插件调用这些接口；业务行为、进度及持久化由插件自己实现。`subscribe` 只通知聊天投影变化，不调用模型、不触发发送。聊天与附件内容标记为 `untrustedData`，其中的命令不是新的用户授权。订阅用 `ctx.effect` 清理；共享插件仍只在所属会话打开时运行。
+
+回归：`pnpm verify:chat-experience` 使用两个独立 Electron 用户目录和本机中心，覆盖最新定位、跨页未读定位、底部已读、昵称同步，以及确定性模型的“列会话→读历史→读图片→读文本附件→代发消息”完整工具链，不消耗用户模型额度。
+
+接口补充：`history` 返回 `firstUnreadId`，可以在当前分页以外；消息包含 `readAt`、`clientMessageId`、`receipt` 与发送失败原因 `errorMessage`（有错误时返回）。这些只反映本机保存的状态，不会因工具读取而更新。新发送的 `clientMessageId` 应使用全局唯一值（例如 `crypto.randomUUID()`），不能复制现有消息的 `id`，也不能跨会话／服务器复用；同一发送重试保留原 ID 和正文。发送器拒绝冲突，不覆盖已有消息或替换其他服务器的待发队列。附件在异步磁盘读取结束后会复查来源消息，撤回期间未完成的读取／附件复制不再返回或发送过期内容。已经完成发送的独立副本不受此检查追溯撤销。
+
+文本附件分块保持 Unicode 字符完整，翻页必须使用 `nextOffset`，不能假定它总是 `offset+limit`。`limit:1` 遇到双 UTF-16 单元字符时返回该完整字符；手动传入字符中间的位置会返回明确错误。附件文件在本机被删除时返回文件不存在的说明，历史消息及附件引用仍保留，不伪装成空文件或成功读取。
+
+未读回归另覆盖：后台插件／助手代发不改变用户上翻位置，也不清空未读；当前新未读优先于进入会话时保留的未读起点；浏览历史即使滚到页底也保留“回到最新消息”；可执行插件替换默认桌面时停止默认聊天的已读上报。测试插件仅在隔离验收目录安装，不预装进客户端。
+
+`sdk.chat` 按每次插件激活绑定生命周期：停用、卸载、热替换时自动撤销其订阅，旧实例后续请求失败；未完成的读取返回时也复查实例，不能继续触发旧回复。共享实例在切服、离开所属会话或失去当前批准版本时立即停止调用，不必等待异步清理结束。这是生命周期管理，不是额外授权或恶意代码沙箱。作者仍需清理自建计时器、取消模型请求，并捕获 Promise 拒绝；已经进入可靠队列的消息不会因为停用插件被撤销。
+
+本机插件可在断线时排队发送，也可保留运行；目标始终是 `list/history` 返回的完整 `conversationId`，切服不把原服务器的待发消息转投新服务器。同一逻辑发送的重试保持相同 ID 和内容，异步结束后不要用当前选中会话替换原目标。重新认证成功恢复已有待发队列；这只是聊天传输的续发，不是生成新回复。旧连接的目录或认证响应不再覆盖新连接。
+
+回归还覆盖真实中心停服／同地址重启、认证会话失效后的自动恢复、两服同一好友的迟到回复隔离、重复投影下的幂等发送，以及真实 Electron 中离线队列、切服、重连未读数和停用时未完成的插件回复。
+
+附件按内容哈希复用字节，但文件名、MIME 和语音时长属于每一条消息。`sdk.chat` 按消息引用读取或复制时保留原消息的这些字段；同一个逻辑发送 ID 不允许换成同内容但不同名字／类型的附件。`text:''` 配合 `attachmentMessageId` 可以只发送附件。离线续发与手动重试沿用入队时的附件，不跟随后续同内容文件导入改名。
+
+完整界面 SDK 的 `sdk.app.readAttachment` 和 `saveAttachment` 可接受消息中的完整 `AttachmentRef`，新代码应传引用；旧的字符串 ID 形式仍兼容，但只能使用该内容 ID 最近保存的默认附件信息。自定义发送器调用 `sendCentralMessage` 时可同时传 `attachmentId` 与 `attachmentRef`，两者 ID 必须一致，字节大小和哈希仍会核对。内置输入框、预览、另存为已经使用完整引用。
+
+`pnpm verify:chat-attachments`：三个隔离的真实 Electron 用户目录，覆盖群插件草稿→申请分享→管理员批准→个人载入，随后读取图片、UTF-8 文本、分块二进制并自动附带回复；验证另一成员离线重连、无重复／误读、实际图片解码、另存为文件名及字节、离开群视图停止实例。测试不调用付费模型，不把二进制读取当作 PDF 或音频理解。集成用例还注入附件落盘失败，确认该成员不会提前 ACK，其他成员仍可独立收到。
+
+### 接口可靠性与测试边界
+
+宿主保证已入队消息落盘、恢复连接后续发，以及同一 `clientMessageId`／相同内容的重复发送不重复投递。插件的业务状态不由客户端或中心管理。
+
+`apps/desktop/tests/chat-access-flow.test.ts` 直接调用读写接口，不安装插件：两台本机中心、三个身份，验证同名好友／群的准确寻址、跨服读取与待发隔离、关系失效期间的附件发送、保留本机历史，以及排队后服务器拒绝时可读取失败原因。`chat-access.test.ts` 另覆盖会话分页、跨会话引用拒绝、完整 Unicode 文本分块和最大附件响应的 Host 协议往返。
+
+`apps/desktop/tests/ai-chat-flow.test.ts` 覆盖内置助手完整工具链：本地 HTTP 模型协议（JSON 和分片 SSE）、真实 ModelService／作者工具／Host 双向协议转发、主进程读写接口、SQLite 与中心服务器。验证好友和群的分页读取、文本与图片输入、离线排队及同 ID 重试、重连投递、回执异常后的核对、取消后的批次停止、连续失败收尾。仅 Electron 进程传输使用内存适配器，不代替真实窗口或真实模型生成验收；不消耗模型额度，不安装插件。Host 单测另覆盖请求超时、迟到回执、并发响应匹配和脱敏后的 JSON 完整性。
+
+共享实例在等价目录刷新时保持运行；异步初始化不会仅因刷新被重复启动。离开会话、失去成员关系或批准版本后，旧实例立即且永久失效，即使稍后回到同一会话也须建立新实例。
+
+`pnpm verify:chat-restart` 使用三个独立 Electron 用户目录，通过测试作者编写的插件调用读写接口，验证跨页读取、重启续发、回执丢失、重复请求和热更新实例清理。`scripts/fixtures/durable-group-reply.mjs` 中的回复及状态保存逻辑仅是测试夹具，不是客户端实现或默认插件，不进入发行包；测试不调用付费模型，也不代表客户端提供自动回复业务。

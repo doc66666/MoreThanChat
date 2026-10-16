@@ -26,7 +26,7 @@ function update(id: string, patch: Partial<Draft>) {
 export function consumeDraft(current: Draft, sent: Draft): Draft {
   return {
     text: current.text === sent.text ? '' : current.text,
-    attachment: current.attachment?.id === sent.attachment?.id ? null : current.attachment,
+    attachment: (['id','name','mime','size','durationMs'] as const).every(key=>current.attachment?.[key]===sent.attachment?.[key]) ? null : current.attachment,
     quoteMessageId: current.quoteMessageId === sent.quoteMessageId ? null : current.quoteMessageId,
   }
 }

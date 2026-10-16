@@ -7,6 +7,7 @@ import type {
   RelayMessage,
   ServerSnapshot,
   MessageRetraction,
+  AttachmentRef,
 } from '@more-than-chat/central-protocol'
 import {
   parseDirectory,
@@ -14,6 +15,7 @@ import {
   parseMessageReceipt,
   parseMessageRetraction,
   createMessageReference,
+  messageContentDescriptor,
 } from '@more-than-chat/central-protocol'
 import { ClientIdentity } from './identity-store'
 import { AttachmentStore } from './attachments'
@@ -264,6 +266,7 @@ export class CentralClient {
       this.#supportsActions = Array.isArray(ping.features) && ping.features.includes('message-actions-v1')
       this.#supportsDevices = Array.isArray(ping.features) && ping.features.includes('device-delivery-v1')
       this.#deviceId ??= await loadDeviceId(this.directory)
+      if(epoch!==this.#epoch)throw new Error('连接已取消')
       const challenge = await request('challenge', 'POST', {
         publicKey: this.identity.publicKey,
         displayName: this.#snapshot.displayName,
@@ -445,22 +448,26 @@ export class CentralClient {
         if (
           error instanceof ServerError &&
           error.status === 401 &&
-          !signal.aborted
+          !signal.aborted && epoch === this.#epoch
         ) {
           try {
-            const challenge = await this.#request('challenge', 'POST', {
+            const serverId=this.#snapshot.serverId!,mode=this.#snapshot.mode
+            const connection={address:this.#snapshot.address,token:null}
+            const request=(route:string,data:unknown)=>this.#request(route,'POST',data,AbortSignal.any([signal,AbortSignal.timeout(10000)]),connection)
+            const challenge = await request('challenge', {
               publicKey: this.identity.publicKey,
               displayName: this.#snapshot.displayName,
               features:['message-actions-v1','group-program-v1','large-groups-v1','executable-plugin-v1'],
               ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
             })
-            const session = await this.#request('session', 'POST', {
+            if(epoch!==this.#epoch||signal.aborted)return
+            const session = await request('session', {
               challengeId: challenge.challengeId,
-              signature: this.#signature(challenge, this.#snapshot.serverId!),
+              signature: this.#signature(challenge, serverId),
             })
-            if (epoch !== this.#epoch) return
+            if (epoch !== this.#epoch || signal.aborted) return
             if (
-              session.serverId !== this.#snapshot.serverId ||
+              session.serverId !== serverId || session.mode !== mode ||
               typeof session.token !== 'string' ||
               !/^[A-Za-z0-9_-]{43}$/.test(session.token)
             )
@@ -470,15 +477,23 @@ export class CentralClient {
             this.#snapshot.error = null
             this.#projectDirectory(session.directory)
             this.#emit()
+            // Offline sends may have arrived with no worker running. Do not wait
+            // for a quiet server's next long-poll heartbeat before flushing them.
+            void this.#drain()
           } catch {}
         }
       }
     }
   }
   async action(route: string, data: unknown): Promise<ServerSnapshot> {
-    if (!this.#token) throw new Error('请先连接中心服务器')
-    await this.#request(route, 'POST', data)
-    this.#projectDirectory(await this.#request('directory'))
+    if (!this.#token || !this.#controller) throw new Error('请先连接中心服务器')
+    const epoch=this.#epoch,signal=this.#controller.signal,connection={address:this.#snapshot.address,token:this.#token}
+    const current=()=>{if(epoch!==this.#epoch||signal.aborted)throw new Error('连接已改变，操作结果请在原服务器查看')}
+    await this.#request(route,'POST',data,AbortSignal.any([signal,AbortSignal.timeout(10000)]),connection)
+    current()
+    const directory=await this.#request('directory','GET',undefined,AbortSignal.any([signal,AbortSignal.timeout(10000)]),connection)
+    current()
+    this.#projectDirectory(directory)
     this.#emit()
     return this.snapshot()
   }
@@ -516,6 +531,7 @@ export class CentralClient {
     )
       throw new Error('服务器目录无效')
     this.#snapshot.directory = directory
+    this.#snapshot.displayName = directory.self.displayName
     const state = this.store.load()
     if (!state) return
     state.profile = {
@@ -667,7 +683,7 @@ export class CentralClient {
     void this.#drain()
   }
 
-  async send(input: {conversationId:string;clientMessageId:string;text:string;attachmentId?:string;quoteMessageId?:string;forwardMessageId?:string}): Promise<{eventId:string;acceptedAt:number;queued?:boolean}> {
+  async send(input: {conversationId:string;clientMessageId:string;text:string;attachmentId?:string;attachmentRef?:AttachmentRef;attachmentMessageId?:string;quoteMessageId?:string;forwardMessageId?:string}): Promise<{eventId:string;acceptedAt:number;queued?:boolean}> {
     const state = this.store.load(), conversation = state?.conversations.find(c=>c.id===input.conversationId)
     if (!state || !conversation || typeof conversation.serverId!=='string' || conversation.transportId!=='builtin.central')
       throw new Error('找不到中心服务器会话')
@@ -676,6 +692,7 @@ export class CentralClient {
       throw new Error('消息不能为空或超出长度限制')
     if (conversation.unavailable)
       throw new Error('你已不在此群内，或已不是本服好友')
+    if(input.attachmentRef!==undefined&&(!input.attachmentRef||!input.attachmentId||input.attachmentRef.id!==input.attachmentId))throw new Error('附件引用不匹配')
     const referenceSource=(id:string)=>{
       const source=this.store.message(id)
       if(!source||source.serverId!==conversation.serverId||source.status!=='sent'||source.retractedAt)throw new Error('来源消息不存在、跨服或已撤回')
@@ -686,18 +703,29 @@ export class CentralClient {
     if(quoted&&quoted.conversationId!==input.conversationId)throw new Error('只能引用当前会话的消息')
     if(forwarded&&(forwarded.text!==input.text||(forwarded.attachment as {id?:string}|undefined)?.id!==input.attachmentId))throw new Error('转发不可改写原文或附件')
     const quote=quoted?createMessageReference(quoted as unknown as Parameters<typeof createMessageReference>[0]):undefined,forward=forwarded?createMessageReference(forwarded as unknown as Parameters<typeof createMessageReference>[0]):undefined
-    const wire = input.attachmentId ? await this.attachments.read(input.attachmentId) : undefined
+    const copiedAttachment=():AttachmentRef|undefined=>{
+      if(!input.attachmentMessageId)return
+      const source=this.store.message(input.attachmentMessageId)
+      if(!source||source.conversationId!==input.conversationId||source.retractedAt||!input.attachmentId||(source.attachment as {id?:string}|undefined)?.id!==input.attachmentId)throw new Error('附件消息已撤回或不属于当前会话，未发送')
+      return source.attachment as AttachmentRef
+    }
+    const prior=this.store.messageByClient(conversation.serverId,this.identity.userId,input.clientMessageId)
+    const ref=(forwarded?.attachment??copiedAttachment()??input.attachmentRef??prior?.attachment) as AttachmentRef|undefined
+    const wire = input.attachmentId ? await this.attachments.read(input.attachmentId,ref) : undefined
+    copiedAttachment() // Recheck withdrawal after asynchronous disk I/O.
+    const attachment=wire?{id:wire.id,name:wire.name,mime:wire.mime,size:wire.size,...(wire.durationMs===undefined?{}:{durationMs:wire.durationMs})}:undefined
     const latest = this.store.load()!
     if(latest.conversations.find(c=>c.id===input.conversationId)?.unavailable)throw new Error('当前好友或群关系已不可用')
+    if(this.store.hasConflictingSendId(conversation.serverId,this.identity.userId,input.clientMessageId))throw new Error('此消息 ID 已用于其他服务器；新消息请使用新的 clientMessageId，同一次发送重试才复用 ID')
     const list = latest.messages[input.conversationId] ?? []
     const existing = this.store.messageByClient(conversation.serverId,this.identity.userId,input.clientMessageId)
+    if(!existing&&this.store.message(input.clientMessageId))throw new Error('此消息 ID 与已有消息冲突，请为新消息生成新的 clientMessageId')
     if(existing&&existing.conversationId!==input.conversationId)throw new Error('同一消息 ID 不能替换会话')
     if(existing&&!list.some(m=>m.id===existing.id))list.push(existing)
-    if (existing && (existing.text!==input.text || (existing.attachment as {id:string}|undefined)?.id!==input.attachmentId)) throw new Error('同一消息 ID 不能替换内容')
+    if (existing && JSON.stringify(messageContentDescriptor({text:String(existing.text),...(existing.attachment?{attachment:existing.attachment as AttachmentRef}:{})}))!==JSON.stringify(messageContentDescriptor({text:input.text,...(attachment?{attachment}:{})}))) throw new Error('同一消息 ID 不能替换内容')
     if(existing&&((existing.quote as {messageId?:string}|undefined)?.messageId!==quote?.messageId||(existing.forwarded as {messageId?:string}|undefined)?.messageId!==forward?.messageId))throw new Error('同一消息 ID 不能替换来源')
     if (existing?.status==='sent') return {eventId:String(existing.id),acceptedAt:Number(existing.createdAt)}
     const now = Number(existing?.createdAt ?? Date.now())
-    const attachment = forwarded?.attachment ?? (wire ? {id:wire.id,name:wire.name,mime:wire.mime,size:wire.size,...(wire.durationMs===undefined?{}:{durationMs:wire.durationMs})} : undefined)
     const message = {id:existing?.id ?? input.clientMessageId,clientMessageId:input.clientMessageId,conversationId:input.conversationId,
       senderId:this.identity.userId,senderName:this.#snapshot.displayName,senderAvatar:this.#snapshot.displayName.slice(0,2),
       role:'self',type:'text',text:input.text,createdAt:now,status:'queued',serverId:conversation.serverId,...(attachment?{attachment}:{}),...(quote?{quote}:{}),...(forward?{forwarded:forward}:{})}
@@ -736,7 +764,7 @@ export class CentralClient {
         try {
           if((message.quote||message.forwarded)&&!this.#supportsActions)throw new LocalSendError('当前服务器不支持引用或转发，请更新服务器')
           const ref=message.attachment as {id:string;name:string;mime:string;size:number;durationMs?:number}|undefined
-          const attachment=ref ? {id:ref.id,name:ref.name,mime:ref.mime,size:ref.size,data:(await this.attachments.read(ref.id)).data,...(ref.durationMs===undefined?{}:{durationMs:ref.durationMs})} : undefined
+          const attachment=ref ? await this.attachments.read(ref.id,ref) : undefined
           if(epoch!==this.#epoch)return
           requesting=true
           const result=await this.#request('messages','POST',{clientMessageId:entry.clientMessageId,targetKind:conversation.kind,targetId:conversation.targetId,text:message.text,...(attachment?{attachment}:{}),...(message.quote?{quote:message.quote}:{}),...(message.forwarded?{forwarded:message.forwarded}:{})},

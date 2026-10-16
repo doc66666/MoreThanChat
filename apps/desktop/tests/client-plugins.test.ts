@@ -16,6 +16,34 @@ function pack(version = '0.1.0', code = 'export default function activate() {}')
 }
 async function store() {const dir = await mkdtemp(path.join(os.tmpdir(), 'mtc-client-store-')); temporary.push(dir); return new ClientPluginStore(dir)}
 describe('trusted executable client packages', () => {
+  it('revokes pending auto-replies and subscriptions on disable and hot replacement',async()=>{
+    const runtime=new CordisPluginRuntime({target:'pc-ui',services:{'ui.surfaces':new UiSurfaceRegistry()}})
+    const listeners=new Set<(value:unknown)=>void>(),request=vi.fn(async()=>({ok:true})),notify=vi.fn()
+    const instances:any[]=[]
+    const sdk={chat:{request,subscribe:(fn:(value:unknown)=>void)=>{listeners.add(fn);return()=>{listeners.delete(fn)}}}}
+    const loader=new ClientPluginLoader(runtime,sdk,async()=>({default:(_ctx,value:any)=>{instances.push(value);value.chat.subscribe(notify)}}))
+    try{
+      await loader.enable(pack())
+      let release!:(value:unknown)=>void
+      request.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve}))
+      const pending=instances[0].chat.request({action:'history',conversationId:'test'}).catch((error:unknown)=>error)
+      await loader.disable('test.desktop')
+      release({messages:[]})
+      expect(await pending).toBeInstanceOf(Error)
+      expect(listeners.size).toBe(0)
+      await expect(instances[0].chat.request({action:'send'})).rejects.toThrow('停用')
+      await loader.enable(pack())
+      expect(listeners.size).toBe(1)
+      await loader.enable(pack('0.2.0'))
+      expect(listeners.size).toBe(1)
+      await expect(instances[1].chat.request({action:'send'})).rejects.toThrow('停用')
+      await instances[2].chat.request({action:'list'})
+      expect(request).toHaveBeenCalledTimes(2)
+      for(const listener of listeners)listener({})
+      expect(notify).toHaveBeenCalledOnce()
+    }finally{await runtime.close()}
+    expect(listeners.size).toBe(0)
+  })
   it('uninstalls running code and durable selection without touching another plugin or restoring after restart',async()=>{
     const s=await store(),surfaces=new UiSurfaceRegistry(),runtime=new CordisPluginRuntime({target:'pc-ui',services:{'ui.surfaces':surfaces}})
     const cleaned=vi.fn(),loader=new ClientPluginLoader(runtime,{},async()=>({default:ctx=>{ctx.contribute(surfaces,{id:'root',surface:'root',render:()=>null});ctx.effect(cleaned)}}))

@@ -1,4 +1,6 @@
 import { MODEL_USAGE_MAX_COUNT } from './model-limits';
+import { parseChatAccessRequest, parseChatAccessResult, type ChatAccessRequest, type ChatAccessResult } from './chat-access';
+export * from './chat-access';
 import { parsePluginManagementRequest, parsePluginManagementResult, type PluginManagementRequest, type PluginManagementResult } from './plugin-management';
 export * from './plugin-management';
 export { MODEL_MAX_CONSECUTIVE_TOOL_FAILURES, MODEL_USAGE_MAX_COUNT } from './model-limits';
@@ -11,6 +13,7 @@ export const HOST_METHODS = [
   "host.shutdown",
   "plugins.list",
   "plugins.manage",
+  "chat.access",
   "plugins.setEnabled",
   "tools.invoke",
   "model.getSettings",
@@ -209,6 +212,7 @@ export interface PluginDraftInstallResult {
 
 export interface HostRequestPayloadMap {
   "plugins.manage": PluginManagementRequest;
+  "chat.access": ChatAccessRequest;
   "host.handshake": {
     clientName: string;
     clientVersion: string;
@@ -251,6 +255,7 @@ export interface HostRequestPayloadMap {
 
 export interface HostResponsePayloadMap {
   "plugins.manage": PluginManagementResult;
+  "chat.access": ChatAccessResult;
   "host.handshake": {
     selectedProtocolVersion: typeof HOST_PROTOCOL_VERSION;
     hostName: string;
@@ -283,6 +288,7 @@ export interface HostResponsePayloadMap {
 }
 
 export const AUTHOR_TOOL_PUBLIC_NAMES = [
+  "list_conversations", "read_chat_history", "read_chat_attachment", "send_chat_message",
   "list_plugins",
   "delete_draft",
   "uninstall_plugin",
@@ -1108,6 +1114,7 @@ const parseRequestPayload = <M extends HostMethod>(
   value: unknown,
 ): HostRequestPayloadMap[M] => {
   switch (method) {
+    case 'chat.access': return parseChatAccessRequest(value) as HostRequestPayloadMap[M];
     case 'plugins.manage': return parsePluginManagementRequest(value) as HostRequestPayloadMap[M];
     case 'credentials.read': {
       const object = asObject(value, '$.payload', 'INVALID_PAYLOAD');
@@ -1240,6 +1247,7 @@ const parseResponsePayload = <M extends HostMethod>(
   value: unknown,
 ): HostResponsePayloadMap[M] => {
   switch (method) {
+    case 'chat.access': return parseChatAccessResult(value) as HostResponsePayloadMap[M];
     case 'plugins.manage': return parsePluginManagementResult(value) as HostResponsePayloadMap[M];
     case 'credentials.read': return parseCredential(value) as HostResponsePayloadMap[M];
     case 'credentials.write': {

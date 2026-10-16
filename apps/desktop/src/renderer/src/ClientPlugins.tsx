@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { chatSdk } from './chat-sdk'
 import { useEffect, useState } from 'react'
 import type { InstalledClientPackage } from '@more-than-chat/plugin-runtime'
 import type { PluginDraftSummary } from '@more-than-chat/protocol'
@@ -10,7 +11,7 @@ import { ShareClientPlugin, SharedPluginChoices } from './SharedClientPlugins'
 
 let loader: ClientPluginLoader | undefined
 export function getClientPluginLoader(): ClientPluginLoader {
-  return loader ??= new ClientPluginLoader(pluginRuntime, Object.freeze({version: 1, React, get app() {return window.moreThanChat}}), importClientModule)
+  return loader ??= new ClientPluginLoader(pluginRuntime, Object.freeze({version: 1, React, chat:chatSdk, get app() {return window.moreThanChat}}), importClientModule)
 }
 const changed = () => window.dispatchEvent(new Event('client-plugins-changed'))
 const errorText = (error: unknown) => error instanceof Error ? error.message : '插件操作失败'

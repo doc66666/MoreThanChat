@@ -225,7 +225,7 @@ describe("Host protocol v1", () => {
 
   it("exports a self-contained Android-consumable JSON Schema", () => {
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$schema).toContain("2020-12");
-    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(47);
+    expect(HOST_PROTOCOL_V1_JSON_SCHEMA.oneOf).toHaveLength(49);
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.pluginDraftExportClientRequest).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.pluginDraftExportClientResponse).toBeDefined();
     expect(HOST_PROTOCOL_V1_JSON_SCHEMA.$defs.hostStatus).toBeDefined();

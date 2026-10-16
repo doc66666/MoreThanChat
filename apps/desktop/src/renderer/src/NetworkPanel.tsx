@@ -100,7 +100,7 @@ export function NetworkPanel({
           />
         </label>
         <label className="settings-field">
-          <span>显示名称</span>
+          <span>昵称（好友与群成员看到的名称）</span>
           <input
             data-server-field="name"
             maxLength={80}
@@ -125,12 +125,14 @@ export function NetworkPanel({
           <button
             className="primary-button"
             data-connect-server
+            title="修改上方昵称后，点击这里保存昵称并重新认证连接"
+            aria-describedby="nickname-connect-hint"
             disabled={busy || !snapshot || !address.trim() || snapshot.status==='connecting'}
             onClick={() =>
-              void run(() => window.moreThanChat.connectServer(address, name),'连接成功，可以添加本服好友或加入群聊')
+              void run(() => window.moreThanChat.connectServer(address, name),'昵称已保存并连接成功，联系人与聊天窗口会自动同步')
             }
           >
-            {snapshot?.status==='connecting'?'正在连接…':'Ping 并认证连接'}
+            {snapshot?.status==='connecting'?'正在连接…':'Ping 并认证连接 · 保存昵称'}
           </button>
           <button
             className="secondary-button"
@@ -144,6 +146,7 @@ export function NetworkPanel({
           </button>
         </div>
         <p className="settings-note" data-server-status={snapshot?.status}>
+          <span id="nickname-connect-hint">修改上方昵称后，点击“Ping 并认证连接”保存。好友列表、会话标题和聊天中的名字会自动同步。<br/></span>
           {snapshot?.status === 'connected'
             ? `已连接 · ${snapshot.mode === 'private' ? '私服白名单' : '公共黑名单'} · ${snapshot.serverId}`
             : snapshot?.status==='connecting'?'正在检查地址并认证…':(snapshot?.error ?? '尚未连接')}

@@ -42,7 +42,7 @@ const clientValue = (parse) => {
   try { return parse() } catch { fail(400, '无效请求数据') }
 }
 const loggedRoutes = new Set([
-  '/healthz', '/readyz', '/v1/ping', '/v1/admin/access', '/v1/admin/status',
+  '/healthz', '/readyz', '/v1/ping', '/v1/admin/access', '/v1/admin/status', '/v1/admin/mode', '/v1/admin/shutdown',
   '/v1/challenge', '/v1/session', '/v1/devices', '/v1/devices/remove', '/v1/logout',
   '/v1/directory', '/v1/users', '/v1/friends/request', '/v1/friends/accept',
   '/v1/friends/reject', '/v1/friends/cancel', '/v1/friends/remove', '/v1/groups',
@@ -83,6 +83,8 @@ export function createCentralServer({
   blacklist = [],
   shutdownTimeoutMs = 10000,
   onError = () => {},
+  onAdminChange = () => {},
+  onShutdown,
 }) {
   if (
     !['public', 'private'].includes(mode) ||
@@ -93,21 +95,21 @@ export function createCentralServer({
   if (!Number.isInteger(shutdownTimeoutMs) || shutdownTimeoutMs < 1 || shutdownTimeoutMs > 60000)
     throw new Error('Shutdown timeout must be between 1 and 60000 milliseconds')
   if (typeof onError !== 'function') throw new Error('onError must be a function')
-  const accessList = mode === 'private' ? whitelist : blacklist
-  if (!Array.isArray(accessList) || accessList.some(uid => !validUid(uid)))
+  if (![whitelist,blacklist].every(list=>Array.isArray(list)&&list.every(validUid)) || whitelist.some(uid=>blacklist.includes(uid)))
     throw new Error('Access list contains an invalid global user id')
+  const accessList = [...whitelist.map(uid=>[uid,1]),...blacklist.map(uid=>[uid,0])]
   const releaseLock = acquireDirectoryLock(directory)
   let db
   try {
     db = new DatabaseSync(path.join(directory, 'relay.sqlite'))
-    return initializeCentralServer({ mode, adminToken, name, accessList, shutdownTimeoutMs, onError }, db, releaseLock)
+    return initializeCentralServer({ mode, adminToken, name, accessList, shutdownTimeoutMs, onError, onAdminChange, onShutdown }, db, releaseLock)
   } catch (error) {
     try { db?.close() } finally { releaseLock() }
     throw error
   }
 }
 
-function initializeCentralServer({ mode, adminToken, name, accessList, shutdownTimeoutMs, onError }, database, releaseLock) {
+function initializeCentralServer({ mode, adminToken, name, accessList, shutdownTimeoutMs, onError, onAdminChange, onShutdown }, database, releaseLock) {
   const db = statementCache(database)
   const startedAt = Date.now()
   const budgets = Object.fromEntries(Object.keys(TRAFFIC).map(key => [key, tokenBuckets()]))
@@ -121,6 +123,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,public_key TEXT NOT NULL,name TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS access(id TEXT PRIMARY KEY,allowed INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS access_removed(id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS friends(a TEXT NOT NULL,b TEXT NOT NULL,status TEXT NOT NULL,requester TEXT NOT NULL,PRIMARY KEY(a,b));
     CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY,name TEXT NOT NULL,owner TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS members(group_id TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(group_id,user_id));
@@ -134,9 +137,10 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
   const oldMode = db
     .prepare("SELECT value FROM meta WHERE key='mode'")
     .get()?.value
-  if (oldMode && oldMode !== mode) {
-    throw Object.assign(new Error('Server mode is immutable for an existing directory'), { code: 'SERVER_MODE_MISMATCH' })
-  }
+  if (oldMode && !['public','private'].includes(oldMode)) throw new Error('Invalid persisted server mode')
+  // Configuration supplies the initial mode. Authenticated operator changes are
+  // durable and must not be undone by an old environment file on restart.
+  mode = oldMode ?? mode
   db.prepare("INSERT OR IGNORE INTO meta VALUES ('mode',?)").run(mode)
   db.prepare("INSERT OR IGNORE INTO meta VALUES ('revision','0')").run()
   db.exec(`CREATE INDEX IF NOT EXISTS queue_recipient_time ON queue(recipient,created_at);
@@ -150,12 +154,13 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
   const serverId = db
     .prepare("SELECT value FROM meta WHERE key='id'")
     .get().value
-  for (const uid of accessList) {
+  for (const [uid,decision] of accessList) {
     // Environment lists seed new identities; persisted administrator decisions
     // must survive a restart even when an old seed remains in configuration.
-    db.prepare('INSERT OR IGNORE INTO access VALUES (?,?)').run(
+    db.prepare('INSERT OR IGNORE INTO access SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM access_removed WHERE id=?)').run(
       uid,
-      mode === 'private' ? 1 : 0,
+      decision,
+      uid,
     )
   }
   const sessions = new Map(),
@@ -468,7 +473,9 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         fail(429, '服务器请求繁忙，请稍后重试')
       if (request.method === 'GET' && route === '/v1/ping')
         return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1'] })
-      if ((route === '/v1/admin/access' && request.method === 'POST') || (route === '/v1/admin/status' && request.method === 'GET')) {
+      if ((route === '/v1/admin/access' && ['GET','POST'].includes(request.method)) ||
+          (route === '/v1/admin/status' && request.method === 'GET') ||
+          (['/v1/admin/mode','/v1/admin/shutdown'].includes(route) && request.method === 'POST')) {
         const received = Buffer.from(
             (request.headers.authorization ?? '').replace(/^Bearer /, ''),
           ),
@@ -485,18 +492,44 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           outbound: outbound.snapshot(), memory: process.memoryUsage(), statements: db.snapshot(),
           closing: lifecycle.state !== 'ready',
         }))
-        const data = await body(request)
-        if (!validUid(data.userId) || typeof data.allowed !== 'boolean')
-          fail(400, '无效名单记录')
-        db.prepare('INSERT OR REPLACE INTO access VALUES (?,?)').run(
-          data.userId,
-          data.allowed ? 1 : 0,
-        )
-        if (!data.allowed) {
-          for (const [token, session] of sessions)
-            if (session.uid === data.userId) sessions.delete(token)
-          wake(data.userId)
+        if(route==='/v1/admin/access'&&request.method==='GET'){
+          const list=url.searchParams.get('list')??'all',rawOffset=url.searchParams.get('offset')??'0'
+          if(!['all','whitelist','blacklist'].includes(list)||!/^\d{1,9}$/.test(rawOffset))fail(400,'无效名单分页')
+          const offset=Number(rawOffset),filter=list==='all'?'':' WHERE allowed='+ (list==='whitelist'?1:0)
+          const rows=db.prepare('SELECT id,allowed FROM access'+filter+' ORDER BY id LIMIT 101 OFFSET ?').all(offset)
+          return json(response,200,{mode,entries:rows.slice(0,100).map(row=>({userId:row.id,allowed:row.allowed===1})),nextOffset:rows.length>100?offset+100:null})
         }
+        if(route==='/v1/admin/shutdown'){
+          setTimeout(()=>{if(onShutdown)onShutdown();else void lifecycle.close()},50).unref()
+          return json(response,200,{ok:true})
+        }
+        const data = await body(request)
+        let change
+        if(route==='/v1/admin/mode'){
+          if(!['public','private'].includes(data.mode)||Object.keys(data).length!==1)fail(400,'无效服务器模式')
+          transaction(()=>db.prepare("UPDATE meta SET value=? WHERE key='mode'").run(data.mode))
+          mode=data.mode;change={operation:'mode',mode}
+        }else{
+          if(!validUid(data.userId))fail(400,'无效名单记录')
+          if(typeof data.allowed==='boolean'&&Object.keys(data).length===2){
+            transaction(()=>db.prepare('INSERT OR REPLACE INTO access VALUES (?,?)').run(data.userId,data.allowed?1:0))
+            change={operation:'add',list:data.allowed?'whitelist':'blacklist'}
+          }else{
+            if(!['whitelist','blacklist'].includes(data.list)||!['add','remove'].includes(data.operation)||Object.keys(data).length!==3)fail(400,'无效名单操作')
+            const decision=data.list==='whitelist'?1:0
+            transaction(()=>{
+              if(data.operation==='add')db.prepare('INSERT OR REPLACE INTO access VALUES (?,?)').run(data.userId,decision)
+              else{
+                db.prepare('DELETE FROM access WHERE id=? AND allowed=?').run(data.userId,decision)
+                db.prepare('INSERT OR IGNORE INTO access_removed VALUES (?)').run(data.userId)
+              }
+            })
+            change={operation:data.operation,list:data.list}
+          }
+        }
+        for(const [token,session] of sessions)if(!allowed(session.uid)){sessions.delete(token);wake(session.uid)}
+        for(const [id,challenge] of challenges)if(!allowed(challenge.uid))challenges.delete(id)
+        try{onAdminChange(change)}catch{ /* Logging cannot undo an applied access decision. */ }
         return json(response, 200, { ok: true })
       }
       if (route === '/v1/challenge' && request.method === 'POST') {
@@ -566,12 +599,19 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         for (const [uid, lastSeen] of activity)
           if (Date.now() - lastSeen >= 35000) activity.delete(uid)
         if (sessions.size >= 4096) fail(429, '服务器在线会话已满')
+        const previousName=db.prepare('SELECT name FROM users WHERE id=?').get(challenge.uid)?.name
         transaction(()=>{
           delivery.register(challenge.uid,challenge.deviceId,challenge.deviceName)
           db.prepare(
           'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name',
         ).run(challenge.uid, challenge.publicKey, challenge.name)
         })
+        // Directory responses always carry current names. Wake connected contacts
+        // immediately; offline contacts obtain the same directory on reconnect.
+        if(previousName!==undefined && previousName!==challenge.name){
+          const peers=db.prepare('SELECT a AS id FROM friends WHERE b=? UNION SELECT b AS id FROM friends WHERE a=? UNION SELECT m.user_id AS id FROM members m JOIN members own ON own.group_id=m.group_id WHERE own.user_id=?').all(challenge.uid,challenge.uid,challenge.uid)
+          for(const id of new Set([challenge.uid,...peers.map(peer=>peer.id)]))wake(id)
+        }
         const token = randomBytes(32).toString('base64url')
         sessions.set(token, {
           uid: challenge.uid,
@@ -1258,6 +1298,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
     server,
     serverId,
     db: database,
+    get mode() { return mode },
     get state() { return lifecycle.state },
     listen(port = 8787, host = '127.0.0.1') { return lifecycle.listen(port, host) },
     close: lifecycle.close,

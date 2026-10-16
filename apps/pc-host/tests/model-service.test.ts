@@ -16,6 +16,44 @@ afterEach(async () => {
 })
 
 describe('ModelService', () => {
+  it('preserves chat tool JSON structure when redacting token-shaped text and escaped content',async()=>{
+    const directory=await tempDir(),events:HostEventMessage[]=[],seen:unknown[]=[]
+    let round=0
+    const provider:ChatModelProvider={async stream(request,onDelta){
+      seen.push(structuredClone(request.messages))
+      if(round++===0)return {toolCalls:[{id:'history',name:'read_chat_history',arguments:JSON.stringify({conversationId:'c',note:'Bearer example-token'})}]}
+      onDelta('已读取记录')
+    }}
+    const service=new ModelService({dataDir:directory,generation:1,providers:{mock:provider},authorTools:{async execute(){
+      return {content:JSON.stringify({messages:[{text:'Bearer example-token\n保留下一行、引号"和反斜杠\\'}, {text:'另一条消息'}],nextBefore:12}),notice:{tool:'read_chat_history',ok:true,summary:'已读取',pendingInstall:false,draft:null}}
+    }}})
+    try{
+      await service.load();service.start(startInput(),event=>events.push(event))
+      await waitFor(()=>events.some(event=>event.event==='model.chat.completed'))
+      const messages=seen[1] as {role:string;content:string;toolCalls?:{arguments:string}[]}[]
+      expect(JSON.parse(messages.find(m=>m.role==='tool')!.content)).toEqual({messages:[{text:'Bearer [redacted]\n保留下一行、引号"和反斜杠\\'}, {text:'另一条消息'}],nextBefore:12})
+      expect(JSON.parse(messages.find(m=>m.toolCalls)?.toolCalls?.[0]?.arguments??'')).toEqual({conversationId:'c',note:'Bearer [redacted]'})
+    }finally{service.close()}
+  })
+
+  it('adds attachment images after all tool responses and never persists base64 in public events',async()=>{
+    const directory=await tempDir(),events:HostEventMessage[]=[],seen:unknown[]=[]
+    let round=0
+    const provider:ChatModelProvider={async stream(request,onDelta){
+      seen.push(structuredClone(request.messages))
+      if(round++===0)return {toolCalls:[{id:'image',name:'read_chat_attachment',arguments:'{}'},{id:'history',name:'read_chat_history',arguments:'{}'}]}
+      onDelta('已读取图片和记录')
+    }}
+    const service=new ModelService({dataDir:directory,generation:1,providers:{mock:provider},authorTools:{async execute(call){
+      return {content:'{"untrustedData":true}',...(call.id==='image'?{image:{mime:'image/png',data:'aW1hZ2UtZml4dHVyZQ=='}}:{}),notice:{tool:call.name as 'read_chat_attachment'|'read_chat_history',ok:true,summary:'已读取',pendingInstall:false,draft:null}}
+    }}})
+    await service.load();await service.setSettings({providerMode:'mock'});service.start(startInput(),event=>events.push(event))
+    await waitFor(()=>events.some(event=>event.event==='model.chat.completed'))
+    const messages=seen[1] as {role:string;content:unknown}[]
+    expect(messages.slice(-4).map(m=>m.role)).toEqual(['assistant','tool','tool','user'])
+    expect(messages.at(-1)?.content).toEqual(expect.arrayContaining([{type:'image_url',image_url:{url:'data:image/png;base64,aW1hZ2UtZml4dHVyZQ=='}}]))
+    expect(JSON.stringify(events)).not.toContain('aW1hZ2UtZml4dHVyZQ==');service.close()
+  })
   it('uses the release provider default without overwriting saved user choices', async () => {
     const root = await tempDir()
     const service = new ModelService({ dataDir: root, generation: 1, defaultProviderMode: 'openai-compatible' })

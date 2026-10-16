@@ -120,7 +120,9 @@ describe('central server lifecycle', () => {
   it('releases DB and directory lock after initialization and listen failures', async () => {
     const occupied = await fixture(), f = await fixture({}, false)
     await f.app.close()
-    expect(() => restart(f, { mode: 'private' })).toThrow(/immutable/)
+    const persisted=restart(f,{mode:'private'})
+    expect(persisted.mode).toBe('public')
+    await persisted.close()
     const replacement = restart(f)
     await expect(replacement.listen(occupied.app.server.address().port)).rejects.toMatchObject({ code: 'EADDRINUSE' })
     expect(replacement.state).toBe('closed')

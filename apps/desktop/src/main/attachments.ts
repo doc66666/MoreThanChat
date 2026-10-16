@@ -69,13 +69,16 @@ export class AttachmentStore {
       throw new Error('附件校验失败')
     return this.put(bytes, wire.name, wire.mime, wire.durationMs)
   }
-  async read(id: string): Promise<WireAttachment> {
+  async read(id: string, reference?: AttachmentRef): Promise<WireAttachment> {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('无效附件标识')
-    const ref = JSON.parse(
-      await readFile(path.join(this.directory, id + '.json'), 'utf8'),
+    // Bytes are content-addressed; names, MIME and duration belong to each message.
+    // Keep the ID-only lookup for older plugins and newly selected legacy files.
+    const ref = reference ?? JSON.parse(
+      (await readLocalAttachment(path.join(this.directory, id + '.json'))).toString('utf8'),
     ) as AttachmentRef
-    const bytes = await readFile(path.join(this.directory, id)),
-      wire = { ...ref, data: bytes.toString('base64') }
+    if(!ref||ref.id!==id)throw new Error('附件引用不匹配')
+    const bytes = await readLocalAttachment(path.join(this.directory, id)),
+      wire = { id:ref.id,name:ref.name,mime:ref.mime,size:ref.size,...(ref.durationMs===undefined?{}:{durationMs:ref.durationMs}),data: bytes.toString('base64') }
     validateWireAttachment(wire)
     if (
       bytes.length !== ref.size ||
@@ -83,5 +86,15 @@ export class AttachmentStore {
     )
       throw new Error('本地附件已损坏')
     return wire
+  }
+}
+
+async function readLocalAttachment(file: string): Promise<Buffer> {
+  try { return await readFile(file) }
+  catch(error) {
+    const code=(error as NodeJS.ErrnoException).code
+    if(code==='ENOENT')throw new Error('本机附件文件不存在，聊天记录仍保留，请重新获取该文件。')
+    if(code==='EACCES'||code==='EPERM')throw new Error('无法读取本机附件，请检查文件访问权限或是否被其他程序占用。')
+    throw error
   }
 }

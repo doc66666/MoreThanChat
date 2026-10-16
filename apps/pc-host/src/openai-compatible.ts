@@ -3,6 +3,9 @@ import { AUTHOR_TOOL_DEFINITIONS, type AuthorToolCall } from './author-tools'
 import { ModelServiceError } from './model-error'
 
 export type ProviderMessage = ModelChatMessage | {
+  role: 'user'
+  content: ({type:'text';text:string}|{type:'image_url';image_url:{url:string}})[]
+} | {
   role: 'assistant'
   content: string
   toolCalls: readonly AuthorToolCall[]
@@ -43,7 +46,7 @@ export function createMockProvider(chunkDelayMs = 0): ChatModelProvider {
   return {
     async stream(request, onDelta) {
       const lastUser = [...request.messages].reverse().find(message => message.role === 'user')?.content ?? ''
-      const text = `（模拟回复）${lastUser.slice(0, 120)}\n\n这是本地模拟流，没有访问网络。`
+      const text = `（模拟回复）${(typeof lastUser==='string'?lastUser:'[图片输入]').slice(0, 120)}\n\n这是本地模拟流，没有访问网络。`
       const size = 12
       for (let index = 0; index < text.length; index += size) {
         if (request.signal.aborted) throw abortError()

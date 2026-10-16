@@ -157,6 +157,8 @@ export function App() {
   const [historyBusy,setHistoryBusy] = useState(false)
   const [historyFailure,setHistoryFailure]=useState<{conversationId:string;input:HistoryInput;error:string}|null>(null)
   const historyRequestRef=useRef(0)
+  const [entryUnread,setEntryUnread]=useState<{id:string;count:number;first:string|null}|null>(null)
+  const enteredConversation=useRef<string|undefined>(undefined)
   const [showDetails, setShowDetails] = useState(() => window.innerWidth > 1080)
   const [showPlugins, setShowPlugins] = useState(false)
   const [showNewChat, setShowNewChat] = useState(false)
@@ -499,8 +501,19 @@ export function App() {
     return()=>{cancelled=true}
   },[active?.id,chatDraft.quoteMessageId,historyRevision])
   const historic=historyWindow?.conversationId===active?.id ? historyWindow : null
-  const visibleMessages=historic?.messages ?? messages
-  const reading = useChatReading(active?.id,visibleMessages,customRoot || showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(historyFailure) || Boolean(forwardDialog) || Boolean(retractConfirm))
+  const visibleMessages=useMemo(()=>{
+    const list=historic?.messages??messages
+    if(!active?.serverId||active.serverId!==serverState?.serverId)return list
+    const directory=serverState.directory
+    const names=new Map([...(directory?.friends??[]),...(directory?.groups.flatMap(g=>g.members)??[]),...(directory?.self?[directory.self]:[])].map(user=>[user.id,user.displayName]))
+    return list.map(message=>{const name=names.get(message.senderId);return name?{...message,senderName:name,senderAvatar:initials(name)}:message})
+  },[historic,messages,active?.serverId,serverState])
+  useLayoutEffect(()=>{
+    if(!active||enteredConversation.current===active.id)return
+    enteredConversation.current=active.id
+    setEntryUnread(active.unread>0?{id:active.id,count:active.unread,first:state?.history?.[active.id]?.firstUnreadId??messages.find(m=>m.role==='peer'&&!m.readAt)?.id??null}:null)
+  },[active?.id])
+  const reading = useChatReading(active?.id,visibleMessages,customRoot || showMessageSearch || showSettings || showPlugins || showServer || showNewChat || Boolean(highlightMessage) || Boolean(historic) || historyBusy || Boolean(historyFailure) || Boolean(forwardDialog) || Boolean(retractConfirm),active?.unread)
   useLayoutEffect(()=>{
     if(!highlightMessage)return
     reading.pauseReading()
@@ -579,6 +592,7 @@ export function App() {
 
   function selectConversation(id: string) {
     historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null);setHighlightMessage(null)
+    const navigation=historyRequestRef.current
     void window.moreThanChat.focusChatWindow?.().catch(()=>undefined)
     setState((current) =>
       current
@@ -591,12 +605,22 @@ export function App() {
           }
         : current,
     )
+    requestAnimationFrame(()=>{if(navigation===historyRequestRef.current)reading.jumpToLatest()})
   }
   async function changeConversationOptions(patch:{pinned?:boolean;muted?:boolean}) {
     try {
       const saved=await window.moreThanChat.setConversationOptions(active!.id,patch)
       setState(current=>current?{...current,conversations:current.conversations.map(c=>c.id===active!.id?{...c,...saved}:c)}:current)
     } catch(error){setToast(errorText(error))}
+  }
+  async function locateUnread(){
+    const id=active!.id,request=historyRequestRef.current
+    try{
+      const first=active!.unread>0?await window.moreThanChat.getFirstUnread(id):entryUnread?.id===id?entryUnread.first:await window.moreThanChat.getFirstUnread(id)
+      if(request!==historyRequestRef.current||stateRef.current?.activeConversationId!==id)return
+      if(first)await loadHistory(id,{around:first})
+      else setToast('没有未读消息')
+    }catch(error){setToast(errorText(error))}
   }
 
   async function loadHistory(conversationId:string,input:HistoryInput={}) {
@@ -615,6 +639,12 @@ export function App() {
   function returnToLatest() {
     historyRequestRef.current++;setHistoryWindow(null);setHistoryBusy(false);setHistoryFailure(null);setHighlightMessage(null)
     requestAnimationFrame(()=>reading.jumpToLatest())
+  }
+  function followLocalSend(conversationId:string) {
+    const navigation=historyRequestRef.current
+    requestAnimationFrame(()=>{
+      if(navigation===historyRequestRef.current&&stateRef.current?.activeConversationId===conversationId)reading.jumpToLatest()
+    })
   }
   async function resendMessage(message:ChatMessage) {
     await resendGate.current.run(message.id,async()=>{
@@ -650,8 +680,9 @@ export function App() {
       if(!plugin){setToast('当前会话的传输插件不可用');return}
       humanSendsRef.current.add(active.id)
       try {
-        await plugin.create().send({clientMessageId,conversationId:active.id,text,createdAt:now,...(attachment?{attachmentId:attachment.id}:{}),...(chatDraft.quoteMessageId?{quoteMessageId:chatDraft.quoteMessageId}:{})})
+        await plugin.create().send({clientMessageId,conversationId:active.id,text,createdAt:now,...(attachment?{attachmentId:attachment.id,attachmentRef:attachment}:{}),...(chatDraft.quoteMessageId?{quoteMessageId:chatDraft.quoteMessageId}:{})})
         chatDraft.consume(attachment)
+        followLocalSend(active.id)
       }catch(error){setToast(errorText(error))}finally{humanSendsRef.current.delete(active.id)}
       return
     }
@@ -675,6 +706,7 @@ export function App() {
     setState((current) =>
       current ? appendMessage(current, outgoing) : current,
     )
+    followLocalSend(active.id)
 
     const plugin = transportRegistry.get(active.transportId)
     if (!plugin) {
@@ -695,7 +727,7 @@ export function App() {
         conversationId: active.id,
         text,
         createdAt: now,
-        ...(attachment ? { attachmentId: attachment.id } : {}),
+        ...(attachment ? { attachmentId: attachment.id,attachmentRef:attachment } : {}),
       })
       setState((current) =>
         current
@@ -830,6 +862,7 @@ export function App() {
         pendingModelEventsRef.current,
       )
     })
+    followLocalSend(conversationId)
     try {
       const ref = await window.moreThanChat.startModelChat({
         streamId,
@@ -1172,8 +1205,8 @@ export function App() {
       </div>
 
       <nav className="app-rail" aria-label="主导航">
-        <button className="brand-mark" aria-label="MoreThanChat">
-          <img src="mtc-icon.svg" alt="MTC" width="40" height="40" style={{borderRadius:8}}/>
+        <button className="brand-mark" aria-label="MoreThanChat · 身份与昵称" title="身份、昵称与服务器设置" onClick={()=>setShowServer(true)}>
+          <img src="mtc-icon.svg" alt="MTC" width="44" height="44"/>
         </button>
         <div className="rail-actions">
           <RailButton active icon={<MessageCircleMore />} label="聊天" />
@@ -1325,11 +1358,16 @@ export function App() {
           </div>
         </header>
         <div className="chat-header-plugins">
+          {(entryUnread?.id===active.id||active.unread>0)&&<div className="unread-entry" data-unread-entry>
+            <button onClick={()=>void locateUnread()}>{active.unread>0?`${active.unread} 条新消息`:`进入时有 ${entryUnread?.count??0} 条未读`} · 定位最早未读消息</button>
+            {active.unread===0&&entryUnread?.id===active.id&&<button aria-label="关闭未读起点提示" onClick={()=>setEntryUnread(null)}>×</button>}
+          </div>}
           <HistoryNotice busy={historyBusy} error={historyFailure?.conversationId===active.id?historyFailure.error:''} onRetry={()=>{if(historyFailure)void loadHistory(historyFailure.conversationId,historyFailure.input)}} onLatest={returnToLatest}/>
           {renderSlot('chat.header')}
         </div>
 
         <section className="message-scroll" aria-live="polite" ref={reading.scrollRef} onScroll={reading.onScroll}>
+          <div ref={reading.contentRef} className="message-timeline">
           {(historic?.hasOlder ?? state.history?.[active.id]?.hasOlder)&&<button className="history-more" data-history-older disabled={historyBusy} onClick={()=>void loadHistory(active.id,{before:(historic?.before ?? state.history?.[active.id]?.before)!})}>{historyBusy?'加载中…':'查看更早的消息'}</button>}
           {historic&&<button className="history-more" data-history-latest onClick={returnToLatest}>正在浏览历史 · 返回最新消息{active.unread>0?' · '+active.unread:''}</button>}
           {visibleMessages.length === 0 ? (
@@ -1368,8 +1406,9 @@ export function App() {
           )}
           {historic?.hasNewer&&<button className="history-more" data-history-newer disabled={historyBusy} onClick={()=>void loadHistory(active.id,{after:historic.after!})}>查看较新的消息</button>}
           <div ref={reading.endRef} />
+          </div>
         </section>
-        {!reading.atBottom&&<button className="jump-latest" onClick={returnToLatest}>回到最新消息{active.unread>0?' · '+active.unread:''}</button>}
+        {(!reading.atBottom||historic)&&<button className="jump-latest" onClick={returnToLatest}>回到最新消息{active.unread>0?' · '+active.unread:''}</button>}
 
         <footer
           className="composer-wrap"

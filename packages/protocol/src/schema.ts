@@ -6,7 +6,7 @@ const requestId = { ...nonEmptyString, maxLength: 256 } as const;
 const pluginMethods = ['plugins.list', 'plugins.setEnabled', 'tools.invoke', 'plugins.manage'] as const;
 const modelMethods = ['model.getSettings', 'model.setSettings', 'model.chat.start', 'model.chat.cancel'] as const;
 const draftMethods = ['pluginDrafts.inspect', 'pluginDrafts.create', 'pluginDrafts.validate', 'pluginDrafts.diagnose', 'pluginDrafts.install', 'pluginDrafts.exportGroup', 'pluginDrafts.exportClient'] as const;
-const credentialMethods = ['credentials.read', 'credentials.write'] as const;
+const credentialMethods = ['credentials.read', 'credentials.write', 'chat.access'] as const;
 const credential = { type: 'object', additionalProperties: false, required: ['apiKey'], properties: {
   apiKey: { anyOf: [{ ...nonEmptyString, maxLength: 4096 }, { type: 'null' }] },
 } } as const;
@@ -150,6 +150,8 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
   title: "MoreThanChat Host Protocol v1",
   description: "Platform-neutral IPC protocol shared by desktop and future Android hosts.",
   oneOf: [
+    { $ref: '#/$defs/chatAccessRequest' },
+    { $ref: '#/$defs/chatAccessResponse' },
     { $ref: '#/$defs/pluginManageRequest' },
     { $ref: '#/$defs/pluginManageResponse' },
     { $ref: "#/$defs/handshakeRequest" },
@@ -199,6 +201,13 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
     { $ref: '#/$defs/pluginDraftExportClientResponse' },
   ],
   $defs: {
+    chatAccessRequest: request('chat.access', {oneOf:[
+      {type:'object',additionalProperties:false,required:['action'],properties:{action:{const:'list'},offset:{type:'integer',minimum:0,maximum:Number.MAX_SAFE_INTEGER},limit:{type:'integer',minimum:1,maximum:100}}},
+      {type:'object',additionalProperties:false,required:['action','conversationId'],properties:{action:{const:'history'},conversationId:boundedId,before:{type:'integer',minimum:0},after:{type:'integer',minimum:-1},around:boundedId,limit:{type:'integer',minimum:1,maximum:100}}},
+      {type:'object',additionalProperties:false,required:['action','conversationId','messageId','format'],properties:{action:{const:'attachment'},conversationId:boundedId,messageId:boundedId,format:{enum:['text','base64','image']},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:65536}}},
+      {type:'object',additionalProperties:false,required:['action','conversationId','clientMessageId','text'],properties:{action:{const:'send'},conversationId:boundedId,clientMessageId:{...nonEmptyString,maxLength:80},text:{type:'string',maxLength:100000},attachmentMessageId:boundedId}},
+    ]}),
+    chatAccessResponse: response('chat.access',{type:'object',additionalProperties:false,required:['dataJson'],properties:{dataJson:{type:'string',maxLength:8388608}}}),
     pluginManageRequest: request('plugins.manage', { oneOf: [
       {type:'object',additionalProperties:false,required:['action','target'],properties:{action:{const:'list'},target:{enum:['all','client']}}},
       {type:'object',additionalProperties:false,required:['action','target','id','revision'],properties:{action:{const:'delete-draft'},target:{const:'draft'},id:{type:'string',pattern:'^[a-z0-9][a-z0-9.-]{0,127}$'},revision:{type:'integer',minimum:1}}},
@@ -545,7 +554,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
           properties: {
             ...streamRefProperties,
             phase: { enum: ['started', 'finished'] },
-            tool: { enum: ['list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'] },
+            tool: { enum: ['list_conversations','read_chat_history','read_chat_attachment','send_chat_message','list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'] },
             ok: { type: 'boolean' },
             summary: { type: 'string', minLength: 1, maxLength: 240 },
             pendingInstall: { type: 'boolean' },

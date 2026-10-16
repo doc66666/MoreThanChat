@@ -142,13 +142,13 @@ export async function startCentralProcess({ factory, env = process.env, processL
   }
   try {
     const { port, host, ...config } = await readServerConfig(env, { cwd })
-    app = factory({ ...config, onError: () => emit({ event: 'central.request_failed', code: 'REQUEST_FAILED' }) })
+    app = factory({ ...config, onError: () => emit({ event: 'central.request_failed', code: 'REQUEST_FAILED' }), onAdminChange: change=>emit({event:'central.access_changed',...change}), onShutdown:()=>{void stop('manual')} })
     processLike.on('SIGINT', onInt)
     processLike.on('SIGTERM', onTerm)
     const address = await app.listen(port, host)
     if (stopping) { await stopping; return { app, address, stop } }
     app.server?.on('error', onError)
-    emit({ event: 'central.started', mode: config.mode, host, port: address?.port ?? port })
+    emit({ event: 'central.started', mode: app.mode ?? config.mode, host, port: address?.port ?? port })
     return { app, address, stop }
   } catch (error) {
     if (stopping && error?.code === 'SERVER_CLOSING') {

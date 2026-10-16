@@ -66,7 +66,7 @@ describe('operator-only address boundaries', () => {
   it('refuses route/method mismatches before sending a credential', async () => {
     const fetchImpl = vi.fn()
     await expect(operatorRequest('/v1/admin/status', { env, body: {}, fetchImpl })).rejects.toThrow()
-    await expect(operatorRequest('/v1/admin/access', { env, fetchImpl })).rejects.toThrow()
+    await expect(operatorRequest('/v1/admin/mode', { env, fetchImpl })).rejects.toThrow()
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })

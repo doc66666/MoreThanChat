@@ -9,6 +9,8 @@ interface HostPingResult {
 }
 
 const api = {
+  accessChat: (request:import('@more-than-chat/protocol').ChatAccessRequest):Promise<import('@more-than-chat/protocol').ChatAccessResult> => ipcRenderer.invoke('chat:access',request),
+  getFirstUnread: (id:string):Promise<string|null> => ipcRenderer.invoke('chat:first-unread',id),
   managePlugins: (request:import('@more-than-chat/protocol').PluginManagementRequest):Promise<import('@more-than-chat/protocol').PluginManagementResult> => ipcRenderer.invoke('host:plugins:manage',request),
   removeClientPlugin: (id:string,version:string):Promise<void> => ipcRenderer.invoke('client-plugins:remove',{action:'uninstall',target:'client',id,version}),
   onClientPluginRemoval: (listener:(id:string,version:string)=>Promise<void>) => {
@@ -76,9 +78,9 @@ const api = {
   sendCentralMessage:(input:unknown)=>ipcRenderer.invoke('central:send',input),
   chooseAttachment:()=>ipcRenderer.invoke('attachment:choose'),
   recordVoice:(input:unknown)=>ipcRenderer.invoke('attachment:voice',input),
-  readAttachment:(id:string)=>ipcRenderer.invoke('attachment:read',id),
-  saveAttachment:async(id:string):Promise<'saved'|'cancelled'>=>{
-    const result:unknown=await ipcRenderer.invoke('attachment:save',id)
+  readAttachment:(attachment:string|import('@more-than-chat/central-protocol').AttachmentRef)=>ipcRenderer.invoke('attachment:read',attachment),
+  saveAttachment:async(attachment:string|import('@more-than-chat/central-protocol').AttachmentRef):Promise<'saved'|'cancelled'>=>{
+    const result:unknown=await ipcRenderer.invoke('attachment:save',attachment)
     if(result!=='saved'&&result!=='cancelled')throw new Error('无效附件保存结果')
     return result
   },
@@ -247,7 +249,7 @@ const modelEventFields = new Set([
   'textDelta', 'text', 'partialText', 'errorMessage', 'usage',
   'phase', 'tool', 'ok', 'summary', 'pendingInstall', 'draft',
 ])
-const authorToolNames = new Set(['list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'])
+const authorToolNames = new Set(['list_conversations','read_chat_history','read_chat_attachment','send_chat_message','list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft', 'install_draft', 'unknown'])
 const authorToolPhases = new Set(['started', 'finished'])
 
 function parseModelSettings(value: unknown): ModelSettingsSnapshot {

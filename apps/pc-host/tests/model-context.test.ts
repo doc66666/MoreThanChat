@@ -57,6 +57,10 @@ it('keeps documented author tools and the realtime example aligned with executab
   expect(BUILTIN_ASSISTANT_PROMPT).not.toContain('columns:1到8')
   expect(BUILTIN_ASSISTANT_PROMPT).toContain('15×15')
   expect(BUILTIN_ASSISTANT_PROMPT).toContain('提示词不是沙箱')
+  for(const tool of ['list_conversations','read_chat_history','read_chat_attachment','send_chat_message'])expect(BUILTIN_ASSISTANT_PROMPT).toContain(tool)
+  expect(BUILTIN_ASSISTANT_PROMPT).toContain('客户端仅提供聊天读写接口')
+  expect(BUILTIN_ASSISTANT_PROMPT).not.toContain('autoReplyRecovery')
+  expect(BUILTIN_ASSISTANT_PROMPT).not.toContain('先持久化待发计划')
 })
 
 it.each(['https://api.deepseek.com', 'https://model.example.test/v1'])('sends the complete context on HTTP turns, retries, tool continuations and Host restart: %s', async baseUrl => {

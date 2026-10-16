@@ -7,7 +7,7 @@ export function MessageAttachment({
 }: {
   attachment: AttachmentRef
 }) {
-  return <AttachmentContent key={`${attachment.id}:${attachment.mime}`} attachment={attachment}/>
+  return <AttachmentContent key={`${attachment.id}:${attachment.mime}:${attachment.name}:${attachment.durationMs??''}`} attachment={attachment}/>
 }
 
 function AttachmentContent({attachment}:{attachment:AttachmentRef}) {
@@ -16,7 +16,7 @@ function AttachmentContent({attachment}:{attachment:AttachmentRef}) {
   const mounted=useRef(true),inFlight=useRef(false)
   const loader=useRef<AttachmentPreview|null>(null)
   if(!loader.current)loader.current=new AttachmentPreview({
-    read:id=>window.moreThanChat.readAttachment(id),
+    read:()=>window.moreThanChat.readAttachment(attachment),
     create:(data,mime)=>{
       const bytes=Uint8Array.from(atob(data),c=>c.charCodeAt(0))
       return URL.createObjectURL(new Blob([bytes],{type:mime}))
@@ -38,7 +38,7 @@ function AttachmentContent({attachment}:{attachment:AttachmentRef}) {
     if(inFlight.current)return
     inFlight.current=true;setSaving(true);setSaveError('');setSaved(false)
     try {
-      const result=await window.moreThanChat.saveAttachment(attachment.id)
+      const result=await window.moreThanChat.saveAttachment(attachment)
       if(mounted.current)setSaved(result==='saved')
     }catch(error){if(mounted.current)setSaveError(error instanceof Error?error.message:'无法保存附件，请重试。')}
     finally{inFlight.current=false;if(mounted.current)setSaving(false)}

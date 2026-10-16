@@ -40,6 +40,7 @@ export interface HostSupervisorOptions {
   readonly stableResetMs?: number
   readonly credentials?: { read(): Promise<string | null>; write(key: string | null): Promise<void> }
   readonly manageClientPlugins?: (request: HostRequestPayloadMap['plugins.manage']) => Promise<HostResponsePayloadMap['plugins.manage']>
+  readonly chatAccess?: (request: HostRequestPayloadMap['chat.access']) => Promise<HostResponsePayloadMap['chat.access']>
 }
 
 export interface HostPingResult {
@@ -96,6 +97,7 @@ export class HostSupervisor {
   readonly #stableResetMs: number
   readonly #credentials: HostSupervisorOptions['credentials']
   readonly #manageClientPlugins: HostSupervisorOptions['manageClientPlugins']
+  readonly #chatAccess: HostSupervisorOptions['chatAccess']
   readonly #listeners = new Set<(status: HostStatusSnapshot) => void>()
   readonly #eventListeners = new Set<(event: HostEventMessage) => void>()
   readonly #pending = new Map<string, PendingRequest>()
@@ -122,6 +124,7 @@ export class HostSupervisor {
     this.#stableResetMs = options.stableResetMs ?? 10_000
     this.#credentials = options.credentials
     this.#manageClientPlugins = options.manageClientPlugins
+    this.#chatAccess = options.chatAccess
   }
 
   getStatus(): HostStatusSnapshot {
@@ -420,6 +423,13 @@ export class HostSupervisor {
   }
 
   async #handleCredentialRequest(binding: ProcessBinding, request: HostRequest): Promise<void> {
+    if(request.method==='chat.access'){
+      let response:unknown
+      try {if(!this.#chatAccess)throw Error('聊天接口暂不可用');response=createHostSuccessResponse(request,await this.#chatAccess(request.payload))}
+      catch(error){response=createHostErrorResponse(request,{code:'INVALID_PAYLOAD',message:error instanceof Error?error.message:'聊天接口失败',retryable:true})}
+      if(this.#isCurrent(binding)&&!binding.terminating)binding.process.send(response)
+      return
+    }
     if (request.method === 'plugins.manage' && request.payload.target === 'client' && this.#manageClientPlugins) {
       let response: unknown
       try { response = createHostSuccessResponse(request, await this.#manageClientPlugins(request.payload)) }

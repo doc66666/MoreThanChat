@@ -5,6 +5,12 @@
   "description": "Platform-neutral IPC protocol shared by desktop and future Android hosts.",
   "oneOf": [
     {
+      "$ref": "#/$defs/chatAccessRequest"
+    },
+    {
+      "$ref": "#/$defs/chatAccessResponse"
+    },
+    {
       "$ref": "#/$defs/pluginManageRequest"
     },
     {
@@ -147,6 +153,223 @@
     }
   ],
   "$defs": {
+    "chatAccessRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "request"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "chat.access"
+        },
+        "payload": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action"
+              ],
+              "properties": {
+                "action": {
+                  "const": "list"
+                },
+                "offset": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "conversationId"
+              ],
+              "properties": {
+                "action": {
+                  "const": "history"
+                },
+                "conversationId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 256
+                },
+                "before": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "after": {
+                  "type": "integer",
+                  "minimum": -1
+                },
+                "around": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 256
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "conversationId",
+                "messageId",
+                "format"
+              ],
+              "properties": {
+                "action": {
+                  "const": "attachment"
+                },
+                "conversationId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 256
+                },
+                "messageId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 256
+                },
+                "format": {
+                  "enum": [
+                    "text",
+                    "base64",
+                    "image"
+                  ]
+                },
+                "offset": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65536
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "conversationId",
+                "clientMessageId",
+                "text"
+              ],
+              "properties": {
+                "action": {
+                  "const": "send"
+                },
+                "conversationId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 256
+                },
+                "clientMessageId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 80
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 100000
+                },
+                "attachmentMessageId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": ".*\\S.*",
+                  "maxLength": 256
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "chatAccessResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "kind",
+        "requestId",
+        "method",
+        "ok",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "response"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "maxLength": 256
+        },
+        "method": {
+          "const": "chat.access"
+        },
+        "ok": {
+          "const": true
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dataJson"
+          ],
+          "properties": {
+            "dataJson": {
+              "type": "string",
+              "maxLength": 8388608
+            }
+          }
+        }
+      }
+    },
     "pluginManageRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -749,7 +972,8 @@
             "pluginDrafts.exportGroup",
             "pluginDrafts.exportClient",
             "credentials.read",
-            "credentials.write"
+            "credentials.write",
+            "chat.access"
           ]
         },
         "ok": {
@@ -3524,6 +3748,10 @@
             },
             "tool": {
               "enum": [
+                "list_conversations",
+                "read_chat_history",
+                "read_chat_attachment",
+                "send_chat_message",
                 "list_plugins",
                 "delete_draft",
                 "uninstall_plugin",

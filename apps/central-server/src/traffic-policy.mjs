@@ -38,8 +38,8 @@ export function tokenBuckets({ now = () => performance.now(), maxKeys = 8192, id
 }
 
 export const isControlRequest = (method, route) =>
-  (method === 'POST' && ['/v1/ack', '/v1/read', '/v1/logout', '/v1/devices/remove', '/v1/admin/access'].includes(route)) ||
-  (method === 'GET' && route === '/v1/admin/status')
+  (method === 'POST' && ['/v1/ack', '/v1/read', '/v1/logout', '/v1/devices/remove', '/v1/admin/access', '/v1/admin/mode', '/v1/admin/shutdown'].includes(route)) ||
+  (method === 'GET' && ['/v1/admin/status','/v1/admin/access'].includes(route))
 
 export function trafficClass(method, route) {
   if (route === '/v1/events') return 'inbox'

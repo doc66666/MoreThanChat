@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { ChatAccessRequest, ChatAccessResult } from '@more-than-chat/protocol'
 import { createHostRequest, safeParseHostMessage, type HostResponse, type PluginManagementRequest, type PluginManagementResult } from '@more-than-chat/protocol'
 
 export interface ModelCredentials {
@@ -25,7 +26,8 @@ export class HostCredentialClient implements ModelCredentials {
     if (!pending) return false
     clearTimeout(pending.timer)
     this.#pending.delete(response.requestId)
-    if (response.method !== pending.method || !response.ok) pending.reject(new Error(pending.method==='plugins.manage'&&!response.ok?response.error.message:'Credential service is unavailable.'))
+    if (response.method !== pending.method) pending.reject(new Error(pending.method==='chat.access'?'聊天服务响应不匹配，请核对结果后重试。':'Local service response did not match the request.'))
+    else if (!response.ok) pending.reject(new Error(['chat.access','plugins.manage'].includes(pending.method)?response.error.message:'Credential service is unavailable.'))
     else pending.resolve(response)
     return true
   }
@@ -43,13 +45,18 @@ export class HostCredentialClient implements ModelCredentials {
     throw new Error('本机插件管理不可用')
   }
 
-  #request(method: 'credentials.read' | 'credentials.write' | 'plugins.manage', payload: Record<string, never> | { apiKey: string | null } | PluginManagementRequest): Promise<HostResponse> {
+  async accessChat(request:ChatAccessRequest):Promise<ChatAccessResult>{
+    const response=await this.#request('chat.access',request)
+    if(response.ok&&response.method==='chat.access')return response.payload
+    throw Error('聊天服务不可用')
+  }
+  #request(method: 'credentials.read' | 'credentials.write' | 'plugins.manage' | 'chat.access', payload: Record<string, never> | { apiKey: string | null } | PluginManagementRequest | ChatAccessRequest): Promise<HostResponse> {
     const id = randomUUID()
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.#pending.delete(id); reject(new Error('本机服务请求超时。')) }, method==='plugins.manage'?15000:3000)
+      const timer = setTimeout(() => { this.#pending.delete(id); reject(new Error('本机服务请求超时。')) }, ['plugins.manage','chat.access'].includes(method)?15000:3000)
       this.#pending.set(id, { method, resolve, reject, timer })
       try { this.send(createHostRequest(method, id, payload)) }
-      catch { clearTimeout(timer); this.#pending.delete(id); reject(new Error('Credential service is unavailable.')) }
+      catch { clearTimeout(timer); this.#pending.delete(id); reject(new Error(method==='chat.access'?'聊天服务连接中断，本次结果未确认。':'Credential service is unavailable.')) }
     })
   }
 }

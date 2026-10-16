@@ -11,9 +11,11 @@ export function operatorAddress(value = 'http://localhost:8787') {
   return url.origin
 }
 
-export async function operatorRequest(route, { address, env = process.env, defaultTokenFile, body, fetchImpl = fetch } = {}) {
-  if (!['/v1/admin/access', '/v1/admin/status'].includes(route) ||
-      (route === '/v1/admin/status' ? body !== undefined : body === undefined)) throw new Error('Invalid operator route or method')
+export async function operatorRequest(route, { address, env = process.env, defaultTokenFile, body, query, fetchImpl = fetch } = {}) {
+  if (!['/v1/admin/access', '/v1/admin/status','/v1/admin/mode','/v1/admin/shutdown'].includes(route) ||
+      (route === '/v1/admin/status' && body !== undefined) ||
+      (['/v1/admin/mode','/v1/admin/shutdown'].includes(route)&&body===undefined)) throw new Error('Invalid operator route or method')
+  if(query!==undefined&&(route!=='/v1/admin/access'||body!==undefined||!['all','whitelist','blacklist'].includes(query.list)||!Number.isSafeInteger(query.offset)||query.offset<0||query.offset>999999999))throw new Error('Invalid operator pagination')
   const origin = operatorAddress(address)
   const credentials = { ...env }
   if (credentials.MTC_SERVER_ADMIN_TOKEN === undefined && credentials.MTC_SERVER_ADMIN_TOKEN_FILE === undefined && defaultTokenFile) {
@@ -22,7 +24,7 @@ export async function operatorRequest(route, { address, env = process.env, defau
   const token = await readAdminToken(credentials)
   let response
   try {
-    response = await fetchImpl(origin + route, {
+    response = await fetchImpl(origin + route+(query?'?'+new URLSearchParams({list:query.list,offset:String(query.offset)}):''), {
       method: body === undefined ? 'GET' : 'POST',
       headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -43,6 +45,10 @@ export async function operatorRequest(route, { address, env = process.env, defau
     }
     const value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     if (route === '/v1/admin/status') return statusResult(value)
+    if(route==='/v1/admin/access'&&body===undefined){
+      if(!['public','private'].includes(value?.mode)||!Array.isArray(value.entries)||value.entries.length>100||value.entries.some(row=>!/^usr_[a-f0-9]{64}$/.test(row.userId)||typeof row.allowed!=='boolean')||!(value.nextOffset===null||Number.isSafeInteger(value.nextOffset)&&value.nextOffset>=0))throw new Error('Invalid access listing')
+      return {mode:value.mode,entries:value.entries.map(({userId,allowed})=>({userId,allowed})),nextOffset:value.nextOffset}
+    }
     if (value?.ok !== true) throw new Error('Invalid access result')
     return { ok: true }
   } catch { throw new Error('Central operator response was invalid') }

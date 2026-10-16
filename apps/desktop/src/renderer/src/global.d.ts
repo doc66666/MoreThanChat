@@ -108,6 +108,8 @@ declare global {
       getChatHistory(conversationId:string,input?:{before?:number;after?:number;around?:string;limit?:number}):Promise<{messages:import('@more-than-chat/chat-core').ChatMessage[];before:number|null;after:number|null;hasOlder:boolean;hasNewer:boolean}>
       setAppearance(theme:'light'|'dark'):Promise<void>
       getServerState():Promise<ServerSnapshot>
+      accessChat(request:import('@more-than-chat/protocol').ChatAccessRequest):Promise<import('@more-than-chat/protocol').ChatAccessResult>
+      getFirstUnread(id:string):Promise<string|null>
       copyGlobalUserId():Promise<void>
       getPluginInbox(groupId:string,pluginId:string):Promise<Extract<RelayEvent,{kind:'plugin'}>[]>
       connectServer(address:string,displayName:string):Promise<ServerSnapshot>
@@ -117,11 +119,11 @@ declare global {
       onGroupPluginConsentChanged(listener:()=>void):()=>void
       submitGroupDraft(input:{serverId:string;groupId:string;draftId:string;revision:number;slot:string;confirmed:true}):Promise<ServerSnapshot>
       shareClientPlugin(input:{serverId:string;groupId:string} & ({draftId:string;revision:number}|{pluginId:string;digest:string})):Promise<ServerSnapshot>
-      sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string}):Promise<{eventId:string;acceptedAt:number;queued?:boolean}>
+      sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string;attachmentRef?:AttachmentRef}):Promise<{eventId:string;acceptedAt:number;queued?:boolean}>
       chooseAttachment():Promise<AttachmentRef|null>
       recordVoice(input:{data:string;mime:string;durationMs:number}):Promise<AttachmentRef>
-      readAttachment(id:string):Promise<WireAttachment>
-      saveAttachment(id:string):Promise<'saved'|'cancelled'>
+      readAttachment(attachment:string|AttachmentRef):Promise<WireAttachment>
+      saveAttachment(attachment:string|AttachmentRef):Promise<'saved'|'cancelled'>
       onServerState(listener:(state:ServerSnapshot)=>void):()=>void
       onCentralChat(listener:(state:unknown)=>void):()=>void
       onPluginEvent(listener:(event:Extract<RelayEvent,{kind:'plugin'}>)=>void):()=>void

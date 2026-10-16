@@ -18,6 +18,7 @@ import { resolveHostEntry } from './host-entry'
 import { HostSupervisor } from './host-supervisor'
 import { toClientModelEvent } from './model-client-event'
 import { ChatStore } from './chat-store'
+import { createChatAccess } from './chat-access'
 import { CentralClient } from './central-client'
 import { ClientIdentity } from './identity-store'
 import { activeProfile, profilePath, listProfiles, restoreProfile, selectProfile } from './identity-profiles'
@@ -26,7 +27,7 @@ import { createHostRequest, parseHostMessage, parsePluginManagementRequest, type
 import { DesktopIntegration } from './desktop-integration'
 import { exportHistory, restoreHistory } from './history-transfer'
 import { createHash } from 'node:crypto'
-import { parseGroupArtifact, parseGroupPluginPack, pluginScopeMembers, UI_SLOTS, type UiSlot } from '@more-than-chat/central-protocol'
+import { parseGroupArtifact, parseGroupPluginPack, pluginScopeMembers, UI_SLOTS, type UiSlot, type AttachmentRef } from '@more-than-chat/central-protocol'
 import { GroupPluginConsentStore } from './group-plugin-consent'
 import { ClientPluginStore, clientPackageDigest } from './client-plugins'
 import { parseExecutableClientPackage } from '@more-than-chat/plugin-runtime'
@@ -362,6 +363,8 @@ function registerIpc(): void {
     centralClient?.refreshChat()
     return input.patch
   })
+  ipcMain.handle('chat:access',(event,input:unknown)=>{assertTrustedIpc(event);return accessChat(input)})
+  ipcMain.handle('chat:first-unread',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>256)throw Error('无效会话');return chatStore?.firstUnread(id)??null})
   ipcMain.handle('chat:history',(event,input:{conversationId:string;before?:number;after?:number;around?:string;limit?:number})=>{
     assertTrustedIpc(event)
     if(!input||typeof input.conversationId!=='string'||!chatStore)throw new Error('无效历史请求')
@@ -512,6 +515,7 @@ function registerIpc(): void {
         clientMessageId: string
         text: string
         attachmentId?: string
+        attachmentRef?: AttachmentRef
         quoteMessageId?: string
       },
     ) => {
@@ -582,18 +586,18 @@ function registerIpc(): void {
       )
     },
   )
-  ipcMain.handle('attachment:read', (event, id: string) => {
+  ipcMain.handle('attachment:read', (event, input: string|AttachmentRef) => {
     assertTrustedIpc(event)
-    if (!attachmentStore || typeof id !== 'string') throw new Error('无效附件')
-    return attachmentStore.read(id)
+    if (!attachmentStore || !input) throw new Error('无效附件')
+    return attachmentStore.read(typeof input==='string'?input:input.id,typeof input==='string'?undefined:input)
   })
-  ipcMain.handle('attachment:save', async (event, id: string) => {
+  ipcMain.handle('attachment:save', async (event, input: string|AttachmentRef) => {
     assertTrustedIpc(event)
-    if (!attachmentStore || !mainWindow || typeof id !== 'string')
+    if (!attachmentStore || !mainWindow || !input)
       throw new Error('无效附件')
-    const wire = await attachmentStore.read(id),
+    const wire = await attachmentStore.read(typeof input==='string'?input:input.id,typeof input==='string'?undefined:input),
       result = await dialog.showSaveDialog(mainWindow, {
-        defaultPath: wire.name,
+        defaultPath: path.basename(wire.name),
         title: '保存文件',
       })
     if (result.canceled || !result.filePath) return 'cancelled'
@@ -762,6 +766,11 @@ function assertTrustedIpc(event: IpcMainInvokeEvent): void {
   }
 }
 
+async function accessChat(input:unknown) {
+  if(!chatStore||!attachmentStore||!centralClient)throw Error('聊天服务尚未准备好')
+  const client=centralClient
+  return createChatAccess(chatStore,attachmentStore,request=>client.send(request))(input)
+}
 function startHostSupervisor(): void {
   const hostEntry = resolveHostEntry({
     packaged: app.isPackaged,
@@ -769,6 +778,7 @@ function startHostSupervisor(): void {
     moduleDir: __dirname,
   })
   hostSupervisor = new HostSupervisor({
+    chatAccess: accessChat,
     manageClientPlugins,
     clientVersion: app.getVersion(),
     credentials: new EncryptedCredentialStore(

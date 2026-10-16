@@ -23,6 +23,7 @@ const PAGE_BYTES = 512 * 1024
 // Recent plugin transport history, not chat history or authoritative shared state.
 export const PLUGIN_HISTORY_LIMITS = { perPlugin: 1000, total: 10000, bytes: 16 * 1024 * 1024 } as const
 export interface MessagePage {
+  firstUnreadId?: string | null
   messages: RecordValue[]
   before: number | null
   after: number | null
@@ -67,6 +68,7 @@ export class ChatStore {
         CREATE INDEX IF NOT EXISTS message_conversation ON messages(conversation_id, position);
         CREATE INDEX IF NOT EXISTS message_client ON messages(conversation_id,json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
         CREATE INDEX IF NOT EXISTS message_sender_client ON messages(json_extract(payload,'$.serverId'),json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
+        CREATE INDEX IF NOT EXISTS message_sender_logical ON messages(json_extract(payload,'$.senderId'),json_extract(payload,'$.clientMessageId'));
         CREATE INDEX IF NOT EXISTS message_quote ON messages(json_extract(payload,'$.serverId'),json_extract(payload,'$.quote.messageId'));
         CREATE TABLE IF NOT EXISTS message_retractions(server_id TEXT NOT NULL,message_id TEXT NOT NULL,sender_id TEXT NOT NULL,client_id TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(server_id,message_id));
         CREATE INDEX IF NOT EXISTS retraction_message_id ON message_retractions(message_id);
@@ -298,6 +300,13 @@ export class ChatStore {
     const row=this.#db.prepare('SELECT payload FROM conversations WHERE id=?').get(id)
     return row?JSON.parse(String(row.payload)) as RecordValue:undefined
   }
+  conversationList(): RecordValue[] {
+    return this.#db.prepare('SELECT payload FROM conversations ORDER BY position').all().map(row=>JSON.parse(String(row.payload)) as RecordValue)
+  }
+  firstUnread(conversationId:string): string | null {
+    const row=this.#db.prepare("SELECT id FROM messages WHERE conversation_id=? AND json_extract(payload,'$.role')='peer' AND json_extract(payload,'$.status')='sent' AND json_extract(payload,'$.readAt') IS NULL ORDER BY position LIMIT 1").get(conversationId)
+    return row?String(row.id):null
+  }
   hasActiveLocalTurns(): boolean {
     this.#assertOpen()
     return Boolean(this.#db.prepare("SELECT 1 FROM messages WHERE json_extract(payload,'$.serverId') IS NULL AND json_extract(payload,'$.status') IN ('streaming','sending') LIMIT 1").get())
@@ -329,7 +338,7 @@ export class ChatStore {
       const page = this.messagePage(String(conversation.id))
       messages[String(conversation.id)] = page.messages
       const { messages: _messages, ...cursor } = page
-      history[String(conversation.id)] = cursor
+      history[String(conversation.id)] = {...cursor,firstUnreadId:this.firstUnread(String(conversation.id))}
     }
     const state=validateSnapshot({ ...header,conversations,messages })
     return withHistory ? { ...state, history } : state
@@ -344,6 +353,10 @@ export class ChatStore {
     const row = this.#db.prepare("SELECT payload FROM messages WHERE json_extract(payload,'$.serverId')=? AND json_extract(payload,'$.senderId')=? AND json_extract(payload,'$.clientMessageId')=?").get(serverId,senderId,clientId)
     return row ? JSON.parse(String(row.payload)) as RecordValue : undefined
   }
+  hasConflictingSendId(serverId:string,senderId:string,clientId:string):boolean {
+    // The durable outbox is keyed by client_id across this identity's servers.
+    return Boolean(this.#db.prepare("SELECT 1 FROM messages WHERE json_extract(payload,'$.senderId')=? AND json_extract(payload,'$.clientMessageId')=? AND json_extract(payload,'$.serverId') IS NOT NULL AND json_extract(payload,'$.serverId')<>? LIMIT 1").get(senderId,clientId,serverId))
+  }
   retraction(serverId:string,messageId:string,senderId?:string,clientId?:string):MessageRetraction|undefined {
     const row=this.#db.prepare('SELECT payload FROM message_retractions WHERE server_id=? AND message_id=?').get(serverId,messageId) ?? (senderId&&clientId?this.#db.prepare('SELECT payload FROM message_retractions WHERE server_id=? AND sender_id=? AND client_id=?').get(serverId,senderId,clientId):undefined)
     return row?parseMessageRetraction(JSON.parse(String(row.payload))):undefined
@@ -353,8 +366,11 @@ export class ChatStore {
     this.#assertOpen()
     id(conversationId)
     const limit = input.limit ?? 50
+    // Exclusive cursor -1 precedes position zero, including an empty timeline
+    // whose first incoming message must remain visible to a resumed consumer.
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 ||
-      [input.before,input.after].some(n=>n!==undefined&&(!Number.isSafeInteger(n)||n<0)) ||
+      (input.before!==undefined&&(!Number.isSafeInteger(input.before)||input.before<0)) ||
+      (input.after!==undefined&&(!Number.isSafeInteger(input.after)||input.after< -1)) ||
       [input.before,input.after,input.around].filter(v=>v!==undefined).length>1) throw new Error('Invalid history cursor.')
     type Row = { position: number; payload: string }
     let rows: Row[]
@@ -821,7 +837,7 @@ function validateSnapshot(value: unknown): Snapshot {
               'validate_draft',
               'diagnose_draft',
               'install_draft',
-              'list_plugins',
+              'list_conversations','read_chat_history','read_chat_attachment','send_chat_message','list_plugins',
               'delete_draft',
               'uninstall_plugin',
               'unknown',

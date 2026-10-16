@@ -11,8 +11,10 @@ import { PluginDraftError, type PluginDraftService } from './plugin-drafts'
 import { DEFAULT_PLUGIN_AUTHOR_CONTRACT, PLUGIN_AUTHOR_CONTRACT } from './author-contract'
 import { parsePluginManagementRequest } from '@more-than-chat/protocol'
 import type { ManagePlugins } from './plugin-management'
+import { CHAT_ACCESS_TOOLS } from '@more-than-chat/protocol'
+import { CHAT_TOOL_DEFINITIONS, executeChatTool, type AccessChat } from './chat-tools'
 
-export const AUTHOR_TOOL_NAMES = ['list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'] as const
+export const AUTHOR_TOOL_NAMES = [...CHAT_ACCESS_TOOLS,'list_plugins', 'delete_draft', 'uninstall_plugin', 'inspect_drafts', 'create_draft', 'validate_draft', 'diagnose_draft'] as const
 
 export type AuthorToolName = (typeof AUTHOR_TOOL_NAMES)[number]
 
@@ -32,6 +34,7 @@ export interface AuthorToolNotice {
 }
 
 export interface AuthorToolExecution {
+  readonly image?: {mime:string;data:string}
   readonly content: string
   readonly notice: AuthorToolNotice
 }
@@ -41,6 +44,7 @@ export interface AuthorToolExecutor {
 }
 
 const PROGRESS: Record<AuthorToolPublicName, string> = {
+  list_conversations:'正在读取好友和群聊列表…',read_chat_history:'正在读取聊天记录…',read_chat_attachment:'正在读取聊天附件…',send_chat_message:'正在发送聊天消息…',
   list_plugins:'正在读取本机已安装插件…',
   delete_draft:'正在删除指定草稿…',
   uninstall_plugin:'正在卸载指定本机插件…',
@@ -56,6 +60,7 @@ const MAX_ARGUMENTS = 40_000
 const MAX_RESULT = 16_000
 
 export const AUTHOR_TOOL_DEFINITIONS = [
+  ...CHAT_TOOL_DEFINITIONS,
   {type:'function',function:{name:'list_plugins',description:'读取真实本机已安装的 Host 和可执行界面插件，含 target、版本、是否可卸载；不是草稿，也不代表群成员的安装情况。',parameters:{type:'object',additionalProperties:false,properties:{}}}},
   {type:'function',function:{name:'delete_draft',description:'仅在用户要求删除时删除指定草稿的所有修订，移入本机回收目录。先 inspect_drafts 获取最新 revision，不删除已安装插件或群副本。目标模糊时先问清，不批量猜测删除。',parameters:{type:'object',additionalProperties:false,required:['draftId','revision'],properties:{draftId:{type:'string'},revision:{type:'integer',minimum:1}}}}},
   {type:'function',function:{name:'uninstall_plugin',description:'仅在用户要求卸载时移除指定本机插件并清理运行界面。先 list_plugins，按返回的 target、id、version 精确卸载。内置插件不能卸载；不删除草稿或撤回已分发的群插件。',parameters:{type:'object',additionalProperties:false,required:['target','id','version'],properties:{target:{enum:['host','client']},id:{type:'string'},version:{type:'string'}}}}},
@@ -122,10 +127,11 @@ export function authorToolStarted(name: string): AuthorToolNotice {
   return { tool, ok: true, summary: PROGRESS[tool], pendingInstall: false, draft: null }
 }
 
-export function createAuthorToolExecutor(drafts: PluginDraftService, manage?: ManagePlugins): AuthorToolExecutor {
+export function createAuthorToolExecutor(drafts: PluginDraftService, manage?: ManagePlugins, access?: AccessChat): AuthorToolExecutor {
   return {
     async execute(call) {
       if (call.arguments.length > MAX_ARGUMENTS) return refusal(publicTool(call.name), '工具参数过长，已拒绝。源码没有执行。')
+      if ((CHAT_ACCESS_TOOLS as readonly string[]).includes(call.name)) return executeChatTool(call,access)
       if (call.name === 'install_draft' || call.name === 'pluginDrafts.install') {
         return refusal('install_draft', '安装需要用户在界面确认。模型不能安装插件，源码也不会执行。')
       }

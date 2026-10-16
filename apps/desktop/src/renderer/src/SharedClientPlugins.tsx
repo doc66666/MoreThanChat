@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { chatSdk } from './chat-sdk'
 import { useEffect, useState } from 'react'
 import { directPluginScope, type ServerSnapshot } from '@more-than-chat/central-protocol'
 import type { PluginDraftSummary } from '@more-than-chat/protocol'
@@ -9,13 +10,13 @@ import { SharedClientPlugins } from './shared-client-plugins'
 import { GroupPluginGate } from './GeneratedGroupPlugin'
 
 let manager:SharedClientPlugins|undefined
-function sharedManager(){return manager??=new SharedClientPlugins(pluginRuntime,window.moreThanChat,{version:1,React,app:window.moreThanChat},importClientModule,()=>window.dispatchEvent(new Event('shared-plugins-changed')))}
+function sharedManager(){return manager??=new SharedClientPlugins(pluginRuntime,window.moreThanChat,{version:1,React,chat:chatSdk,app:window.moreThanChat},importClientModule,()=>window.dispatchEvent(new Event('shared-plugins-changed')))}
 export function useSharedClientPlugins(snapshot:ServerSnapshot|null,scope:string|null) {
   const [revision,refresh]=useState(0)
   useEffect(()=>window.moreThanChat.onGroupPluginConsentChanged(()=>refresh(n=>n+1)),[])
+  useEffect(()=>()=>{void sharedManager().update(null,null).catch(console.error)},[])
   useEffect(()=>{
     void sharedManager().update(snapshot,scope).catch(console.error)
-    return()=>{void sharedManager().update(null,null).catch(console.error)}
   },[snapshot,scope,revision])
 }
 export function sharedPluginScopeLabel(snapshot:ServerSnapshot,scope:string):string {

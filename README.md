@@ -1,7 +1,7 @@
 # MoreThanChat
 一切皆插件的聊天应用，或许你的企鹅已经过时了！
 
-最新正式版：[v0.3.0 下载与发行说明](https://github.com/doc66666/MoreThanChat/releases/tag/v0.3.0)。修复 AI 插件管理、工具调用中断和插件卸载、热更新的状态问题，更新白底像素风 MTC 图标。
+最新正式版：[v0.4.0 下载与发行说明](https://github.com/doc66666/MoreThanChat/releases/tag/v0.4.0)。包含 Windows 客户端安装器／ZIP，以及内含运行环境的 Windows、Linux 中心服务器包。完善内置助手聊天读写、未读定位、重连与附件处理；中心服务器新增一键启动和管理 CLI。见[服务器快速入门](docs/central-server-quickstart.md)。后续正式发布均同时提供客户端和中心服务器。
 
 当前 v0.2.0 支持同一份 AI 可执行界面插件本机使用、向群申请由管理员批准分发，以及向好友申请由对方同意后分发。成员各自选择载入，通过中心事件接口同步；可改造整个界面，不限固定插槽。见 [共享插件 SDK 与验收](docs/plugin-runtime.md#2026-10-14同一可执行包的本机群聊私聊闭环)，回归命令 `pnpm verify:shared-plugins`。旧 v0.1.0 内测标签保持不变。
 

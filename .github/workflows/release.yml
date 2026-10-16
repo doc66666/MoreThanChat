@@ -1,0 +1,77 @@
+name: Publish desktop and central server
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  distributions:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: pnpm/action-setup@9fd676a19091d4595eefd76e4bd31c97133911f1
+        with:
+          version: 11.21.0
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.12.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm package:central
+      - name: Verify central crash recovery
+        run: pnpm verify:central-ops
+      - name: Build Windows installer and ZIP
+        if: runner.os == 'Windows'
+        run: pnpm package:windows
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-${{ runner.os }}
+          path: |
+            .artifacts/central-distributions/*/MoreThanChat-central-server-*.zip
+            .artifacts/central-distributions/*/MoreThanChat-central-server-*.tar.gz
+            .artifacts/windows-distributions/*/*-setup.exe
+            .artifacts/windows-distributions/*/*-win.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: distributions
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.12.0
+      - name: Fetch verified build assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'release-*' --dir .artifacts/downloaded
+      - name: Collect current version assets
+        run: |
+          mkdir -p .artifacts/release
+          find .artifacts/downloaded -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*-setup.exe' \) -exec cp -n {} .artifacts/release/ \;
+          node -e "const v=require('./package.json').version;if(process.env.GITHUB_REF_NAME!=='v'+v)throw Error('Tag/version mismatch')"
+      - name: Publish only with both client and server packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-release.mjs .artifacts/release

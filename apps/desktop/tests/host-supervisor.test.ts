@@ -113,6 +113,28 @@ describe('HostSupervisor', () => {
     const stopped = supervisor.stop(); host.emitExit(0); await stopped
   })
 
+  it('brokers chat reads and sends without broadcasting payloads or restarting on a normal interface error',async()=>{
+    const processes:FakeHostProcess[]=[],events:unknown[]=[]
+    const chatAccess=vi.fn(async(request:import('@more-than-chat/protocol').ChatAccessRequest)=>{
+      if(request.action==='attachment')throw Error('本机附件文件不存在')
+      return {dataJson:JSON.stringify(request.action==='send'?{queued:true,eventId:'logical-send',acceptedAt:1}:{messages:[{text:'private conversation text'}]})}
+    })
+    const supervisor=createSupervisor(processes,{chatAccess})
+    supervisor.subscribeEvents(event=>events.push(event))
+    const started=supervisor.start(),host=processes[0]!
+    host.emitSpawn();respondToHandshake(host);await started
+    try{
+      host.emitMessage(createHostRequest('chat.access','read-chat',{action:'history',conversationId:'c',after:-1}))
+      host.emitMessage(createHostRequest('chat.access','send-chat',{action:'send',conversationId:'c',clientMessageId:'logical-send',text:'specified text'}))
+      host.emitMessage(createHostRequest('chat.access','missing-chat-file',{action:'attachment',conversationId:'c',messageId:'m',format:'text'}))
+      await vi.waitFor(()=>expect(host.sent).toContainEqual(expect.objectContaining({requestId:'missing-chat-file',ok:false,error:expect.objectContaining({message:'本机附件文件不存在'})})))
+      expect(host.sent).toContainEqual(expect.objectContaining({requestId:'read-chat',ok:true,payload:{dataJson:JSON.stringify({messages:[{text:'private conversation text'}]})}}))
+      expect(host.sent).toContainEqual(expect.objectContaining({requestId:'send-chat',ok:true,payload:{dataJson:JSON.stringify({queued:true,eventId:'logical-send',acceptedAt:1})}}))
+      expect(chatAccess).toHaveBeenCalledTimes(3);expect(events).toEqual([])
+      expect(host.terminateCalls).toBe(0);expect(supervisor.getStatus()).toEqual({state:'ready',generation:1})
+    }finally{const stopped=supervisor.stop();host.emitExit(0);await stopped}
+  })
+
   it('brokers client plugin list/uninstall without exposing replies as model events', async () => {
     const processes: FakeHostProcess[] = []
     const manageClientPlugins = vi.fn(async (request: import('@more-than-chat/protocol').PluginManagementRequest) => {

@@ -2,7 +2,8 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '..'),
-  output = path.join(root, '.artifacts', 'central-release')
+  output = process.argv[2]==='--output'&&process.argv[3]?path.resolve(process.argv[3]):path.join(root, '.artifacts', 'central-release')
+if(process.argv.length>2&&!(process.argv.length===4&&process.argv[2]==='--output'))throw Error('Usage: stage-central-release.mjs [--output directory]')
 await mkdir(output, { recursive: true })
 for(const file of await readdir(path.join(root,'apps','central-server','src'))){
   if(file.endsWith('.mjs'))await copyFile(path.join(root,'apps','central-server','src',file),path.join(output,file))
@@ -13,6 +14,8 @@ for(const [file,method] of [['central-access.mjs','runAccessCli'],['central-stat
 const deployment=path.join(output,'deploy')
 await mkdir(deployment,{recursive:true})
 for(const file of ['more-than-chat.service','server.env.example','Caddyfile.example'])await copyFile(path.join(root,'deploy','central',file),path.join(deployment,file))
+for(const file of ['start.sh','mtc-server.sh','start.cmd','mtc-server.cmd'])await copyFile(path.join(root,'deploy','central',file),path.join(output,file))
+await copyFile(path.join(root,'docs','central-server-quickstart.md'),path.join(output,'README.md'))
 await copyFile(path.join(root,'docs','central-and-plugin-stage-2026-10-11.md'),path.join(output,'OPERATIONS.md'))
 const moduleRoot = path.join(
     output,
@@ -42,7 +45,7 @@ await writeFile(
       version: JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version,
       private: true,
       type: 'module',
-      scripts: { start: 'node server.mjs', status:'node central-status.mjs' },
+      scripts: { start: 'node server-cli.mjs start', status:'node server-cli.mjs status', stop:'node server-cli.mjs stop', setup:'node server-cli.mjs setup' },
       engines: { node: '>=24.12.0 <25' },
     },
     null,

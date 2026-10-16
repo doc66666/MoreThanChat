@@ -135,5 +135,9 @@ describe('composer text and draft safety', () => {
     const current = { text: 'next', attachment: { id: 'b' } as AttachmentRef, quoteMessageId: 'quote-b' }
     expect(consumeDraft(current, sent)).toEqual(current)
     expect(consumeDraft({ ...sent, text: 'next' }, sent)).toEqual({ text: 'next', attachment: null, quoteMessageId: null })
+    const renamed={...sent.attachment,name:'another name.txt'}
+    expect(consumeDraft({...sent,attachment:renamed},sent).attachment).toEqual(renamed)
+    const first={...sent,attachment:{id:'a',name:'test.txt',mime:'text/plain',size:1}}
+    expect(consumeDraft({...first,attachment:{size:1,mime:'text/plain',name:'test.txt',id:'a'}},first).attachment).toBeNull()
   })
 })

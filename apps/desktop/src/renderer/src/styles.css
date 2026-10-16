@@ -419,7 +419,13 @@ svg { stroke-width: 1.7; }
 .host-status.host-ready, .server-status[data-central-state="connected"] { background: transparent; border-color: var(--border); color: var(--text-secondary); }
 .host-status.host-ready::before { box-shadow: none; }
 .app-rail { background: var(--rail); padding-top: 22px; }
-.brand-mark { border-radius: 13px; box-shadow: 0 3px 10px var(--shadow-color); font-weight: 650; }
+.brand-mark { width:44px; height:44px; padding:0; display:grid; place-items:center; overflow:hidden; border:1px solid var(--border); border-radius:12px; background:#fff; box-shadow:none; cursor:pointer; }
+.brand-mark img { display:block; width:44px; height:44px; }
+.brand-mark:focus:not(:focus-visible) { outline:none; }
+.brand-mark:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.message-scroll { min-height:0; overflow-anchor:none; }
+.unread-entry { display:flex; align-items:center; justify-content:space-between; padding:6px 20px; background:var(--accent-soft); color:var(--accent-text); }
+.unread-entry button { border:0; background:transparent; color:inherit; cursor:pointer; padding:4px; font-size:12px; }
 .rail-actions { margin-top: 24px; gap: 6px; }
 .rail-bottom { gap: 3px; }
 .rail-button { border-radius: 11px; }

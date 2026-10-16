@@ -1,6 +1,6 @@
 {
   "name": "more-than-chat",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "scripts": {
@@ -10,6 +10,9 @@
     "central:dev": "pnpm --filter @more-than-chat/central-protocol build && node scripts/run-central-dev.mjs",
     "central:package": "pnpm --filter @more-than-chat/central-protocol build && node scripts/stage-central-release.mjs",
     "central:status": "node scripts/central-status.mjs",
+    "central:manage": "node apps/central-server/src/server-cli.mjs",
+    "package:central": "pnpm --filter @more-than-chat/central-protocol build && node scripts/package-central.mjs",
+    "verify:central-cli": "node scripts/verify-central-cli.mjs",
     "verify:central-ops": "pnpm central:package && node scripts/verify-central-ops.mjs && node scripts/verify-central-ops.mjs --release .artifacts/central-release",
     "verify:central-load": "pnpm central:package && node scripts/verify-central-ops.mjs --release .artifacts/central-release --load-rounds 64",
     "verify:central-soak": "pnpm central:package && node scripts/verify-central-ops.mjs --release .artifacts/central-release --soak-seconds 180",
@@ -26,6 +29,9 @@
     "verify:host": "pnpm build && node scripts/verify-plugin-ui.mjs --host",
     "verify:ai-ui": "pnpm build && node scripts/verify-ai-ui.mjs",
     "verify:chat-ui": "pnpm build && node scripts/verify-chat-core-ui.mjs",
+    "verify:chat-experience": "pnpm build && node scripts/verify-chat-experience.mjs",
+    "verify:chat-attachments": "pnpm build && node scripts/verify-chat-attachments.mjs",
+    "verify:chat-restart": "pnpm build && node scripts/verify-chat-restart.mjs",
     "verify:central-ui": "pnpm build && node scripts/verify-central-ui.mjs",
     "verify:background-ui": "pnpm build && node scripts/verify-background-ui.mjs",
     "verify:history-ui": "pnpm build && node scripts/verify-history-ui.mjs",
