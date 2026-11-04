@@ -23,6 +23,7 @@ import {
   centralTransportPlugin,
 } from './central-transport'
 import { slotDemoManifest, slotDemoPlugin } from './slot-demo'
+import { bindAppComposition } from './app-api'
 
 export const transportRegistry = new TransportRegistry()
 export const composerActionRegistry = new ContributionRegistry<ComposerAction>()
@@ -50,6 +51,7 @@ export const pluginRuntime = new CordisPluginRuntime({
     'chat.network': chatNetworkService,
   },
 })
+bindAppComposition(pluginRuntime)
 
 const demoPlugins: readonly PluginSource[] = [
   {
@@ -80,9 +82,11 @@ let startPromise: Promise<void> | undefined
 
 export function startBundledPlugins(): Promise<void> {
   if (startPromise) return startPromise
-  startPromise = Promise.all(
-    bundledPlugins.map((source) => pluginRuntime.activate(source.manifest.id)),
-  )
+  startPromise = import('./app-composition').then(async ({appSources,disabledBuiltins}) => {
+    const disabled=disabledBuiltins()
+    for(const source of appSources)if(!pluginRuntime.list().some(p=>p.manifest.id===source.manifest.id))pluginRuntime.install(source)
+    await pluginRuntime.start([...bundledPlugins,...appSources].filter(source=>!disabled.has(source.manifest.id)).map(source=>source.manifest.id),true)
+  })
     .then(() => undefined)
     .catch((error) => {
       startPromise = undefined

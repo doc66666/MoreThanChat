@@ -1,4 +1,4 @@
-import type { InstalledClientPackage, PluginRuntime, PluginContext, PluginDisposer } from '@more-than-chat/plugin-runtime'
+import type { InstalledClientPackage, PluginRuntime, PluginContext, PluginDisposer, PluginSource } from '@more-than-chat/plugin-runtime'
 import { scopePluginChat } from './plugin-chat-scope'
 
 export type ClientModule = {default: (context: PluginContext, sdk: unknown) => void | PluginDisposer | Promise<void | PluginDisposer>}
@@ -18,7 +18,19 @@ export class ClientPluginLoader {
       const wasActive = this.runtime.list().some(p => p.manifest.id === id && p.status === 'active')
       if (!previous && this.runtime.list().some(p => p.manifest.id === id)) throw new Error('插件 ID 已被其他运行时占用')
       if (previous?.digest === pack.digest) {await this.runtime.activate(id); return}
-      if (previous) {this.#revokeChat(id);await this.runtime.uninstall(id)}
+      if (previous) {
+        this.#revokeChat(id)
+        let replaced=false
+        try {
+          await this.runtime.replace(this.#source(pack)); replaced=true; await this.runtime.activate(id)
+          this.#packages.set(id, pack)
+        } catch (error) {
+          if(replaced)await this.runtime.replace(this.#source(previous))
+          if (!wasActive) await this.runtime.deactivate(id)
+          throw error
+        }
+        return
+      }
       try { this.#install(pack); await this.runtime.activate(id) }
       catch (error) {
         // If cleanup fails, retain the failed record for retry/recovery, never install over it.
@@ -32,7 +44,11 @@ export class ClientPluginLoader {
   disable(id: string): Promise<void> { return this.#enqueue(() => {this.#revokeChat(id);return this.runtime.deactivate(id)}) }
   #revokeChat(id:string):void {this.#chatScopes.get(id)?.();this.#chatScopes.delete(id)}
   #install(pack: InstalledClientPackage): void {
-    this.runtime.install({manifest: pack.manifest, trust: 'trusted', load: async () => {
+    this.runtime.install(this.#source(pack))
+    this.#packages.set(pack.manifest.id, pack)
+  }
+  #source(pack: InstalledClientPackage): PluginSource {
+    return {manifest: pack.manifest, trust: 'trusted', load: async () => {
       const module = await this.load(pack.program.code)
       if (typeof module.default !== 'function') throw new Error('界面模块需要 export default function activate(ctx, sdk)')
       return {manifest: pack.manifest, activate: context => {
@@ -41,8 +57,7 @@ export class ClientPluginLoader {
         context.effect(()=>{scoped.dispose();if(this.#chatScopes.get(pack.manifest.id)===scoped.dispose)this.#chatScopes.delete(pack.manifest.id)})
         return module.default(this.context(context),scoped.sdk)
       }}
-    }})
-    this.#packages.set(pack.manifest.id, pack)
+    }}
   }
   #enqueue<T>(work: () => Promise<T>): Promise<T> {
     const task = this.#tail.then(work, work)

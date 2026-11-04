@@ -59,11 +59,12 @@ describe('trusted executable client packages', () => {
     }finally{await runtime.close()}
   })
   it('requires explicit full trust and supported target/engine, rejects reserved IDs and invalid format', () => {
-    for (const change of [{permissions: []}, {targets: ['pc-host']}, {id: 'builtin.replace'}, {engine: {moreThanChat: '^99.0.0'}}, {services: {requires: ['secrets']}}]) {
+    for (const change of [{permissions: []}, {targets: ['pc-host']}, {id: 'builtin.replace'}, {engine: {moreThanChat: '^99.0.0'}}, {services: {requires: [null]}}]) {
       const p = pack()
       expect(() => parseExecutableClientPackage({manifest: {...p.manifest, ...change}, program: p.program})).toThrow()
     }
     expect(() => parseExecutableClientPackage({manifest: pack().manifest, program: {kind: 'executable-client', code: 'x'.repeat(100001)}})).toThrow()
+    expect(parseExecutableClientPackage({manifest:{...pack().manifest,services:{requires:['example.clock'],provides:['example.greeting']}},program:pack().program}).manifest.services?.provides).toEqual(['example.greeting'])
   })
   it('keeps failed cleanup visible and disabled, then permits uninstall retry',async()=>{
     const s=await store(),surfaces=new UiSurfaceRegistry(),runtime=new CordisPluginRuntime({target:'pc-ui',services:{'ui.surfaces':surfaces}})

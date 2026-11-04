@@ -1,36 +1,37 @@
+import { parseGroupArtifact,parseGroupPluginPack,pluginScopeMembers,UI_SLOTS,type AttachmentRef,type UiSlot } from '@more-than-chat/central-protocol'
+import type { PluginContext } from '@more-than-chat/plugin-runtime'
+import { parseExecutableClientPackage } from '@more-than-chat/plugin-runtime'
+import { createHostRequest,parseHostMessage,parsePluginManagementRequest,type PluginManagementRequest,type PluginManagementResult } from '@more-than-chat/protocol'
 import {
-  app,
-  BrowserWindow,
-  Menu,
-  dialog,
-  ipcMain,
-  shell,
-  safeStorage,
-  clipboard,
-  type IpcMainEvent,
-  type IpcMainInvokeEvent,
+app,
+BrowserWindow,
+clipboard,
+dialog,
+ipcMain,
+Menu,
+safeStorage,
+shell,
+type IpcMainEvent,
+type IpcMainInvokeEvent,
 } from 'electron'
-import { EncryptedCredentialStore } from './credential-store'
-import { readFile, stat, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { readFile,stat,writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { AttachmentStore } from './attachments'
+import { CentralClient } from './central-client'
+import { createChatAccess } from './chat-access'
+import { ChatStore } from './chat-store'
+import { clientPackageDigest,ClientPluginStore } from './client-plugins'
+import { EncryptedCredentialStore } from './credential-store'
+import { DesktopIntegration } from './desktop-integration'
 import { createElectronHostProcessFactory } from './electron-host-process'
+import { GroupPluginConsentStore } from './group-plugin-consent'
+import { exportHistory,restoreHistory } from './history-transfer'
 import { resolveHostEntry } from './host-entry'
 import { HostSupervisor } from './host-supervisor'
+import { activeProfile,listProfiles,profilePath,restoreProfile,selectProfile } from './identity-profiles'
 import { toClientModelEvent } from './model-client-event'
-import { ChatStore } from './chat-store'
-import { createChatAccess } from './chat-access'
-import { CentralClient } from './central-client'
-import { ClientIdentity } from './identity-store'
-import { activeProfile, profilePath, listProfiles, restoreProfile, selectProfile } from './identity-profiles'
-import { AttachmentStore } from './attachments'
-import { createHostRequest, parseHostMessage, parsePluginManagementRequest, type PluginManagementRequest, type PluginManagementResult } from '@more-than-chat/protocol'
-import { DesktopIntegration } from './desktop-integration'
-import { exportHistory, restoreHistory } from './history-transfer'
-import { createHash } from 'node:crypto'
-import { parseGroupArtifact, parseGroupPluginPack, pluginScopeMembers, UI_SLOTS, type UiSlot, type AttachmentRef } from '@more-than-chat/central-protocol'
-import { GroupPluginConsentStore } from './group-plugin-consent'
-import { ClientPluginStore, clientPackageDigest } from './client-plugins'
-import { parseExecutableClientPackage } from '@more-than-chat/plugin-runtime'
+import { createMainComposition,mainSource } from './service-composition'
 
 let chatStore: ChatStore | null = null
 let mainWindow: BrowserWindow | null = null
@@ -41,7 +42,7 @@ let quitAfterHostStops = false
 let quitRequested = false
 let centralClient: CentralClient | null = null
 let attachmentStore: AttachmentStore | null = null
-let centralCleanup: (() => void)[] = []
+let composition: ReturnType<typeof createMainComposition> | null = null
 let pendingProfile: string | null = null
 let identityBusy = false
 let desktop: DesktopIntegration | null = null
@@ -171,25 +172,29 @@ async function manageClientPlugins(request: PluginManagementRequest): Promise<Pl
   return {summary:'本机界面插件已卸载并清理运行贡献。草稿和群内分发不受影响。',plugins:[]}
 }
 
-function registerIpc(): void {
+function registerIpc(context: PluginContext): void {
+  const handle: typeof ipcMain.handle = (channel, listener) => {
+    ipcMain.handle(channel, listener)
+    context.effect(() => ipcMain.removeHandler(channel))
+  }
   const clientTask = async <T,>(work: () => Promise<T>): Promise<T> => {
     if (clientPluginBusy || identityBusy || windowClosing || quitRequested || recoveryPending) throw new Error('已有插件或窗口操作正在进行')
     clientPluginBusy = true
     try { return await work() } finally { clientPluginBusy = false }
   }
-  ipcMain.handle('client-plugins:list', event => {assertTrustedIpc(event); return clientPlugins.list()})
-  ipcMain.handle('client-plugins:remove', (event, value:unknown) => {
+  handle('client-plugins:list', event => {assertTrustedIpc(event); return clientPlugins.list()})
+  handle('client-plugins:remove', (event, value:unknown) => {
     assertTrustedIpc(event)
     const request=parsePluginManagementRequest(value)
     if(request.action!=='uninstall'||request.target!=='client')throw new Error('无效卸载请求')
     return clientTask(()=>clientPlugins.remove(request.id,request.version))
   })
-  ipcMain.handle('host:plugins:manage', (event,value:unknown) => {
+  handle('host:plugins:manage', (event,value:unknown) => {
     assertTrustedIpc(event)
     if(!hostSupervisor)throw new Error('PC Host 尚未就绪')
     return hostSupervisor.managePlugins(parsePluginManagementRequest(value))
   })
-  ipcMain.handle('client-plugins:import', event => {
+  handle('client-plugins:import', event => {
     assertTrustedIpc(event)
     return clientTask(async () => {
       const result = await dialog.showOpenDialog(mainWindow!, {title: '导入可执行界面插件包', properties: ['openFile'], filters: [{name: 'MoreThanChat 界面插件', extensions: ['mtcplugin', 'json']}]})
@@ -198,7 +203,7 @@ function registerIpc(): void {
       return {...pack, digest: clientPackageDigest(pack)}
     })
   })
-  ipcMain.handle('client-plugins:install-draft', (event, payload) => {
+  handle('client-plugins:install-draft', (event, payload) => {
     assertTrustedIpc(event)
     return clientTask(async () => {
       if (!hostSupervisor) throw new Error('PC Host 尚未就绪')
@@ -209,7 +214,7 @@ function registerIpc(): void {
       return {...pack, digest: clientPackageDigest(pack)}
     })
   })
-  ipcMain.handle('client-plugins:save', (event, value: unknown, enabled: unknown) => {
+  handle('client-plugins:save', (event, value: unknown, enabled: unknown) => {
     assertTrustedIpc(event)
     return clientTask(async () => {
       if (!value || typeof value !== 'object' || typeof enabled !== 'boolean') throw new Error('插件状态无效')
@@ -219,7 +224,7 @@ function registerIpc(): void {
       return clientPlugins.save(pack, enabled)
     })
   })
-  ipcMain.handle('client-plugins:recover', event => {
+  handle('client-plugins:recover', event => {
     assertTrustedIpc(event)
     // Acknowledge before replacing the caller's WebContents.
     setImmediate(requestInterfaceRecovery)
@@ -232,8 +237,8 @@ function registerIpc(): void {
     try{await flushHistorySource();return await work(password)}finally{setHistoryTransferStatus(false,'')}
   }
   const historyContext=()=>({directory:dataDirectory,store:chatStore!,identity:centralClient!.identity,attachments:attachmentStore!,progress:(stage:string)=>setHistoryTransferStatus(true,stage),beforeCommit:flushHistorySource})
-  ipcMain.handle('history:status',event=>{assertTrustedIpc(event);return historyTransferStatus})
-  ipcMain.handle('history:export',async(event,password:unknown)=>{
+  handle('history:status',event=>{assertTrustedIpc(event);return historyTransferStatus})
+  handle('history:export',async(event,password:unknown)=>{
     assertTrustedIpc(event)
     return historyTask(password,async password=>{
       const chosen=await dialog.showSaveDialog(mainWindow!,{title:'保存加密聊天记录备份',defaultPath:`MoreThanChat-history-${centralClient!.identity.userId.slice(-8)}-${new Date().toISOString().slice(0,10)}.mtchistory`,filters:[{name:'加密聊天记录',extensions:['mtchistory']}]})
@@ -241,7 +246,7 @@ function registerIpc(): void {
       return exportHistory(historyContext(),chosen.filePath,password)
     })
   })
-  ipcMain.handle('history:import',async(event,password:unknown)=>{
+  handle('history:import',async(event,password:unknown)=>{
     assertTrustedIpc(event)
     return historyTask(password,async password=>{
       const chosen=await dialog.showOpenDialog(mainWindow!,{title:'选择本身份的聊天记录备份',properties:['openFile'],filters:[{name:'加密聊天记录',extensions:['mtchistory']}]})
@@ -258,14 +263,14 @@ function registerIpc(): void {
       return result
     })
   })
-  ipcMain.handle('app:desktop-settings',event=>{assertTrustedIpc(event);return desktop?.snapshot()})
-  ipcMain.handle('app:desktop-configure',(event,value:unknown)=>{assertTrustedIpc(event);if(!desktop)throw new Error('设置尚未就绪');return desktop.configure(value)})
-  ipcMain.handle('app:notification-test',event=>{assertTrustedIpc(event);desktop?.testNotification()})
-  ipcMain.handle('app:hide-to-tray',event=>{assertTrustedIpc(event);hideChatWindow()})
-  ipcMain.handle('app:quit',event=>{assertTrustedIpc(event);app.quit()})
-  ipcMain.handle('app:pending-navigation',event=>{assertTrustedIpc(event);return pendingNavigation})
-  ipcMain.handle('app:navigation-applied',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id==='string'&&pendingNavigation?.id===id)pendingNavigation=null})
-  ipcMain.handle('identity:profiles', async event => {
+  handle('app:desktop-settings',event=>{assertTrustedIpc(event);return desktop?.snapshot()})
+  handle('app:desktop-configure',(event,value:unknown)=>{assertTrustedIpc(event);if(!desktop)throw new Error('设置尚未就绪');return desktop.configure(value)})
+  handle('app:notification-test',event=>{assertTrustedIpc(event);desktop?.testNotification()})
+  handle('app:hide-to-tray',event=>{assertTrustedIpc(event);hideChatWindow()})
+  handle('app:quit',event=>{assertTrustedIpc(event);app.quit()})
+  handle('app:pending-navigation',event=>{assertTrustedIpc(event);return pendingNavigation})
+  handle('app:navigation-applied',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id==='string'&&pendingNavigation?.id===id)pendingNavigation=null})
+  handle('identity:profiles', async event => {
     assertTrustedIpc(event)
     return { current: currentProfile, profiles: await listProfiles(profileRoot, systemCipher) }
   })
@@ -274,7 +279,7 @@ function registerIpc(): void {
     identityBusy=true
     try{return await fn()}finally{identityBusy=false}
   }
-  ipcMain.handle('identity:backup', async (event,password:unknown) => {
+  handle('identity:backup', async (event,password:unknown) => {
     assertTrustedIpc(event)
     return identityTask(async()=>{
       if(!centralClient||!mainWindow||typeof password!=='string')throw new Error('身份尚未就绪')
@@ -286,7 +291,7 @@ function registerIpc(): void {
       return true
     })
   })
-  ipcMain.handle('identity:restore', async (event,password:unknown) => {
+  handle('identity:restore', async (event,password:unknown) => {
     assertTrustedIpc(event)
     return identityTask(async()=>{
       if(!mainWindow||typeof password!=='string')throw new Error('无效身份操作')
@@ -297,7 +302,7 @@ function registerIpc(): void {
       return {id}
     })
   })
-  ipcMain.handle('identity:switch', async (event,id:unknown) => {
+  handle('identity:switch', async (event,id:unknown) => {
     assertTrustedIpc(event)
     return identityTask(async()=>{
       if(typeof id!=='string'||!mainWindow||!(await listProfiles(profileRoot,systemCipher)).some(p=>p.id===id))throw new Error('身份空间不存在')
@@ -307,8 +312,8 @@ function registerIpc(): void {
       return 'cancelled'
     })
   })
-  ipcMain.handle('central:devices',event=>{assertTrustedIpc(event);return centralClient?.devices()??[]})
-  ipcMain.handle('central:remove-device',async(event,id:unknown)=>{
+  handle('central:devices',event=>{assertTrustedIpc(event);return centralClient?.devices()??[]})
+  handle('central:remove-device',async(event,id:unknown)=>{
     assertTrustedIpc(event)
     if(typeof id!=='string'||!centralClient||!mainWindow)throw new Error('无效设备')
     const serverId=centralClient.snapshot().serverId
@@ -322,38 +327,38 @@ function registerIpc(): void {
     }
     return 'cancelled'
   })
-  ipcMain.handle('app:window-focused',event=>{assertTrustedIpc(event);return desktop?.foreground()??false})
-  ipcMain.handle('app:focus-window',event=>{
+  handle('app:window-focused',event=>{assertTrustedIpc(event);return desktop?.foreground()??false})
+  handle('app:focus-window',event=>{
     assertTrustedIpc(event)
     openChatWindow()
   })
-  ipcMain.handle('chat:set-reading',(event,id:unknown)=>{
+  handle('chat:set-reading',(event,id:unknown)=>{
     assertTrustedIpc(event)
     if(id!==null&&(typeof id!=='string'||id.length>200))throw new Error('Invalid conversation')
     centralClient?.setReadingConversation(desktop?.foreground()&&(!pendingNavigation||pendingNavigation.conversationId===id) ? id as string|null : null)
     desktop?.notifications.reconcile()
   })
-  ipcMain.handle('chat:retry-message',(event,id:unknown)=>{
+  handle('chat:retry-message',(event,id:unknown)=>{
     assertTrustedIpc(event)
     if(typeof id!=='string'||id.length>200||!centralClient)throw new Error('无效消息')
     return centralClient.retryMessage(id)
   })
-  ipcMain.handle('chat:search',(event,input:{query:string;conversationId?:string})=>{
+  handle('chat:search',(event,input:{query:string;conversationId?:string})=>{
     assertTrustedIpc(event)
     if(!input||typeof input.query!=='string'||input.query.length>200||(input.conversationId!==undefined&&typeof input.conversationId!=='string'))throw new Error('无效搜索条件')
     return chatStore?.searchMessages(input.query,input.conversationId) ?? []
   })
-  ipcMain.handle('chat:copy-message',(event,id:unknown)=>{
+  handle('chat:copy-message',(event,id:unknown)=>{
     assertTrustedIpc(event)
     if(typeof id!=='string')throw new Error('无效消息')
     const message=chatStore?.message(id)
     if(!message)throw new Error('消息不存在')
     clipboard.writeText(String(message.text || (message.attachment as {name?:string}|undefined)?.name || ''))
   })
-  ipcMain.handle('chat:message',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>256)throw new Error('无效消息');return chatStore?.message(id)??null})
-  ipcMain.handle('central:retract',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>80||!centralClient)throw new Error('无效撤回');return centralClient.retractMessage(id)})
-  ipcMain.handle('central:forward',(event,input:{messageId:string;conversationId:string;clientMessageId:string})=>{assertTrustedIpc(event);if(!centralClient||!input||[input.messageId,input.conversationId,input.clientMessageId].some(v=>typeof v!=='string'||!v||v.length>256))throw new Error('无效转发');return centralClient.forwardMessage(input.messageId,input.conversationId,input.clientMessageId)})
-  ipcMain.handle('chat:conversation-options',(event,input:{id:string;patch:Record<string,unknown>})=>{
+  handle('chat:message',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>256)throw new Error('无效消息');return chatStore?.message(id)??null})
+  handle('central:retract',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>80||!centralClient)throw new Error('无效撤回');return centralClient.retractMessage(id)})
+  handle('central:forward',(event,input:{messageId:string;conversationId:string;clientMessageId:string})=>{assertTrustedIpc(event);if(!centralClient||!input||[input.messageId,input.conversationId,input.clientMessageId].some(v=>typeof v!=='string'||!v||v.length>256))throw new Error('无效转发');return centralClient.forwardMessage(input.messageId,input.conversationId,input.clientMessageId)})
+  handle('chat:conversation-options',(event,input:{id:string;patch:Record<string,unknown>})=>{
     assertTrustedIpc(event)
     if(!input||typeof input.id!=='string'||!input.patch||Object.keys(input.patch).some(key=>!['pinned','muted'].includes(key)||typeof input.patch[key]!=='boolean'))throw new Error('无效会话设置')
     const state=chatStore?.load(),conversation=state?.conversations.find(c=>c.id===input.id)
@@ -363,31 +368,32 @@ function registerIpc(): void {
     centralClient?.refreshChat()
     return input.patch
   })
-  ipcMain.handle('chat:access',(event,input:unknown)=>{assertTrustedIpc(event);return accessChat(input)})
-  ipcMain.handle('chat:first-unread',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>256)throw Error('无效会话');return chatStore?.firstUnread(id)??null})
-  ipcMain.handle('chat:history',(event,input:{conversationId:string;before?:number;after?:number;around?:string;limit?:number})=>{
+  handle('chat:access',(event,input:unknown)=>{assertTrustedIpc(event);return accessChat(input)})
+  handle('chat:first-unread',(event,id:unknown)=>{assertTrustedIpc(event);if(typeof id!=='string'||id.length>256)throw Error('无效会话');return chatStore?.firstUnread(id)??null})
+  handle('chat:history',(event,input:{conversationId:string;before?:number;after?:number;around?:string;limit?:number})=>{
     assertTrustedIpc(event)
     if(!input||typeof input.conversationId!=='string'||!chatStore)throw new Error('无效历史请求')
     return chatStore.messagePage(input.conversationId,input)
   })
-  ipcMain.handle('app:appearance', (event, theme: unknown) => {
+  handle('app:appearance', (event, theme: unknown) => {
     assertTrustedIpc(event)
     if (theme !== 'light' && theme !== 'dark') throw new Error('Invalid appearance')
     const window = BrowserWindow.fromWebContents(event.sender)
     if (!window || window.isDestroyed()) return
-    const background = theme === 'dark' ? '#24283b' : '#faf9f6'
-    const chrome = theme === 'dark' ? '#1f2335' : '#f0eee8'
+    const background = theme === 'dark' ? '#1e1c1b' : '#faf7f2'
+    const chrome = theme === 'dark' ? '#24211e' : '#eee9e1'
     window.setBackgroundColor(background)
     if (process.platform !== 'darwin')
-      window.setTitleBarOverlay({ color: chrome, symbolColor: theme === 'dark' ? '#a9b1d6' : '#62645c', height: 38 })
+      window.setTitleBarOverlay({ color: chrome, symbolColor: theme === 'dark' ? '#c9bdb0' : '#62554b', height: 38 })
   })
-  ipcMain.handle('central:state', (event) => {
+  handle('central:state', (event) => {
     assertTrustedIpc(event)
     if (!centralClient) throw new Error('本机身份加密不可用')
     return centralClient.snapshot()
   })
-  ipcMain.handle('central:copy-id',event=>{assertTrustedIpc(event);if(!centralClient)throw new Error('身份尚未准备好');clipboard.writeText(centralClient.identity.userId)})
-  ipcMain.handle(
+  handle('central:copy-id',event=>{assertTrustedIpc(event);if(!centralClient)throw new Error('身份尚未准备好');clipboard.writeText(centralClient.identity.userId)})
+  handle('central:copy-user-id',(event,userId:unknown)=>{assertTrustedIpc(event);if(typeof userId!=='string'||!/^usr_[a-f0-9]{64}$/.test(userId))throw new Error('无效用户 ID');clipboard.writeText(userId)})
+  handle(
     'central:plugin-inbox',
     (event, input: { groupId: string; pluginId: string }) => {
       assertTrustedIpc(event)
@@ -401,7 +407,7 @@ function registerIpc(): void {
       return centralClient.pluginInbox(input.groupId, input.pluginId)
     },
   )
-  ipcMain.handle(
+  handle(
     'central:connect',
     (event, input: { address: string; displayName: string }) => {
       assertTrustedIpc(event)
@@ -415,13 +421,18 @@ function registerIpc(): void {
       return centralClient.connect(input.address, input.displayName)
     },
   )
-  ipcMain.handle('central:disconnect', (event) => {
+  handle('central:disconnect', (event) => {
     assertTrustedIpc(event)
     return centralClient?.disconnect()
   })
-  ipcMain.handle(
+  handle('central:profile', (event, input) => {
+    assertTrustedIpc(event)
+    if (!centralClient || !input || typeof input.serverId !== 'string') throw new Error('无效个人资料请求')
+    return centralClient.updateProfile(input.serverId, input.profile)
+  })
+  handle(
     'central:action',
-    async (event, input: { route: string; data: unknown }) => {
+    async (event, input: { route: string; data: unknown; serverId?: string }) => {
       assertTrustedIpc(event)
       if (
         !centralClient ||
@@ -449,6 +460,7 @@ function registerIpc(): void {
       )
         throw new Error('不允许的中心服务操作')
       const client=centralClient, snapshot=client.snapshot()
+      if (input.serverId !== undefined && (input.serverId !== snapshot.serverId || snapshot.status !== 'connected')) throw new Error('中心服务器已切换或断开，请重新打开此页面')
       if (input.route==='plugins/event') {
         const data=input.data as {groupId?:string;pluginId?:string;digest?:string;serverId?:string}|null
         const plugin=snapshot.directory?.plugins.find(p=>p.groupId===data?.groupId&&p.pack.id===data?.pluginId&&p.status==='approved')
@@ -460,7 +472,7 @@ function registerIpc(): void {
       return client.action(input.route, input.data)
     },
   )
-  ipcMain.handle('central:plugin-consent', async (event, input) => {
+  handle('central:plugin-consent', async (event, input) => {
     assertTrustedIpc(event)
     if (!centralClient||!input||typeof input.groupId!=='string'||typeof input.pluginId!=='string'||typeof input.digest!=='string') throw new Error('无效插件授权')
     const client=centralClient, snapshot=client.snapshot()
@@ -470,7 +482,7 @@ function registerIpc(): void {
     if (input.decision!==undefined&&mainWindow&&!mainWindow.isDestroyed()) mainWindow.webContents.send('central:plugin-consent-changed',{groupId:input.groupId,pluginId:input.pluginId,digest:input.digest})
     return decision
   })
-  ipcMain.handle('central:submit-draft', async (event, input) => {
+  handle('central:submit-draft', async (event, input) => {
     assertTrustedIpc(event)
     if (!centralClient||!hostSupervisor||!input||input.confirmed!==true||typeof input.groupId!=='string'||typeof input.draftId!=='string'||!Number.isSafeInteger(input.revision)||!UI_SLOTS.includes(input.slot)) throw new Error('请明确确认要提交的草稿、版本和群聊')
     const client=centralClient, snapshot=client.snapshot()
@@ -484,7 +496,7 @@ function registerIpc(): void {
     const pack=parseGroupPluginPack({id,version:1+Math.max(0,...prior.map(p=>p.pack.version)),displayName:artifact.manifest.displayName,kind:'declarative',slot:input.slot as UiSlot,artifact})
     return client.action('plugins/submit',{groupId:input.groupId,pack})
   })
-  ipcMain.handle('central:share-client-plugin', async (event, input) => {
+  handle('central:share-client-plugin', async (event, input) => {
     assertTrustedIpc(event)
     if (!centralClient || !input || typeof input.groupId!=='string' || typeof input.serverId!=='string') throw new Error('请选择要分享的会话')
     const client=centralClient, snapshot=client.snapshot()
@@ -506,7 +518,7 @@ function registerIpc(): void {
     const pack=parseGroupPluginPack({id,version:1+Math.max(0,...prior.map(p=>p.pack.version)),displayName:executable.manifest.displayName,kind:'executable',slot:'chat.details',client:executable})
     return client.action('plugins/submit',{groupId:input.groupId,pack})
   })
-  ipcMain.handle(
+  handle(
     'central:send',
     (
       event,
@@ -533,7 +545,7 @@ function registerIpc(): void {
       return centralClient.send(input)
     },
   )
-  ipcMain.handle('attachment:choose', async (event) => {
+  handle('attachment:choose', async (event) => {
     assertTrustedIpc(event)
     if (!mainWindow || !attachmentStore) return null
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -560,7 +572,7 @@ function registerIpc(): void {
       mime[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
     )
   })
-  ipcMain.handle(
+  handle(
     'attachment:voice',
     async (
       event,
@@ -586,12 +598,12 @@ function registerIpc(): void {
       )
     },
   )
-  ipcMain.handle('attachment:read', (event, input: string|AttachmentRef) => {
+  handle('attachment:read', (event, input: string|AttachmentRef) => {
     assertTrustedIpc(event)
     if (!attachmentStore || !input) throw new Error('无效附件')
     return attachmentStore.read(typeof input==='string'?input:input.id,typeof input==='string'?undefined:input)
   })
-  ipcMain.handle('attachment:save', async (event, input: string|AttachmentRef) => {
+  handle('attachment:save', async (event, input: string|AttachmentRef) => {
     assertTrustedIpc(event)
     if (!attachmentStore || !mainWindow || !input)
       throw new Error('无效附件')
@@ -604,12 +616,12 @@ function registerIpc(): void {
     await writeFile(result.filePath, Buffer.from(wire.data, 'base64'))
     return 'saved'
   })
-  ipcMain.handle('chat:state:load', (event) => {
+  handle('chat:state:load', (event) => {
     assertTrustedIpc(event)
     if (!chatStore) throw new Error('Chat storage is unavailable.')
     return chatStore.loadView()
   })
-  ipcMain.handle('chat:state:save', (event, value: unknown) => {
+  handle('chat:state:save', (event, value: unknown) => {
     assertTrustedIpc(event)
     if (!chatStore) throw new Error('Chat storage is unavailable.')
     const candidate = value as { profile?: Record<string, unknown> }
@@ -617,38 +629,20 @@ function registerIpc(): void {
       candidate.profile.id = centralClient.identity.userId
     return chatStore.save(value)
   })
-  ipcMain.handle('app:info', (event) => {
+  handle('app:info', (event) => {
     assertTrustedIpc(event)
     return { version: app.getVersion(), platform: process.platform }
   })
-  ipcMain.handle('host:status:get', (event) => {
+  handle('host:status:get', (event) => {
     assertTrustedIpc(event)
     return hostSupervisor?.getStatus() ?? { state: 'stopped', generation: 0 }
   })
-  ipcMain.handle('host:ping', (event) => {
+  handle('host:ping', (event) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host supervisor is unavailable.')
     return hostSupervisor.ping()
   })
-  ipcMain.handle('host:plugins:list', (event) => {
-    assertTrustedIpc(event)
-    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
-    return hostSupervisor.getPlugins()
-  })
-  ipcMain.handle('host:plugins:set-enabled', (event, payload: unknown) => {
-    assertTrustedIpc(event)
-    if (!hostSupervisor) throw new Error('PC Host is unavailable.')
-    const request = parseHostMessage(
-      createHostRequest('plugins.setEnabled', 'ipc', payload as never),
-    )
-    if (request.kind !== 'request' || request.method !== 'plugins.setEnabled')
-      throw new Error('Invalid plugin request.')
-    return hostSupervisor.setPluginEnabled(
-      request.payload.pluginId,
-      request.payload.enabled,
-    )
-  })
-  ipcMain.handle('host:tools:invoke', (event, payload: unknown) => {
+  handle('host:tools:invoke', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
@@ -662,12 +656,12 @@ function registerIpc(): void {
       request.payload.input,
     )
   })
-  ipcMain.handle('host:model:get-settings', (event) => {
+  handle('host:model:get-settings', (event) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     return hostSupervisor.getModelSettings()
   })
-  ipcMain.handle('host:model:set-settings', (event, payload: unknown) => {
+  handle('host:model:set-settings', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
@@ -677,7 +671,7 @@ function registerIpc(): void {
       throw new Error('Invalid model settings.')
     return hostSupervisor.setModelSettings(request.payload)
   })
-  ipcMain.handle('host:model:chat-start', (event, payload: unknown) => {
+  handle('host:model:chat-start', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if(historyTransferStatus.busy)throw new Error('聊天记录备份/恢复进行中，请完成后再开始 AI 回复')
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
@@ -688,7 +682,7 @@ function registerIpc(): void {
       throw new Error('Invalid model chat request.')
     return hostSupervisor.startModelChat(request.payload)
   })
-  ipcMain.handle('host:model:chat-cancel', (event, payload: unknown) => {
+  handle('host:model:chat-cancel', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
@@ -698,12 +692,12 @@ function registerIpc(): void {
       throw new Error('Invalid model cancel request.')
     return hostSupervisor.cancelModelChat(request.payload.streamId)
   })
-  ipcMain.handle('host:plugin-drafts:inspect', (event) => {
+  handle('host:plugin-drafts:inspect', (event) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     return hostSupervisor.inspectPluginDrafts()
   })
-  ipcMain.handle('host:plugin-drafts:create', (event, payload: unknown) => {
+  handle('host:plugin-drafts:create', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
@@ -713,7 +707,7 @@ function registerIpc(): void {
       throw new Error('Invalid plugin draft.')
     return hostSupervisor.createPluginDraft(request.payload)
   })
-  ipcMain.handle('host:plugin-drafts:validate', (event, payload: unknown) => {
+  handle('host:plugin-drafts:validate', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
@@ -726,7 +720,7 @@ function registerIpc(): void {
       throw new Error('Invalid plugin draft.')
     return hostSupervisor.validatePluginDraft(request.payload.draftId)
   })
-  ipcMain.handle('host:plugin-drafts:diagnose', (event, payload: unknown) => {
+  handle('host:plugin-drafts:diagnose', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
@@ -739,7 +733,7 @@ function registerIpc(): void {
       throw new Error('Invalid plugin draft.')
     return hostSupervisor.diagnosePluginDraft(request.payload.draftId)
   })
-  ipcMain.handle('host:plugin-drafts:install', (event, payload: unknown) => {
+  handle('host:plugin-drafts:install', (event, payload: unknown) => {
     assertTrustedIpc(event)
     if (!hostSupervisor) throw new Error('PC Host is unavailable.')
     const request = parseHostMessage(
@@ -831,12 +825,12 @@ async function createWindow(previous?: BrowserWindow): Promise<void> {
     minWidth: 900,
     minHeight: 620,
     show: false,
-    backgroundColor: '#faf9f6',
+    backgroundColor: '#faf7f2',
     title: 'MoreThanChat',
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#f0eee8',
-      symbolColor: '#62645c',
+      color: '#eee9e1',
+      symbolColor: '#62554b',
       height: 38,
     },
     webPreferences: {
@@ -1010,53 +1004,66 @@ async function createWindow(previous?: BrowserWindow): Promise<void> {
 app
   .whenReady()
   .then(async () => {
-    chatStore = await ChatStore.open(dataDirectory)
-    desktop = new DesktopIntegration(dataDirectory,{window:()=>mainWindow,store:()=>chatStore,central:()=>centralClient,open:openChatWindow,hide:hideChatWindow})
-    attachmentStore = new AttachmentStore(
-      path.join(dataDirectory, 'attachments'),
-    )
-    try {
-      const identity = await ClientIdentity.load(
-        path.join(dataDirectory, 'host-private'),
-        systemCipher,
-      )
-      centralClient = new CentralClient(
-        identity,
-        chatStore,
-        attachmentStore,
-        dataDirectory,
-        async (serverId,previous,next)=>{
-          if(!mainWindow||mainWindow.isDestroyed())return false
-          const result=await dialog.showMessageBox(mainWindow,{type:'warning',message:'确认服务器地址变更',detail:'服务器 ID：'+serverId+'\n之前地址：'+previous+'\n新地址：'+next+'\n\n继续连接会将待发送消息交给新地址。请确认这是你迁移或信任的同一服务器。',buttons:['取消','确认连接新地址'],defaultId:0,cancelId:0})
-          return result.response===1
-        },
-      )
-      await centralClient.load()
-      const broadcast = (channel: string, value: unknown) => {
-        if (mainWindow && !mainWindow.isDestroyed())
-          mainWindow.webContents.send(channel, value)
-      }
-      centralCleanup = [
-        centralClient.subscribe((snapshot) => {desktop?.notifications.reconcile();broadcast('central:changed', snapshot)}),
-        centralClient.onChat((state) => {desktop?.update(state);broadcast('central:chat', state)}),
-        centralClient.onIncomingMessage(notice=>desktop?.incoming(notice)),
-        centralClient.onPlugin((event) => broadcast('central:plugin', event)),
-      ]
-    } catch {
-      console.error(
-        '[central] System identity encryption unavailable; local mode remains available',
-      )
+    composition = createMainComposition({
+      directory:dataDirectory,cipher:systemCipher,
+      ports:{window:()=>mainWindow,store:()=>chatStore,central:()=>centralClient,open:openChatWindow,hide:hideChatWindow},
+      broadcast:(channel,value)=>{if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send(channel,value)},
+      confirmOrigin:async(serverId,previous,next)=>{
+        if(!mainWindow||mainWindow.isDestroyed())return false
+        const result=await dialog.showMessageBox(mainWindow,{type:'warning',message:'确认服务器地址变更',detail:'服务器 ID：'+serverId+'\n之前地址：'+previous+'\n新地址：'+next+'\n\n继续连接会将待发送消息交给新地址。请确认这是你迁移或信任的同一服务器。',buttons:['取消','确认连接新地址'],defaultId:0,cancelId:0})
+        return result.response===1
+      },
+    })
+    const runtime=composition.runtime
+    // Composition controls belong to the bootstrap, so a disabled business
+    // provider cannot remove the route needed to enable it again.
+    const catalog=async()=>{
+      const host=await hostSupervisor?.getPlugins().catch(()=>null)
+      return {generation:host?.generation??0,plugins:[...(host?.plugins??[]),...runtime.list().map(p=>({id:p.manifest.id,displayName:p.manifest.displayName,description:p.manifest.description+' · 主进程',version:p.manifest.version,status:p.status,error:composition!.extensions.errors.get(p.manifest.id)??p.error,tools:[],composerActions:[]}))]}
     }
-    registerIpc()
+    ipcMain.handle('host:plugins:list',event=>{assertTrustedIpc(event);return catalog()})
+    ipcMain.handle('host:plugins:set-enabled',async(event,payload:unknown)=>{
+      assertTrustedIpc(event)
+      const request=parseHostMessage(createHostRequest('plugins.setEnabled','ipc',payload as never))
+      if(request.kind!=='request'||request.method!=='plugins.setEnabled')throw new Error('Invalid plugin request.')
+      const {pluginId,enabled}=request.payload
+      if(runtime.list().some(p=>p.manifest.id===pluginId))await composition!.extensions.setEnabled(pluginId,enabled)
+      else {if(!hostSupervisor)throw new Error('PC Host is unavailable.');await hostSupervisor.setPluginEnabled(pluginId,enabled)}
+      return catalog()
+    })
+    ipcMain.handle('app:plugins:restore-defaults',async event=>{
+      assertTrustedIpc(event)
+      for(const p of runtime.list().filter(p=>p.trust==='builtin'))await composition!.extensions.setEnabled(p.manifest.id,true)
+      const host=await hostSupervisor?.getPlugins()
+      for(const p of host?.plugins??[])if(p.id.startsWith('builtin.host.'))await hostSupervisor!.setPluginEnabled(p.id,true)
+    })
+    runtime.services.subscribe(()=>{
+      const get=<T,>(id:string)=>runtime.services.has(id)?runtime.services.get<T>(id):null
+      chatStore=get<ChatStore>('chat.store');attachmentStore=get<AttachmentStore>('chat.attachments')
+      centralClient=get<CentralClient>('central.client');desktop=get<DesktopIntegration>('desktop.integration')
+      hostSupervisor=get<HostSupervisor>('host.supervisor')
+    })
+    runtime.install(mainSource('builtin.main.ai-host',[],['host.supervisor'],context=>{
+      startHostSupervisor()
+      const supervisor=hostSupervisor!,statusCleanup=hostStatusCleanup,eventCleanup=hostEventCleanup
+      context.effect(async()=>{statusCleanup?.();eventCleanup?.();await supervisor.stop()})
+      context.provideService('host.supervisor',supervisor)
+    }))
+    // Handlers resolve the selected services for each call. Keeping their
+    // transport registered lets local chat and management work while a network
+    // or Agent provider is disabled or being replaced.
+    runtime.install(mainSource('builtin.main.ipc',[],[],context=>registerIpc(context)))
+    await composition.extensions.prepare()
+    await runtime.start(runtime.list().map(p => p.manifest.id).filter(id => composition!.extensions.isEnabled(id)), true)
+    await composition.extensions.start()
     Menu.setApplicationMenu(Menu.buildFromTemplate([{label: 'MoreThanChat', submenu: [
       {label: '恢复默认界面（停用界面插件）', accelerator: 'CommandOrControl+Shift+F12', click: requestInterfaceRecovery},
       {role: 'quit'},
     ]}, {role: 'editMenu'}]))
-    startHostSupervisor()
     await createWindow()
-    await desktop.initialize()
-    desktop.publish()
+    desktop?.publish()
     desktopReady = true
+    composition.markReady()
     if(pendingShow){pendingShow=false;openChatWindow()}
     void centralClient?.restore()
     app.on('activate', () => openChatWindow())
@@ -1081,7 +1088,7 @@ app.on('will-quit', () => {
 })
 
 app.on('before-quit', (event) => {
-  if (quitAfterHostStops || !hostSupervisor) return
+  if (quitAfterHostStops || (!composition && !hostSupervisor)) return
   event.preventDefault()
   if (mainWindow && !mainWindow.isDestroyed()) {
     quitRequested = true
@@ -1089,14 +1096,12 @@ app.on('before-quit', (event) => {
     return
   }
   quitAfterHostStops = true
-  for (const dispose of centralCleanup) dispose()
-  centralCleanup = []
   hostStatusCleanup?.()
   hostStatusCleanup = null
   hostEventCleanup?.()
   hostEventCleanup = null
   desktop?.dispose()
-  void Promise.all([hostSupervisor.stop(), centralClient?.disconnect(false),desktop?.preferences.flush()])
+  void (composition?.close() ?? hostSupervisor!.stop())
     .catch((error) => {
       console.error('[pc-host] Failed to stop cleanly:', error)
     })

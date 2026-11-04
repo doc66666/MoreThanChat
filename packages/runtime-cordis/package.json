@@ -5,7 +5,8 @@
   "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./src/index.ts",
-  "exports": { ".": { "types": "./src/index.ts", "browser": "./src/index.ts", "require": "./dist/index.js", "import": "./dist/index.js" } },
+  "typesVersions": { "*": { "node": ["dist/node.d.ts"] } },
+  "exports": { ".": { "types": "./src/index.ts", "browser": "./src/index.ts", "require": "./dist/index.js", "import": "./dist/index.js" }, "./node": { "types": "./src/node.ts", "require": "./dist/node.js", "import": "./dist/node.js" } },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -15,5 +16,5 @@
     "@cordisjs/core": "3.18.1",
     "@more-than-chat/plugin-runtime": "workspace:*"
   },
-  "devDependencies": { "typescript": "5.9.3", "vitest": "4.1.11" }
+  "devDependencies": { "@types/node": "24.13.3", "typescript": "5.9.3", "vitest": "4.1.11" }
 }

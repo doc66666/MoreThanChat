@@ -27,6 +27,7 @@ import {
   messageContentDescriptor,
   RETRACTION_WINDOW_MS,
   MAX_GROUP_MEMBERS,
+  parseUserProfileInput,
 } from '@more-than-chat/central-protocol'
 
 class ApiError extends Error {
@@ -44,7 +45,7 @@ const clientValue = (parse) => {
 const loggedRoutes = new Set([
   '/healthz', '/readyz', '/v1/ping', '/v1/admin/access', '/v1/admin/status', '/v1/admin/mode', '/v1/admin/shutdown',
   '/v1/challenge', '/v1/session', '/v1/devices', '/v1/devices/remove', '/v1/logout',
-  '/v1/directory', '/v1/users', '/v1/friends/request', '/v1/friends/accept',
+  '/v1/directory', '/v1/users', '/v1/profile/update', '/v1/friends/request', '/v1/friends/accept',
   '/v1/friends/reject', '/v1/friends/cancel', '/v1/friends/remove', '/v1/groups',
   '/v1/groups/rename', '/v1/groups/kick', '/v1/groups/transfer', '/v1/groups/leave',
   '/v1/groups/dissolve', '/v1/groups/reject', '/v1/groups/join', '/v1/groups/accept',
@@ -122,6 +123,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000;
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,public_key TEXT NOT NULL,name TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS user_profiles(user_id TEXT PRIMARY KEY,bio TEXT NOT NULL,avatar_color INTEGER);
     CREATE TABLE IF NOT EXISTS access(id TEXT PRIMARY KEY,allowed INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS access_removed(id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS friends(a TEXT NOT NULL,b TEXT NOT NULL,status TEXT NOT NULL,requester TEXT NOT NULL,PRIMARY KEY(a,b));
@@ -205,12 +207,14 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       fail(403, '只有群管理员可以审批')
   }
   const user = (uid) => {
-    const row = db.prepare('SELECT id,name FROM users WHERE id=?').get(uid)
+    const row = db.prepare('SELECT u.id,u.name,p.bio,p.avatar_color FROM users u LEFT JOIN user_profiles p ON p.user_id=u.id WHERE u.id=?').get(uid)
     return row
       ? {
           id: row.id,
           displayName: row.name,
           online: Date.now() - (activity.get(uid) ?? 0) < 35000,
+          bio: row.bio ?? '',
+          avatarColor: row.avatar_color ?? null,
         }
       : null
   }
@@ -472,7 +476,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       if (!isControlRequest(request.method, route) && lifecycle.activeRequests > 224)
         fail(429, '服务器请求繁忙，请稍后重试')
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1'] })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1','user-profiles-v1'] })
       if ((route === '/v1/admin/access' && ['GET','POST'].includes(request.method)) ||
           (route === '/v1/admin/status' && request.method === 'GET') ||
           (['/v1/admin/mode','/v1/admin/shutdown'].includes(route) && request.method === 'POST')) {
@@ -565,6 +569,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           publicKey,
           uid,
           name: text(data.displayName, 80),
+          preserveProfileName: data.preserveProfileName === true,
           expires: Date.now() + 60000,
           features,
           deviceId,deviceName,
@@ -603,8 +608,8 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
         transaction(()=>{
           delivery.register(challenge.uid,challenge.deviceId,challenge.deviceName)
           db.prepare(
-          'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name',
-        ).run(challenge.uid, challenge.publicKey, challenge.name)
+          'INSERT INTO users VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=CASE WHEN ? THEN users.name ELSE excluded.name END',
+        ).run(challenge.uid, challenge.publicKey, challenge.name, Number(challenge.preserveProfileName))
         })
         // Directory responses always carry current names. Wake connected contacts
         // immediately; offline contacts obtain the same directory on reconnect.
@@ -656,6 +661,16 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       }
       if (route === '/v1/directory' && request.method === 'GET')
         return json(response, 200, directoryFor(uid,supportsGroupPrograms,supportsExecutable))
+      if (route === '/v1/profile/update' && request.method === 'POST') {
+        const data = await body(request)
+        const profile = clientValue(() => parseUserProfileInput(data))
+        const peers = db.prepare('SELECT a AS id FROM friends WHERE b=? UNION SELECT b AS id FROM friends WHERE a=? UNION SELECT m.user_id AS id FROM members m JOIN members own ON own.group_id=m.group_id WHERE own.user_id=? UNION SELECT g.owner AS id FROM group_requests r JOIN groups g ON g.id=r.group_id WHERE r.user_id=?').all(uid, uid, uid, uid)
+        notify([...new Set([uid, ...peers.map(peer => peer.id)])], () => {
+          db.prepare('UPDATE users SET name=? WHERE id=?').run(profile.displayName, uid)
+          db.prepare('INSERT INTO user_profiles VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET bio=excluded.bio,avatar_color=excluded.avatar_color').run(uid, profile.bio, profile.avatarColor)
+        })
+        return json(response, 200, { ok: true })
+      }
       if (route === '/v1/users' && request.method === 'GET') {
         const found = user(url.searchParams.get('id'))
         if (!found || !allowed(found.id)) fail(404, '此用户不在当前服务器')

@@ -1,3 +1,4 @@
+import { appApi } from './app-api'
 import { useEffect, useRef, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { MessageSearchController, type SearchState } from './message-search-controller'
@@ -7,7 +8,7 @@ export function MessageSearch({conversationId,title,conversationTitles={},onClos
   const [query,setQuery]=useState(''),[all,setAll]=useState(false)
   const [state,setState]=useState<SearchState<Result>>({status:'idle',results:[],error:''})
   const controller=useRef<MessageSearchController<Result>|null>(null)
-  if(!controller.current)controller.current=new MessageSearchController((query,id)=>window.moreThanChat.searchChatMessages(query,id),setState)
+  if(!controller.current)controller.current=new MessageSearchController((query,id)=>appApi.searchChatMessages(query,id),setState)
   const input=useRef<HTMLInputElement>(null)
   const dialog=useDialogFocus()
   useEffect(()=>{

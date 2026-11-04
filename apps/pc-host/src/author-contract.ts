@@ -2,7 +2,7 @@ import { UI_SLOTS } from '@more-than-chat/central-protocol'
 
 export const PLUGIN_AUTHOR_CONTRACT = {
   sdkVersion: 1,
-  contractRevision: 16,
+  contractRevision: 17,
   environment: {
     product: 'MoreThanChat PC 客户端内置助手；模型请求和作者工具由独立 PC Host 执行。',
     purpose: '正常回答用户问题；按用户要求直接读取好友/群聊记录、附件或发送消息；创作、修改、检查或管理本机插件时使用作者工具。你是聊天客户端助手，不仅是插件助手；不是操作系统终端、客户端内核或中心服务器管理员。',
@@ -24,7 +24,7 @@ export const PLUGIN_AUTHOR_CONTRACT = {
     diagnose_draft: '参数 {draftId:string}。获取最新修订的问题和修正线索；修复后重新 create_draft、validate_draft。',
   },
   capabilityBoundary: {
-    local: '有两类本机插件：sourceExamples 的受限声明式文本工具；以及 executableClient 定义的可信可执行界面插件，能重塑整个桌面、HTML/CSS/React 和自定义子界面。任意 pc-host 后台脚本尚未开放，不要将界面脚本当作 Node。',
+    local: '作者工具创建 executableClient 可执行界面插件或旧声明式工具。内置界面和用户界面插件使用同一运行时，可替换单个功能、整个桌面或服务。另支持用户目录中的 host.trusted Node 插件；它运行在独立 Host 的 plugins 目录或主进程 main-plugins 目录，manifest.json + index.mjs。当前 create_draft 的可执行代码目标仍为 pc-ui；不要把界面脚本当作 Node，也不要声称作者工具已部署 Node 插件。',
     group: '群聊与好友私聊均支持 executableClient 的同一份 JavaScript 可执行包：申请分享、群管理员或私聊对方批准、分发、成员自行载入、服务器转发多人事件。可重塑整个界面，不限九个位置。groupPlugin 是保留的旧声明式 JSON 方案，并非可执行插件的限制。',
     forbidden: '工具不提供 shell、任意文件或数据库查询、进程操作、任意外部网络请求、密钥读取、安装或审批。这里不限制已经提供的 list_conversations/read_chat_history/read_chat_attachment/send_chat_message；按用户要求读取或发送聊天消息是受支持的直接操作，不需要插件。声明式程序没有 JS/DOM/CSS。可执行界面代码的能力见 executableClient，其完整客户端信任不能伪装成最小权限沙箱。不能自装、自审批、替成员确认载入或绕过摘要／revision 校验。',
     failures: '校验失败先诊断再修订；超出能力的需求明确说明尚未支持，并给出当前范围内的替代方案，不虚构接口。未实际完成的提交／安装／多端测试不能宣称成功。提示词不是沙箱，真正边界由工具白名单、JSON 校验、执行预算、本机授权和中心认证强制执行。',
@@ -47,9 +47,11 @@ export const PLUGIN_AUTHOR_CONTRACT = {
     sourceExample: {kind: 'executable-client', code: 'export default function activate(ctx, sdk) { const h = sdk.React.createElement; ctx.contribute(ctx.getService("ui.surfaces"), { id: "desktop", surface: "root", render: ({defaultView, renderSurface}) => h("div", {style:{height:"100%",display:"flex",flexDirection:"column"}}, h("header", {style:{padding:16}}, "我的工作台"), h("div", {style:{flex:1,minHeight:0}}, defaultView), renderSurface("example.footer")) }); }'},
     entry: '通过 create_draft({manifest,code,baseRevision}) 直接提交清单对象和自包含原生 ES module 源码字符串。Host 自动生成 source 包装，不要手工套第二层 JSON。code 默认导出 activate(ctx,sdk)，可 async 并返回清理函数。不使用 JSX/TS/npm 裸导入；用 sdk.React.createElement 和 React hooks（hooks 仅用于函数组件，render 返回 createElement(Component)）。副作用在 activate 内登记并清理。',
     lifecycle: 'Cordis 管理 pc-ui 生命周期。ctx.manifest/target；ctx.getService(id) 取得 manifest.services.requires 声明的已有服务；ctx.contribute(registry,contribution) 自动撤销登记；ctx.effect(disposer) 登记事件、定时器、样式清理。异步激活失败会撤销登记；同 id 更新失败尝试恢复原运行版本，成功后才保存新版本。启动时加载用户已启用的插件。没有登记或无限循环的副作用不能靠生命周期自动修复；Ctrl+Shift+F12 停用界面插件并重新打开默认聊天。',
+    composition: '内置功能是普通插件。可通过 ctx.provideService(id,value,priority?) 提供 manifest.services.provides 中声明的服务；消费方在 requires 中声明依赖。用户默认 priority=0，内置服务=100，数值小者优先。替换服务先清理依赖消费者再重绑；停用覆盖者恢复默认提供方。可自定义服务名，不再限制为固定白名单。ui.surfaces/ui.slots/ui.composer-actions/chat.transports/chat.network 是宿主注册设施；chat.api/contacts.api/history.api/model.api/plugins.api 为客户端接口分组；desktop.api 是组合后的接口；workspace.controller 是默认聊天状态控制器。更换服务须遵守原服务契约，不能只提供几个同名但行为不同的方法。业务数据保存由插件作者负责。',
+    builtinSurfaces: '默认界面使用普通 ui.surfaces 插件。workspace.profile 用户主页、workspace.contacts 通讯录、workspace.conversations 会话列表、workspace.navigation 导航、workspace.chat.header 标题、workspace.chat.timeline 时间线、workspace.chat.composer 输入区、workspace.details 详情、workspace.settings 设置、workspace.plugins 插件管理、workspace.server 服务器设置、workspace.search 搜索；默认贡献 priority=10000，用户默认0即可覆盖。defaultView 为下一优先级贡献，可包装保留默认功能，卸载自动恢复。其他命名区域仍可自由声明；这些是默认插件定义的名字，不是可扩展位置上限。context 是默认控制器的当前视图数据及回调，可用 defaultView 包装时无需依赖内部字段。root context 保持原兼容字段。',
     surfaces: 'ui.surfaces: ctx.contribute(registry,{id,surface,priority?,render({context,defaultView,renderSurface})})。root 可完全替换整桌面，不必包含 defaultView；也可保留默认聊天再增添其他界面。插件可用 renderSurface("自定义名称",context?,fallback?) 定义任意子界面，其他插件注册同名 surface。名称小写字母开头，允许数字点连字符，最多128字符；priority 越小优先。无九位置限制。循环嵌套回退，最长32层。渲染异常回退默认视图。',
     context: 'root context 有 conversation/profile/draft/setDraft/send/server/messages/conversations/selectConversation；其中 send() 只发送当前输入框，messages 是当前已加载消息，不是完整历史。这仅是 UI context 的语义，不限制模型的直接聊天工具或 sdk.chat 的指定会话读写。root 保留可见的 defaultView 时默认聊天照常滚动和标已读；完全替换或遮住默认聊天时不自动标已读。不要在渲染期间产生消息等副作用。',
-    sdk: 'sdk.version=1，sdk.React 为客户端同一 React 实例，sdk.app 是已存在的 preload 客户端 API。恢复用 sdk.app.recoverClientInterface()（直接停用界面插件并重新打开聊天，未发送输入可能丢失）。本版本不公开 Node/Electron 或凭据读取接口。CSP 不允许任意外网 fetch/WebSocket 或远程脚本，不能声称有这些权限。',
+    sdk: 'sdk.version=1，sdk.React 为客户端同一 React 实例，sdk.app 是当前选定的 desktop.api 客户端服务组合（原生 preload 是默认提供方）。恢复用 sdk.app.recoverClientInterface()（直接停用界面插件并重新打开聊天，未发送输入可能丢失）。本版本不公开 Node/Electron 或凭据读取接口。CSP 不允许任意外网 fetch/WebSocket 或远程脚本，不能声称有这些权限。',
     chat: '本机与共享可执行插件均有 sdk.chat.request({action,...})，返回已解析的对象：action=list/history/attachment/send，对应上述四个聊天工具参数（去掉工具名，加 action）。sdk.chat.subscribe(listener) 订阅本机聊天投影，返回取消函数，使用 ctx.effect(sdk.chat.subscribe(...)) 清理。投影可能重复且含历史、自己发送及已读更新，不是逐条新消息事件；完整历史用 history 分页读取。读取不改变未读；图片返回 image:{mime,data}。发送须明确 conversationId，同一逻辑发送重试保留 clientMessageId 和内容；断线可排队，切服不转投，原服重连后续发。停用、卸载、热替换后 sdk.chat 自动取消订阅并拒绝旧实例请求，共享实例切换会话／服务器时也失效；作者清理自己的异步任务。已入可靠队列的发送不会因停用撤销。客户端仅提供聊天读写接口，不内置自动回复插件、规则调度或插件业务存储；需要的业务由用户自行编写插件。',
     network: '共享实例提供 sdk.network.send(channel,payload):Promise<void>、history():Promise<RelayEvent[]>、subscribe(listener):取消函数。宿主自动绑定服务器、会话、批准包 ID 和摘要，不硬编码群号；ctx.getService("chat.network").forPlugin(ctx.manifest.id) 的旧 send(scope,channel,payload)/history(scope)/subscribe(scope,listener) 也自动绑定。本机单独运行没有 sdk.network，提供本地模式即可。sdk.conversation 有 id、kind(group/direct)、serverId、userId、动态 members(Member[])。ctx.manifest.id 是会话隔离的运行实例 ID；sdk.plugin 是原始 manifest。仅当前打开的所属会话运行，切换、断线、停用、新版批准会清理实例；本机安装与共享实例互不覆盖。',
     synchronization: '服务器仅转发任意 channel/payload，不执行 JS、不保存业务状态。事件为 {id,groupId,pluginId,channel,payload,trace:{actorId,packVersion,digest,acceptedAt,stateRevision}}；groupId 是历史字段名，也可为私聊 scope。stateRevision 是服务器按插件递增的事件序号（新版不保证从零开始），actorId 为认证身份。根据 id 去重、序号排序，先订阅再 history 合并重叠，history 最多1000条且可能截断。迟加入/重连须设计 hello/snapshot、重放或插件自有本地持久化；不能假设服务器提供快照。业务规则、轮次、退座/换人、存档和迁移由作者负责；发送结果不确定时用自定义操作 ID 去重，不能盲目重复有副作用动作。订阅、计时器用 ctx.effect 清理。',
@@ -108,7 +110,7 @@ export const DEFAULT_PLUGIN_AUTHOR_CONTRACT = {
   contractRevision: PLUGIN_AUTHOR_CONTRACT.contractRevision,
   environment: PLUGIN_AUTHOR_CONTRACT.environment,
   authorApi: PLUGIN_AUTHOR_CONTRACT.authorApi,
-  capabilityBoundary: {...PLUGIN_AUTHOR_CONTRACT.capabilityBoundary, local:'新建插件默认使用 executableClient，可重塑整个桌面、HTML/CSS/React 和自定义子界面。旧声明式文本工具需按需读取 legacy 契约。任意 pc-host 后台脚本尚未开放，不要将界面脚本当作 Node。'},
+  capabilityBoundary: {...PLUGIN_AUTHOR_CONTRACT.capabilityBoundary, local:'新建插件默认使用 executableClient，可重塑整个桌面、HTML/CSS/React 和自定义子界面。旧声明式文本工具需按需读取 legacy 契约。作者草稿工具安装的是 pc-ui 包，不要把界面脚本当作 Node；用户可以在 host-private/plugins/<id> 放置 manifest.json 与 index.mjs，按同一生命周期载入本机 Node 插件。'},
   executableClient: PLUGIN_AUTHOR_CONTRACT.executableClient,
   instructions: PLUGIN_AUTHOR_CONTRACT.instructions,
   legacyDiscovery: '只有维护旧声明式插件时调用 inspect_drafts({format:"legacy"})。新游戏与自由界面默认使用可执行插件，不按旧解释器的数组、网格、状态大小限制降级用户需求。',

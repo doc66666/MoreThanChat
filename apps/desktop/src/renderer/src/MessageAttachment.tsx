@@ -1,5 +1,6 @@
+import { appApi } from './app-api'
 import { useEffect, useRef, useState } from 'react'
-import { Download, Paperclip } from 'lucide-react'
+import { Download, FileText, Image, Music2 } from 'lucide-react'
 import type { AttachmentRef } from '@more-than-chat/central-protocol'
 import { AttachmentPreview, type PreviewState } from './attachment-preview'
 export function MessageAttachment({
@@ -16,7 +17,7 @@ function AttachmentContent({attachment}:{attachment:AttachmentRef}) {
   const mounted=useRef(true),inFlight=useRef(false)
   const loader=useRef<AttachmentPreview|null>(null)
   if(!loader.current)loader.current=new AttachmentPreview({
-    read:()=>window.moreThanChat.readAttachment(attachment),
+    read:()=>appApi.readAttachment(attachment),
     create:(data,mime)=>{
       const bytes=Uint8Array.from(atob(data),c=>c.charCodeAt(0))
       return URL.createObjectURL(new Blob([bytes],{type:mime}))
@@ -38,12 +39,15 @@ function AttachmentContent({attachment}:{attachment:AttachmentRef}) {
     if(inFlight.current)return
     inFlight.current=true;setSaving(true);setSaveError('');setSaved(false)
     try {
-      const result=await window.moreThanChat.saveAttachment(attachment)
+      const result=await appApi.saveAttachment(attachment)
       if(mounted.current)setSaved(result==='saved')
     }catch(error){if(mounted.current)setSaveError(error instanceof Error?error.message:'无法保存附件，请重试。')}
     finally{inFlight.current=false;if(mounted.current)setSaving(false)}
   }
   const url=state.url
+  const FileIcon = attachment.mime.startsWith('image/') ? Image : attachment.mime.startsWith('audio/') ? Music2 : FileText
+  const size = attachment.size < 1024 ? `${attachment.size} B` : attachment.size < 1024 * 1024
+    ? `${(attachment.size / 1024).toFixed(1)} KiB` : `${(attachment.size / (1024 * 1024)).toFixed(1)} MiB`
   return (
     <div className="message-attachment" data-attachment-id={attachment.id}>
       {url && attachment.mime.startsWith('audio/') ? (
@@ -53,16 +57,21 @@ function AttachmentContent({attachment}:{attachment:AttachmentRef}) {
       ) : null}
       {preview&&state.status==='loading'&&<small role="status">正在加载预览…</small>}
       {preview&&state.status==='error'&&<div className="attachment-error"><small role="alert">无法预览附件。可以重试，或另存为后查看。</small><button onClick={()=>void loader.current!.load(attachment.id,attachment.mime)}>重试预览</button></div>}
-      <div className="attachment-metadata"><Paperclip size={14}/><span title={attachment.name}>{attachment.name}</span></div>
+      <div className="attachment-summary">
+      <span className="attachment-type-icon" aria-hidden="true"><FileIcon size={20}/></span>
+      <div className="attachment-file-details">
+      <span className="attachment-filename" title={attachment.name}>{attachment.name}</span>
       <small className="attachment-size">
         {attachment.durationMs === undefined
           ? ''
           : `${(attachment.durationMs / 1000).toFixed(1)} 秒 · `}
-        {(attachment.size / 1024).toFixed(1)} KiB
+        {size}
       </small>
-      <button disabled={saving} aria-label={`另存为 ${attachment.name}`} onClick={()=>void save()}>
-        <Download size={14}/>{saving?'正在保存…':'另存为'}
+      </div>
+      <button disabled={saving} className="attachment-save" aria-label={saving ? '正在保存附件' : `另存为 ${attachment.name}`} title={saving ? '正在保存…' : '另存为'} onClick={()=>void save()}>
+        <Download size={17}/>
       </button>
+      </div>
       {saved&&<small role="status">已保存到所选位置</small>}
       {saveError&&<small className="attachment-save-error" role="alert">保存失败：{saveError}。可再次点击「另存为」重试。</small>}
     </div>

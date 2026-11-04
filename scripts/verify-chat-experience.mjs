@@ -35,7 +35,10 @@ const model=createServer(async(req,res)=>{
  }catch(error){modelError=error;res.writeHead(500);res.end('Fixture assertion failed')}
 })
 await new Promise(resolve=>model.listen(0,'127.0.0.1',resolve))
-async function poll(client,expression,ms=20000){const end=Date.now()+ms;while(Date.now()<end){if(await evaluate(client,expression))return;await delay(80)}throw Error('Chat experience timeout: '+expression)}
+async function poll(client,expression,ms=20000){const end=Date.now()+ms;while(Date.now()<end){if(await evaluate(client,expression))return;await delay(80)}
+ console.error('Timed out expression',expression)
+ console.error('Reading diagnostics',await evaluate(client,`(async()=>{const n=document.querySelector('.message-scroll'),r=n?.getBoundingClientRect();return {focused:await window.moreThanChat.getWindowFocus(),documentFocused:document.hasFocus(),visibility:document.visibilityState,height:innerHeight,scroll:n&&[n.scrollTop,n.scrollHeight,n.clientHeight],rect:r&&[r.top,r.bottom],hit:r&&document.elementFromPoint((r.left+r.right)/2,r.bottom-24)?.outerHTML.slice(0,300),drawer:document.querySelector('.plugin-drawer')?.className}})()`))
+ throw Error('Chat experience timeout: '+expression)}
 async function launch(name){
  const port=await reservePort(),inspector=await reservePort(),profile=path.join(data,name)
  const child=spawn(executable,[`--remote-debugging-port=${port}`,`--inspect=127.0.0.1:${inspector}`,'.'],{cwd:desktop,env:{...process.env,MTC_QA_MODE:'1',MTC_QA_USER_DATA_DIR:profile},windowsHide:true,stdio:['ignore','pipe','pipe']})
@@ -49,7 +52,7 @@ async function launch(name){
 async function close(s){
  if(!s||s.child.exitCode!==null)return
  s.main?.close();s.main=null
- await evaluate(s.client,'window.moreThanChat.quitApp()').catch(()=>{})
+ await Promise.race([evaluate(s.client,'window.moreThanChat.quitApp()').catch(()=>{}),delay(1000)])
  await waitForExit(s.child,6000);s.client?.close()
  if(s.child.exitCode===null){s.child.kill();throw Error('Test app did not exit')}
  assert.equal(s.child.exitCode,0)
@@ -59,6 +62,11 @@ const read=(s,input)=>evaluate(s.client,`window.moreThanChat.accessChat(${JSON.s
 const unread=(s,id)=>evaluate(s.client,`window.moreThanChat.loadState().then(s=>s.conversations.find(c=>c.id===${JSON.stringify(id)}).unread)`)
 const bottom=`(()=>{const n=document.querySelector('.message-scroll');return n&&n.clientHeight>0&&n.scrollHeight-n.scrollTop-n.clientHeight<=2})()`
 async function click(s,selector){await poll(s.client,`Boolean(document.querySelector(${JSON.stringify(selector)}))`);await evaluate(s.client,`document.querySelector(${JSON.stringify(selector)}).click()`)}
+async function focus(s){
+ await s.client.send('Page.bringToFront')
+ await evaluate(s.client,'window.moreThanChat.focusChatWindow()')
+ await poll(s.client,'window.moreThanChat.getWindowFocus()')
+}
 async function input(s,selector,value){await evaluate(s.client,`(()=>{const n=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(n.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(n,${JSON.stringify(value)});n.dispatchEvent(new Event('input',{bubbles:true}))})()`)}
 const conversationSelector=id=>`[data-conversation-id="${id}"]`
 let result
@@ -71,13 +79,13 @@ try{
  for(const [s,id] of [[a,bid],[b,aid]])await poll(s.client,`window.moreThanChat.loadState().then(s=>s.conversations.some(c=>c.targetId===${JSON.stringify(id)}))`)
  ac=(await read(a,{action:'list'})).conversations.find(c=>c.targetId===bid).id
  bc=(await read(b,{action:'list'})).conversations.find(c=>c.targetId===aid).id
- await evaluate(a.client,'window.moreThanChat.focusChatWindow()')
+ await focus(a)
  for(let i=0;i<55;i++)await send(a,ac,'滚动验收 '+i+'\n这是两端聊天的测试记录。')
  await poll(b.client,`window.moreThanChat.searchChatMessages('滚动验收 54').then(m=>m.length===1)`,30000)
  assert.equal(await unread(b,bc),55)
  const first=await evaluate(b.client,`window.moreThanChat.getFirstUnread(${JSON.stringify(bc)})`)
  await read(b,{action:'history',conversationId:bc});assert.equal(await unread(b,bc),55)
- await evaluate(b.client,'window.moreThanChat.focusChatWindow()');await click(b,conversationSelector(bc))
+ await focus(b);await click(b,conversationSelector(bc))
  await poll(b.client,bottom);await poll(b.client,`document.querySelector('[data-unread-entry]')?.textContent.includes('55')`)
  await poll(b.client,`window.moreThanChat.loadState().then(s=>s.conversations.find(c=>c.id===${JSON.stringify(bc)}).unread===0)`)
  await click(b,'[data-unread-entry] button')
@@ -139,7 +147,7 @@ try{
  await poll(a.client,`window.moreThanChat.searchChatMessages('助手已读取聊天与附件').then(m=>m.length===1)`)
  assert.equal((await evaluate(b.client,'window.qaTools.filter(e=>e.phase==="finished"&&e.ok)')).length,5)
  assert(!JSON.stringify(await evaluate(b.client,'window.moreThanChat.loadState()')).includes(imageData),'Do not persist base64 in AI transcript')
- await evaluate(b.client,'window.moreThanChat.focusChatWindow()');await click(b,conversationSelector(bc));await poll(b.client,bottom)
+ await focus(b);await click(b,conversationSelector(bc));await poll(b.client,bottom)
  await mkdir(path.join(root,'.artifacts'),{recursive:true})
  for(const theme of ['light','dark']){
   await click(b,'button[title="设置"]');await click(b,`[data-theme-choice="${theme}"]`);await click(b,'.settings-drawer .drawer-header button');await poll(b.client,bottom);await delay(150)

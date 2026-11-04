@@ -1,19 +1,19 @@
-import { Context, ScopeStatus } from '@cordisjs/core'
+import { Context,ScopeStatus } from '@cordisjs/core'
 import {
-  PluginRuntime,
-  type PluginActivationDriver,
-  type PluginContext,
-  type PluginDisposer,
-  type PluginModule,
-  type PluginRuntimeOptions,
-  type PluginSource,
+ComposedPluginRuntime,
+type PluginActivationDriver,
+type PluginContext,
+type PluginDisposer,
+type PluginModule,
+type PluginRuntimeOptions,
+type PluginSource
 } from '@more-than-chat/plugin-runtime'
 
 export const CORDIS_ENGINE_VERSION = '3.18.1' as const
 export type CordisRuntimeOptions = Omit<PluginRuntimeOptions, 'activationDriver'>
 
 /** Public MoreThanChat lifecycle contract; Cordis contexts/scopes stay private. */
-export class CordisPluginRuntime extends PluginRuntime {
+export class CordisPluginRuntime extends ComposedPluginRuntime {
   readonly #driver: CordisActivationDriver
   #closing = false
   #closePromise: Promise<void> | undefined
@@ -33,6 +33,14 @@ export class CordisPluginRuntime extends PluginRuntime {
     if (this.#closing) return Promise.reject(new Error('Cordis runtime is closing.'))
     return super.activate(id)
   }
+  override start(ids?:readonly string[],allowWaiting=false):Promise<void> {
+    if(this.#closing)return Promise.reject(new Error('Cordis runtime is closing.'))
+    return super.start(ids,allowWaiting)
+  }
+  override replace(source:PluginSource):Promise<void> {
+    if(this.#closing)return Promise.reject(new Error('Cordis runtime is closing.'))
+    return super.replace(source)
+  }
 
   getDiagnostics(): { engine: 'cordis'; engineVersion: string; registeredScopes: number; closing: boolean } {
     return { engine: 'cordis', engineVersion: CORDIS_ENGINE_VERSION, registeredScopes: this.#driver.scopeCount, closing: this.#closing }
@@ -49,9 +57,7 @@ export class CordisPluginRuntime extends PluginRuntime {
   }
 
   async #close(): Promise<void> {
-    const results = await Promise.allSettled(this.list().map(plugin => this.deactivate(plugin.manifest.id)))
-    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
-    if (errors.length) throw new AggregateError(errors, 'Cordis runtime cleanup failed.')
+    await this.stopAll()
     await this.#driver.close()
   }
 }
@@ -72,7 +78,8 @@ class CordisActivationDriver implements PluginActivationDriver {
     let dispose: void | PluginDisposer = undefined
     const scope = this.#root.plugin({
       name: context.manifest.id,
-      inject: [...(context.manifest.services?.requires ?? [])],
+      // The shared composition runtime resolves service providers and awaits
+      // dependent teardown; Cordis owns each activation's effect scope.
       apply: async () => {
         // Register the scope's cleanup first so plugin effects clean up before
         // their Cordis owner disappears. Never expose this Context to plugins.

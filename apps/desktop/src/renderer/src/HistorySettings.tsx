@@ -1,3 +1,4 @@
+import { appApi } from './app-api'
 import { useEffect, useRef, useState } from 'react'
 import { Download, LockKeyhole, Upload } from 'lucide-react'
 import type { HistoryTransferStatus } from './global'
@@ -9,7 +10,7 @@ type Mode = 'export' | 'import'
 export function HistorySettings() {
   const [mode,setMode]=useState<Mode|null>(null)
   const [password,setPassword]=useState(''),[confirmation,setConfirmation]=useState('')
-  const snapshot=useLiveSnapshot<HistoryTransferStatus>(()=>window.moreThanChat.getHistoryTransferStatus(),listener=>window.moreThanChat.onHistoryTransferStatus(listener))
+  const snapshot=useLiveSnapshot<HistoryTransferStatus>(()=>appApi.getHistoryTransferStatus(),listener=>appApi.onHistoryTransferStatus(listener))
   const status=snapshot.value
   const [working,setWorking]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('')
   const running=useRef(false),mounted=useRef(true)
@@ -34,8 +35,8 @@ export function HistorySettings() {
     running.current=true;setWorking(true)
     try {
       const result=mode==='export'
-        ? await window.moreThanChat.exportChatHistory(password)
-        : await window.moreThanChat.importChatHistory(password)
+        ? await appApi.exportChatHistory(password)
+        : await appApi.importChatHistory(password)
       if(!mounted.current)return
       setPassword('');setConfirmation('');setMode(null)
       if(!result){setNotice('已取消操作，当前聊天记录保持不变。');return}

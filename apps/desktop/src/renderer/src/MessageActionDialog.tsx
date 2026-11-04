@@ -1,3 +1,4 @@
+import { appApi } from './app-api'
 import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { ChatMessage, Conversation } from '@more-than-chat/chat-core'
@@ -27,8 +28,8 @@ export function MessageActionDialog({ kind, message, conversations, onClose, onC
       // Disabled buttons can lose focus; keep Escape/Tab inside the dialog.
       focus.current?.focus()
       try {
-        if (kind === 'forward') await window.moreThanChat.forwardChatMessage({ messageId: message.id, conversationId: target, clientMessageId: ids.current.forTarget(target) })
-        else await window.moreThanChat.retractChatMessage(message.id)
+        if (kind === 'forward') await appApi.forwardChatMessage({ messageId: message.id, conversationId: target, clientMessageId: ids.current.forTarget(target) })
+        else await appApi.retractChatMessage(message.id)
         if (live.current) onComplete(kind === 'forward' ? '转发已加入发送队列' : '消息已撤回')
       } catch (cause) {
         if (live.current) setError(cause instanceof Error ? cause.message : '操作失败，请重试')

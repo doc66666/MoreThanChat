@@ -78,6 +78,7 @@ try {
   session = await launch()
   await evaluate(session.client, `document.querySelector('button[title="设置"]')?.click()`)
   await poll(session.client, `Boolean(document.querySelector('.settings-drawer'))`)
+  await evaluate(session.client, `document.querySelector('[data-settings-target="model"]').click()`)
   for (const [field, value] of Object.entries({ provider: 'openai-compatible', 'base-url': baseUrl, model, key })) {
     await evaluate(session.client, `(() => { const i=document.querySelector('[data-model-field="${field}"]'); const p=i.tagName==='SELECT'?HTMLSelectElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(p,'value').set.call(i,${JSON.stringify(value)}); i.dispatchEvent(new Event(i.tagName==='SELECT'?'change':'input',{bubbles:true})); })()`)
   }

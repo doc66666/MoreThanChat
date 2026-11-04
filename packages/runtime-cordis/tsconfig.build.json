@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src", "declaration": true, "sourceMap": true, "types": [] },
+  "compilerOptions": { "outDir": "dist", "rootDir": "src", "declaration": true, "sourceMap": true, "types": ["node"], "module": "NodeNext", "moduleResolution": "NodeNext" },
   "include": ["src/**/*.ts"], "exclude": ["tests"]
 }

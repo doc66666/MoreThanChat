@@ -70,6 +70,7 @@ async function close(session){
 }
 async function openSettings(session){
   if(!(await evaluate(session.client,'Boolean(document.querySelector(".settings-drawer"))')))await click(session,'button[title="设置"]')
+  await click(session,'[data-settings-target="history"]')
   await poll(session.client,'Boolean(document.querySelector("[data-history-transfer]"))')
   await evaluate(session.client,'document.querySelector("[data-history-transfer]").scrollIntoView({block:"start"})')
   await poll(session.client,'window.moreThanChat.getHistoryTransferStatus().then(s=>!s.busy)')
@@ -116,7 +117,9 @@ async function preserveLocalFixture(session){
 }
 async function screenshot(session,theme){
   await openSettings(session)
+  await click(session,'[data-settings-target="appearance"]')
   await click(session,`[data-theme-choice="${theme}"]`)
+  await click(session,'[data-settings-target="history"]')
   await evaluate(session.client,'document.querySelector("[data-history-transfer]").scrollIntoView({block:"start"})')
   await delay(250)
   const capture=await session.client.send('Page.captureScreenshot',{format:'png',fromSurface:true})

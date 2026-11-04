@@ -10,7 +10,7 @@ export function useDialogFocus() {
     const controls=()=>[...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex="0"]')].filter(item=>item.getClientRects().length>0)
     if(!dialog.contains(document.activeElement)){
       const items=controls(),preferred=items.find(item=>item.hasAttribute('data-dialog-initial-focus'))
-      ;(preferred??items[0]??dialog).focus()
+      ;(preferred??items[0]??dialog).focus({preventScroll:true})
     }
     const trap=(event:KeyboardEvent)=>{
       if(event.key!=='Tab')return
@@ -20,7 +20,7 @@ export function useDialogFocus() {
       else if(!event.shiftKey&&(document.activeElement===last||document.activeElement===dialog)){event.preventDefault();first.focus()}
     }
     dialog.addEventListener('keydown',trap)
-    return()=>{dialog.removeEventListener('keydown',trap);if(opener.current?.isConnected)opener.current.focus()}
+    return()=>{dialog.removeEventListener('keydown',trap);if(opener.current?.isConnected)opener.current.focus({preventScroll:true})}
   },[])
   return ref
 }

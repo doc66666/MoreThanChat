@@ -65,6 +65,9 @@ jobs:
       - name: Verify executable client hot updates and window replacement
         if: runner.os == 'Windows'
         run: node scripts/verify-client-plugins-ui.mjs
+      - name: Verify built-in and user service composition
+        if: runner.os == 'Windows'
+        run: node scripts/verify-composition-ui.mjs
       - name: Verify AI executable group and direct plugin lifecycle
         if: runner.os == 'Windows'
         run: node scripts/verify-shared-client-plugins.mjs

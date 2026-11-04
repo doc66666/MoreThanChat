@@ -62,7 +62,7 @@ const state=s=>value(s,'window.moreThanChat.getServerState()')
 const action=(s,route,data)=>value(s,`window.moreThanChat.serverAction(${JSON.stringify(route)},${JSON.stringify(data)})`)
 async function closePanel(s){await value(s,`document.querySelector('.plugin-drawer .drawer-header button')?.click()`)}
 async function plugins(s){await closePanel(s);await click(s,'button[title="插件"]');await poll(s,'Boolean(document.querySelector("[data-client-plugins]"))')}
-async function open(s,target,kind='group') {await closePanel(s);await click(s,'button[title="联系人"]');await click(s,`[data-${kind==='group'?'group':'friend'}="${target}"]`)}
+async function open(s,target,kind='group') {await closePanel(s);await click(s,'button[title="联系人"]');await click(s,`[data-contacts-tab="${kind==='group'?'groups':'friends'}"]`);await click(s,`[data-contact-${kind==='group'?'group':'chat'}="${target}"]`)}
 async function createDraft(s,p){
   authoredPack=p
   const generation=await value(s,"document.querySelector('.host-status').dataset.hostGeneration")
@@ -93,11 +93,28 @@ async function share(s,scope,fromInstalled=false){
   await closePanel(s)
   return (await state(s)).directory.plugins.filter(p=>p.groupId===scope&&p.status==='pending').at(-1)
 }
-async function approve(s,p){await closePanel(s);await click(s,'button[title="联系人"]');await click(s,`[data-group-plugin-review="${p.pack.id}"] [data-approve-group-plugin]`);await poll(s,`window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.groupId===${JSON.stringify(p.groupId)}&&p.digest===${JSON.stringify(p.digest)}&&p.status==='approved'))`);await closePanel(s)}
+async function approve(s,p){await closePanel(s);await click(s,'button[title="联系人"]');await click(s,'[data-contacts-tab="requests"]');await click(s,`[data-group-plugin-review="${p.pack.id}"] [data-approve-group-plugin]`);await poll(s,`window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.groupId===${JSON.stringify(p.groupId)}&&p.digest===${JSON.stringify(p.digest)}&&p.status==='approved'))`);await closePanel(s)}
 function gate(p){return `[data-group-plugin-gate="${p.pack.id}"][data-plugin-scope="${p.groupId}"][data-plugin-digest="${p.digest}"]`}
 async function load(s,p){await plugins(s);await click(s,`${gate(p)} [data-enable-group-plugin]`);await closePanel(s);await poll(s,`document.querySelector('[data-shared-game]')?.dataset.sharedGame===${JSON.stringify(p.groupId.startsWith('dm_')?'direct':'group')}`)}
 async function board(s,text){await poll(s,`[...document.querySelectorAll('[data-shared-cell]')].map(n=>n.textContent).join('')===${JSON.stringify(text)}`)}
 async function close(s){if(s.client){try{await limit(s.client.send('Browser.close'),1000)}catch{}s.client.close();s.client=null}await waitForExit(s.child,5000);if(s.child.exitCode===null)s.child.kill()}
+async function replaceCentralDuringMove(receiver, sender, group, pluginId) {
+  const folder=path.join(directory,receiver.name,'main-plugins','test.sync-central'),marker=path.join(directory,'sync-activation-started'),gate=path.join(directory,'sync-activation-resume')
+  await mkdir(folder,{recursive:true})
+  const manifest={manifestVersion:1,id:'test.sync-central',version:'1.0.0',displayName:'群同步热更验收',description:'Replace central service during a live group move',targets:['pc-host'],engine:{moreThanChat:'^0.1.0'},permissions:['host.trusted'],services:{requires:['central.client'],provides:['central.client']}}
+  const count=await value(receiver,`window.moreThanChat.getPluginInbox(${JSON.stringify(group)},${JSON.stringify(pluginId)}).then(events=>events.length)`)
+  await writeFile(path.join(folder,'manifest.json'),JSON.stringify(manifest))
+  await writeFile(path.join(folder,'index.mjs'),`import {writeFile,readFile} from 'node:fs/promises'; export default async ctx=>{const original=ctx.getService('central.client');await writeFile(${JSON.stringify(marker)},'ready');const deadline=Date.now()+15000;while(Date.now()<deadline){try{await readFile(${JSON.stringify(gate)});break}catch{}await new Promise(r=>setTimeout(r,20))}ctx.provideService('central.client',new Proxy(original,{get(target,key){if(key==='snapshot')return()=>({...target.snapshot(),displayName:'群同步热更服务'});const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value}}))}`)
+  const until=Date.now()+12000
+  while(true){try{await readFile(marker);break}catch{}if(Date.now()>until)throw Error('Node provider did not begin activation');await delay(50)}
+  try {
+    await click(sender,'[data-shared-cell="8"]');await board(sender,'········X')
+    await poll(receiver,`window.moreThanChat.getPluginInbox(${JSON.stringify(group)},${JSON.stringify(pluginId)}).then(events=>events.length>${count})`)
+  } finally {await writeFile(gate,'resume')}
+  await poll(receiver,`window.moreThanChat.getServerState().then(s=>s.displayName==='群同步热更服务')`)
+  await board(receiver,'········X')
+  assert.equal(await value(receiver,'document.querySelectorAll("[data-shared-game]").length'),1)
+}
 try{
   const a=await launch('插件作者 A'),b=await launch('管理员 B'),c=await launch('成员 C')
   for(const peer of [b,c]){await action(a,'friends/request',{userId:peer.id});await action(peer,'friends/accept',{userId:a.id})}
@@ -127,7 +144,8 @@ try{
   await load(c,proposal);await board(c,'XXXOO····')
   await click(c,'[data-shared-reset]');await poll(a,'document.querySelector("[data-game-status]")?.textContent.includes("0/2")')
   await click(c,'[data-shared-join]');await poll(a,'document.querySelector("[data-game-status]")?.textContent.includes("1/2")');await click(a,'[data-shared-join]');await poll(c,'document.querySelector("[data-game-status]")?.textContent.includes("2/2")')
-  await click(c,'[data-shared-cell="8"]');await board(a,'········X')
+  await replaceCentralDuringMove(a,c,group,proposal.pack.id)
+  evidence.push('group event received during central-service replacement is delivered after subscriptions rebind, with one live game view')
   evidence.push('group: author submits installed code, admin approves, no auto-execution, members choose load, real multiplayer moves/win, late join, new round releases seats to third player')
   const direct=directPluginScope(a.id,b.id),dm=await share(a,direct)
   await assert.rejects(()=>action(a,'plugins/review',{groupId:direct,pluginId:dm.pack.id,version:dm.pack.version,digest:dm.digest,approve:true}),/对方|自行/)

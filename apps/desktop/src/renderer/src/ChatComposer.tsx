@@ -1,3 +1,4 @@
+import { appApi } from './app-api'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Mic, Paperclip, Plus, SendHorizontal } from 'lucide-react'
 import type { AttachmentRef } from '@more-than-chat/central-protocol'
@@ -57,7 +58,7 @@ export function ChatComposer({
       const bytes = new Uint8Array(await blob.arrayBuffer())
       let binary = ''
       for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768))
-      const ref = await window.moreThanChat.recordVoice({ data: btoa(binary), mime: 'audio/webm', durationMs })
+      const ref = await appApi.recordVoice({ data: btoa(binary), mime: 'audio/webm', durationMs })
       return () => callbacks.current.onVoice(ref)
     },
   })
@@ -125,7 +126,7 @@ export function ChatComposer({
     if (operation.current || locked) return
     operation.current = true; setPreparingFile(true); setProblem(''); setMenu(false)
     try {
-      const ref = await window.moreThanChat.chooseAttachment()
+      const ref = await appApi.chooseAttachment()
       if (mounted.current && ref) onAttachment(ref)
     } catch (error) { report(error instanceof Error ? error.message : '附件准备失败，请重试。') }
     finally { operation.current = false; if (mounted.current) { setPreparingFile(false); inputRef.current?.focus() } }
@@ -201,18 +202,18 @@ export function ChatComposer({
           </button>
         ) : (
           <>
-            {(draft.trim() || attachment) && (
+            {(draft.trim() || attachment || !canAttach) && (
               <button
                 className="send-button"
                 title="发送文字或文件"
                 aria-label={sending ? '正在发送' : '发送文字或文件'}
-                disabled={locked}
+                disabled={locked || (!draft.trim() && !attachment)}
                 onClick={() => void send()}
               >
                 <SendHorizontal size={19} />
               </button>
             )}
-            <button
+            {canAttach && <button
               type="button"
               className={`voice-button ${recording ? 'recording' : ''}`}
               disabled={!canAttach || preparingFile || sending || voicePhase === 'preparing' || !!attachment}
@@ -233,7 +234,7 @@ export function ChatComposer({
             >
               <Mic size={18} />
               <span>{recording ? '松开发送' : voicePhase === 'requesting' ? '等待麦克风' : voicePhase === 'preparing' ? '正在准备' : '按住说话'}</span>
-            </button>
+            </button>}
           </>
         )}
       </div>
@@ -251,12 +252,7 @@ export function ChatComposer({
       <div className="composer-toolbar">
         <div className="composer-plugin-actions">{children}</div>
         <div className="send-area">
-          <span>Enter 发送 · Shift+Enter 换行</span>
-          {!generating && !draft.trim() && !attachment && (
-            <button className="send-button" disabled aria-label="发送">
-              <SendHorizontal size={18} />
-            </button>
-          )}
+          <span><kbd>Enter</kbd> 发送 <span className="composer-hint-divider">·</span> <kbd>Shift + Enter</kbd> 换行</span>
         </div>
       </div>
     </div>

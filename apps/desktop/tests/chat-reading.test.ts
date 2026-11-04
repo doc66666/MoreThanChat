@@ -8,7 +8,7 @@ import { UiSurface } from '../src/renderer/src/UiSurface'
 import { isReadingVisible, useChatReading } from '../src/renderer/src/use-chat-reading'
 
 let root:Root,container:HTMLDivElement,registry:UiSurfaceRegistry
-let reading:ReturnType<typeof useChatReading>,focused:(value:boolean)=>void
+let reading:ReturnType<typeof useChatReading>,focused:(value:boolean)=>void,nativeEvent:(value:boolean)=>void,nativeFocus=true
 let props:{id:string;blocked:boolean;historic:boolean;count:number}
 let covered=false,height=2200,positions:WeakMap<Element,number>
 const receipts=vi.fn(async(_id:string|null)=>{})
@@ -24,7 +24,7 @@ async function render(patch:Partial<typeof props>={}){Object.assign(props,patch)
 async function scroll(top:number){await act(async()=>{node().scrollTop=top;node().dispatchEvent(new Event('scroll',{bubbles:true}))})}
 beforeEach(async()=>{
   Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true})
-  positions=new WeakMap();covered=false;height=2200;resizeCallbacks.clear();receipts.mockClear()
+  positions=new WeakMap();covered=false;height=2200;nativeFocus=true;resizeCallbacks.clear();receipts.mockClear()
   vi.stubGlobal('ResizeObserver',class {callback:()=>void;constructor(callback:()=>void){this.callback=callback;resizeCallbacks.add(callback)}observe(){}disconnect(){resizeCallbacks.delete(this.callback)}})
   vi.spyOn(HTMLElement.prototype,'clientHeight','get').mockImplementation(function(this:HTMLElement){return this.matches('.message-scroll')?500:0})
   vi.spyOn(HTMLElement.prototype,'scrollHeight','get').mockImplementation(()=>height)
@@ -35,7 +35,8 @@ beforeEach(async()=>{
   vi.spyOn(HTMLElement.prototype,'getClientRects').mockImplementation(()=>[rect] as unknown as DOMRectList)
   vi.spyOn(document,'elementFromPoint').mockImplementation(()=>covered?document.body:node())
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'})
-  window.moreThanChat={onWindowFocusChanged:(fn:typeof focused)=>{focused=fn;return()=>{}},getWindowFocus:async()=>true,setReadingConversation:receipts} as unknown as Window['moreThanChat']
+  // Match chat:set-reading: native focus is checked at the IPC boundary.
+  window.moreThanChat={onWindowFocusChanged:(fn:typeof focused)=>{nativeEvent=fn;focused=value=>{nativeFocus=value;fn(value)};return()=>{}},getWindowFocus:async()=>nativeFocus,setReadingConversation:async(id:string|null)=>receipts(nativeFocus?id:null)} as unknown as Window['moreThanChat']
   registry=new UiSurfaceRegistry();props={id:'direct',blocked:false,historic:false,count:1}
   container=document.createElement('div');document.body.append(container);root=createRoot(container)
 })
@@ -66,6 +67,34 @@ it('detaches receipts on a full root replacement and reattaches after restoring 
   await act(async()=>{dispose=registry.register('full',{id:'full',surface:'root',render:()=>h('div',null,'custom desktop')})})
   expect(node()).toBeNull();expect(reading.scrollRef.current).toBeNull();expect(receipts).toHaveBeenLastCalledWith(null)
   await act(async()=>{dispose()});expect(node().scrollTop).toBe(1700);expect(receipts).toHaveBeenLastCalledWith('direct')
+})
+
+it('reasserts reading after a blur and focus delivered in one React batch',async()=>{
+  await render();expect(receipts).toHaveBeenLastCalledWith('direct')
+  // The main process clears reading immediately on blur, even when React
+  // coalesces both events and keeps the same final focused value.
+  receipts.mockClear()
+  await act(async()=>{focused(false);focused(true)})
+  expect(receipts).toHaveBeenLastCalledWith('direct')
+  await render({blocked:true});receipts.mockClear()
+  await act(async()=>{focused(false);focused(true)})
+  expect(receipts).toHaveBeenLastCalledWith(null)
+})
+
+it('reconciles late native blur notifications and Chromium focus with current native focus',async()=>{
+  await render()
+  await act(async()=>nativeEvent(false)) // native window has already regained focus
+  expect(receipts).toHaveBeenLastCalledWith('direct')
+  await act(async()=>window.dispatchEvent(new Event('blur')))
+  expect(receipts).toHaveBeenLastCalledWith('direct')
+  await act(async()=>focused(false))
+  expect(receipts).toHaveBeenLastCalledWith(null)
+  nativeFocus=true
+  await act(async()=>window.dispatchEvent(new Event('focus')))
+  expect(receipts).toHaveBeenLastCalledWith('direct')
+  await render({blocked:true})
+  await act(async()=>nativeEvent(false))
+  expect(receipts).toHaveBeenLastCalledWith(null)
 })
 
 it('keeps history anchored and honors a latest request that arrives before the history state commit',async()=>{

@@ -1,27 +1,27 @@
+import {
+HOST_METHODS,
+HOST_PROTOCOL_VERSION,
+createHostErrorResponse,
+createHostEvent,
+createHostSuccessResponse,
+safeParseHostMessage,
+type HostMethod,
+type HostRequest,
+type HostRequestEnvelope,
+type ProtocolErrorPayload,
+} from '@more-than-chat/protocol'
 import type { ParentPort } from 'electron'
 import os from 'node:os'
 import path from 'node:path'
-import { HostPluginError, HostPluginService } from './plugin-service'
-import { PluginDraftError, PluginDraftService } from './plugin-drafts'
-import { InstalledStaticToolStore, restoreInstalledStaticTools } from './installed-static-tools'
-import { installConfirmedTextTool } from './static-tool-install'
-import { createAuthorToolExecutor } from './author-tools'
-import { createPluginManagement } from './plugin-management'
-import { ModelService } from './model-service'
 import { HostCredentialClient } from './credential-client'
-import { ModelServiceError, sanitizeProviderText } from './model-error'
-import {
-  HOST_METHODS,
-  HOST_PROTOCOL_VERSION,
-  createHostErrorResponse,
-  createHostEvent,
-  createHostSuccessResponse,
-  safeParseHostMessage,
-  type HostMethod,
-  type HostRequest,
-  type HostRequestEnvelope,
-  type ProtocolErrorPayload,
-} from '@more-than-chat/protocol'
+import { HostComposition } from './host-composition'
+import { InstalledStaticToolStore } from './installed-static-tools'
+import { ModelServiceError,sanitizeProviderText } from './model-error'
+import { ModelService } from './model-service'
+import { PluginDraftError,PluginDraftService } from './plugin-drafts'
+import { createPluginManagement } from './plugin-management'
+import { HostPluginError,HostPluginService } from './plugin-service'
+import { installConfirmedTextTool } from './static-tool-install'
 
 const HOST_NAME = 'MoreThanChat PC Host'
 const HOST_VERSION = '0.1.0'
@@ -31,29 +31,9 @@ if (!parentPort) throw new Error('PC Host must run as an Electron utility proces
 const credentials = new HostCredentialClient(message => parentPort.postMessage(message))
 const hostDataDir = process.env.MTC_HOST_DATA_DIR || path.join(os.homedir(), '.more-than-chat', 'host-private')
 const demoPluginsEnabled = process.env.MTC_ENABLE_DEMO_PLUGINS === '1'
-const plugins = new HostPluginService(generation, demoPluginsEnabled ? undefined : [])
-const staticTools = new InstalledStaticToolStore(hostDataDir)
-const drafts = new PluginDraftService({
-  dataDir: hostDataDir,
-  installedPlugins: () => plugins.catalog().plugins.map(plugin => ({
-    id: plugin.id,
-    version: plugin.version,
-    displayName: plugin.displayName,
-    status: plugin.status,
-  })),
-})
-const managePlugins = createPluginManagement(drafts, plugins, staticTools, request => credentials.managePlugins(request))
-const model = new ModelService({
-  defaultProviderMode: demoPluginsEnabled ? 'mock' : 'openai-compatible',
-  dataDir: hostDataDir,
-  generation,
-  authorTools: createAuthorToolExecutor(drafts, managePlugins, request=>credentials.accessChat(request)),
-  credentials,
-})
-const pluginsReady = plugins.start().then(() => restoreInstalledStaticTools(staticTools, plugins))
-const modelReady = model.load()
-void pluginsReady.catch(reportFatalError)
-void modelReady.catch(reportFatalError)
+const composition = new HostComposition({generation,directory:hostDataDir,demo:demoPluginsEnabled,credentials})
+const servicesReady = composition.start()
+void servicesReady.catch(reportFatalError)
 let shuttingDown = false
 let qaCrashScheduled = false
 let fatalExitScheduled = false
@@ -81,8 +61,7 @@ async function handleIncoming(raw: unknown): Promise<void> {
 }
 
 async function handleRequest(request: HostRequest): Promise<void> {
-  await pluginsReady
-  await modelReady
+  await servicesReady
   if (shuttingDown && request.method !== 'host.shutdown') {
     parentPort.postMessage(createHostErrorResponse(request, {
       code: 'SHUTTING_DOWN',
@@ -94,7 +73,7 @@ async function handleRequest(request: HostRequest): Promise<void> {
 
   switch (request.method) {
     case 'plugins.manage':
-      parentPort.postMessage(createHostSuccessResponse(request, await managePlugins(request.payload)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<ReturnType<typeof createPluginManagement>>('host.management')(request.payload)))
       return
     case 'host.handshake': {
       if (!request.payload.supportedProtocolVersions.includes(HOST_PROTOCOL_VERSION)) {
@@ -124,60 +103,58 @@ async function handleRequest(request: HostRequest): Promise<void> {
     }
     case 'host.shutdown': {
       shuttingDown = true
-      model.close()
-      await plugins.stop()
+      await composition.close()
       parentPort.postMessage(createHostSuccessResponse(request, { accepted: true }))
       setTimeout(() => process.exit(0), 20).unref()
       return
     }
     case 'plugins.list':
-      parentPort.postMessage(createHostSuccessResponse(request, plugins.catalog()))
+      parentPort.postMessage(createHostSuccessResponse(request, composition.catalog()))
       return
     case 'plugins.setEnabled': {
-      const catalog = await plugins.setEnabled(request.payload.pluginId, request.payload.enabled)
-      await staticTools.setEnabled(request.payload.pluginId, request.payload.enabled)
+      const catalog = await composition.setEnabled(request.payload.pluginId, request.payload.enabled)
       parentPort.postMessage(createHostSuccessResponse(request, catalog))
       if (!request.payload.enabled) scheduleQaCrash()
       return
     }
     case 'tools.invoke':
-      parentPort.postMessage(createHostSuccessResponse(request, await plugins.invoke(request.payload.pluginId, request.payload.toolId, request.payload.input)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<HostPluginService>('host.plugins').invoke(request.payload.pluginId, request.payload.toolId, request.payload.input)))
       return
     case 'model.getSettings':
-      parentPort.postMessage(createHostSuccessResponse(request, model.getSettings()))
+      parentPort.postMessage(createHostSuccessResponse(request, composition.get<ModelService>('model.agent').getSettings()))
       return
     case 'model.setSettings':
-      parentPort.postMessage(createHostSuccessResponse(request, await model.setSettings(request.payload)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<ModelService>('model.agent').setSettings(request.payload)))
       return
     case 'model.chat.start':
-      parentPort.postMessage(createHostSuccessResponse(request, model.start(request.payload, emitModelEvent)))
+      parentPort.postMessage(createHostSuccessResponse(request, composition.get<ModelService>('model.agent').start(request.payload, emitModelEvent)))
       return
     case 'model.chat.cancel':
-      parentPort.postMessage(createHostSuccessResponse(request, model.cancel(request.payload.streamId)))
+      parentPort.postMessage(createHostSuccessResponse(request, composition.get<ModelService>('model.agent').cancel(request.payload.streamId)))
       return
     case 'pluginDrafts.inspect':
-      parentPort.postMessage(createHostSuccessResponse(request, await drafts.inspect()))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<PluginDraftService>('host.drafts').inspect()))
       return
     case 'pluginDrafts.exportGroup':
-      parentPort.postMessage(createHostSuccessResponse(request, await drafts.exportGroup(request.payload.draftId, request.payload.revision)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<PluginDraftService>('host.drafts').exportGroup(request.payload.draftId, request.payload.revision)))
       return
     case 'pluginDrafts.exportClient':
-      parentPort.postMessage(createHostSuccessResponse(request, await drafts.exportClient(request.payload.draftId, request.payload.revision)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<PluginDraftService>('host.drafts').exportClient(request.payload.draftId, request.payload.revision)))
       return
     case 'pluginDrafts.create':
-      parentPort.postMessage(createHostSuccessResponse(request, await drafts.create(request.payload)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<PluginDraftService>('host.drafts').create(request.payload)))
       return
     case 'pluginDrafts.validate':
-      parentPort.postMessage(createHostSuccessResponse(request, await drafts.validate(request.payload.draftId)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<PluginDraftService>('host.drafts').validate(request.payload.draftId)))
       return
     case 'pluginDrafts.diagnose':
-      parentPort.postMessage(createHostSuccessResponse(request, await drafts.diagnose(request.payload.draftId)))
+      parentPort.postMessage(createHostSuccessResponse(request, await composition.get<PluginDraftService>('host.drafts').diagnose(request.payload.draftId)))
       return
     case 'pluginDrafts.install':
       parentPort.postMessage(createHostSuccessResponse(request, await installConfirmedTextTool({
-        drafts,
-        plugins,
-        store: staticTools,
+        drafts: composition.get<PluginDraftService>('host.drafts'),
+        plugins: composition.get<HostPluginService>('host.plugins'),
+        store: composition.get<InstalledStaticToolStore>('host.tool-store'),
         draftId: request.payload.draftId,
         confirmed: request.payload.confirmed,
       })))

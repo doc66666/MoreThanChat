@@ -1,6 +1,6 @@
 # Cordis 适配与验证基线
 
-PC Host 已使用 `packages/runtime-cordis` 的 `CordisPluginRuntime`。Renderer 和 Android 可继续使用平台无关的 `packages/plugin-runtime`，无需接触 Cordis。
+PC UI、Electron Main 和 PC Host 均使用 `CordisPluginRuntime`；Android 保留平台无关的插件契约。当前机制见 [应用插件组合](application-composition.md)。
 
 ## 固定版本
 
@@ -14,11 +14,11 @@ PC Host 已使用 `packages/runtime-cordis` 的 `CordisPluginRuntime`。Renderer
 
 `PluginRuntimeOptions.activationDriver` 是宿主侧扩展点，插件获得的 `PluginContext` 保持一致。通用 SDK 仍负责 manifest 快照、按插件串行的生命周期、贡献 owner、健康检查、逆序 effect 清理与失败项重试。
 
-Cordis driver 为每次激活创建独立 Scope，使用已声明的服务依赖，在框架异步任务完成后检查结果。Cordis 3 将错误记录在 Scope 中而不是让 `flush()` 拒绝；适配层会将错误重新抛入 SDK 的回滚流程。插件的异步 disposer 由 SDK 等待和保留，避免依赖框架内部的清理异常处理。
+Cordis driver 为每次激活创建独立 Scope，在框架异步任务完成后检查结果；依赖停用与重绑由共享组合运行时调度。Cordis 3 将错误记录在 Scope 中而不是让 `flush()` 拒绝；适配层会将错误重新抛入 SDK 的回滚流程。插件的异步 disposer 由 SDK 等待和保留，避免依赖框架内部的清理异常处理。
 
 Scope 清理先登记，因而插件 effect 会先清理，随后删除其 Cordis Scope。`close()` 阻止新的安装/激活，等待已接受的工作，对所有插件尝试清理；任一失败都会让关闭失败并可重试，不会漏掉其余插件。诊断只暴露框架版本和 Scope 数量，不公开框架对象。
 
-当前服务由 Host 启动时静态提供；缺失必需服务会拒绝激活。动态 provider 注销、依赖等待与恢复尚未开放。重启同一插件不是版本热更新事务，版本切换与恢复旧版本仍属于后续 plugin-manager。
+服务支持动态 provideService 和多个提供方；消费者在依赖变更前清理，依赖恢复后重绑。内置和用户插件共用 replace 版本替换事务。用户 Node 目录监听入口及相对模块，失败保留上一可用版本。
 
 ## 本地验证
 

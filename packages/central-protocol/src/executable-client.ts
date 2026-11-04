@@ -16,7 +16,7 @@ export function parseSharedClientPackage(value: unknown): SharedClientPackage {
     typeof m.description !== 'string' || !m.description.trim() || m.description.length > 1000 ||
     !Array.isArray(m.targets) || m.targets.length !== 1 || m.targets[0] !== 'pc-ui' || m.engine?.moreThanChat !== '^0.1.0' ||
     !Array.isArray(m.permissions) || m.permissions.length !== 1 || m.permissions[0] !== 'client.trusted' ||
-    (m.services && (!Array.isArray(m.services.requires) || m.services.requires.some(id => !['ui.surfaces','ui.slots','ui.composer-actions','chat.network','chat.transports'].includes(id)) || (m.services.provides !== undefined && (!Array.isArray(m.services.provides) || m.services.provides.length > 0)))) ||
+    (m.services && (!Array.isArray(m.services.requires) || m.services.requires.some(id => typeof id !== 'string' || !id || id.length > 128) || (m.services.provides !== undefined && (!Array.isArray(m.services.provides) || m.services.provides.some(id => typeof id !== 'string' || !id || id.length > 128))))) ||
     !p || p.kind !== 'executable-client' || Object.keys(p).some(k => !['kind','code'].includes(k)) || typeof p.code !== 'string' || !p.code.trim() || p.code.length > 100000)
     throw new Error('Invalid executable client package')
   return JSON.parse(JSON.stringify(v)) as SharedClientPackage

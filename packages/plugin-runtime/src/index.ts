@@ -31,6 +31,7 @@ export interface PluginContext {
   readonly manifest: PluginManifestV1
   readonly target: PluginTarget
   getService<T>(id: string): T
+  provideService<T>(id: string, value: T, priority?: number): void
   effect(disposer: PluginDisposer): void
   contribute<T>(registry: ContributionRegistrar<T>, contribution: T): void
 }
@@ -78,6 +79,7 @@ interface PluginRecord {
   operation: Promise<void>
   terminationRequested: boolean
   uninstallPromise: Promise<void> | undefined
+  readonly bindings: Map<string, string>
 }
 
 const pluginIdPattern = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/
@@ -135,14 +137,14 @@ export function definePlugin(module: PluginModule): PluginModule {
  */
 export class PluginRuntime {
   readonly #target: PluginTarget
-  readonly #services: Readonly<Record<string, unknown>>
+  readonly services = new ServiceRegistry()
   readonly #activationDriver: PluginActivationDriver | undefined
   readonly #records = new Map<string, PluginRecord>()
   readonly #listeners = new Set<() => void>()
 
   constructor(options: PluginRuntimeOptions) {
     this.#target = options.target
-    this.#services = options.services ?? {}
+    for (const [id, value] of Object.entries(options.services ?? {})) this.services.register('@host', id, value, 10000)
     this.#activationDriver = options.activationDriver
   }
 
@@ -165,6 +167,7 @@ export class PluginRuntime {
       operation: Promise.resolve(),
       terminationRequested: false,
       uninstallPromise: undefined,
+      bindings: new Map(),
     })
     this.#emit()
   }
@@ -208,6 +211,7 @@ export class PluginRuntime {
         throw new Error(`Plugin '${id}' still has effects awaiting cleanup.`)
       }
       record.status = 'activating'
+      record.bindings.clear()
       record.error = null
       this.#emit()
 
@@ -225,10 +229,17 @@ export class PluginRuntime {
         manifest: record.source.manifest,
         target: this.#target,
         getService: <T>(serviceId: string): T => {
-          if (!Object.prototype.hasOwnProperty.call(this.#services, serviceId)) {
+          if (!this.services.has(serviceId)) {
             throw new Error(`Plugin '${id}' requested unavailable service '${serviceId}'.`)
           }
-          return this.#services[serviceId] as T
+          const selected = this.services.resolve(serviceId)
+          record.bindings.set(serviceId, selected.ownerId)
+          return selected.value as T
+        },
+        provideService: <T>(serviceId: string, value: T, priority = record.source.trust === 'builtin' ? 100 : 0): void => {
+          assertAcceptingEffects()
+          if (!record.source.manifest.services?.provides?.includes(serviceId)) throw new Error(`Plugin '${id}' must declare provided service '${serviceId}'.`)
+          trackEffect(this.services.register(id, serviceId, value, priority))
         },
         effect: trackEffect,
         contribute: <T>(registry: ContributionRegistrar<T>, contribution: T): void => {
@@ -289,6 +300,18 @@ export class PluginRuntime {
     await this.activate(id)
   }
 
+  async replace(source: PluginSource): Promise<void> {
+    const previous = this.#requireRecord(source.manifest.id).source
+    const active = this.#requireRecord(source.manifest.id).status === 'active'
+    await this.uninstall(source.manifest.id)
+    try { this.install(source); if (active) await this.activate(source.manifest.id) }
+    catch (error) {
+      await this.uninstall(source.manifest.id)
+      this.install(previous); if (active) await this.activate(previous.manifest.id)
+      throw error
+    }
+  }
+
   list(): PluginSnapshot[] {
     return [...this.#records.values()].map(record => ({
       manifest: record.source.manifest,
@@ -304,6 +327,8 @@ export class PluginRuntime {
       this.#listeners.delete(listener)
     }
   }
+  /** Owners actually used by the current activation, including decorators. */
+  protected serviceBindings(id: string): ReadonlyMap<string, string> { return this.#requireRecord(id).bindings }
 
   #requireRecord(id: string): PluginRecord {
     const record = this.#records.get(id)
@@ -354,6 +379,212 @@ export class PluginRuntime {
         // A UI subscriber must not be able to corrupt plugin lifecycle state.
       }
     }
+  }
+}
+
+/** Providers are effects, including built-ins. Lower priorities override defaults. */
+export class ServiceRegistry {
+  readonly #entries: { ownerId: string; id: string; value: unknown; priority: number }[] = []
+  readonly #listeners = new Set<() => void>()
+  readonly #ownerOrder = new Map<string, number>()
+  register(ownerId: string, id: string, value: unknown, priority = 0): PluginDisposer {
+    if (!id || !Number.isFinite(priority)) throw new Error('Invalid service registration.')
+    if (this.#entries.some(entry => entry.ownerId === ownerId && entry.id === id)) throw new Error(`Duplicate service '${id}' from '${ownerId}'.`)
+    const entry = { ownerId, id, value, priority }
+    if (!this.#ownerOrder.has(ownerId)) this.#ownerOrder.set(ownerId, this.#ownerOrder.size)
+    this.#entries.push(entry); this.#emit()
+    return () => { const index = this.#entries.indexOf(entry); if (index >= 0) { this.#entries.splice(index, 1); this.#emit() } }
+  }
+  has(id: string): boolean { return this.#entries.some(entry => entry.id === id) }
+  get<T>(id: string): T {
+    return this.resolve(id).value as T
+  }
+  resolve(id: string): {readonly ownerId: string; readonly value: unknown} {
+    const entry = this.#entries.filter(entry => entry.id === id).sort((a, b) => a.priority - b.priority || this.#ownerOrder.get(a.ownerId)! - this.#ownerOrder.get(b.ownerId)!)[0]
+    if (!entry) throw new Error(`Unavailable service '${id}'.`)
+    return entry
+  }
+  list() { return this.#entries.map(({ ownerId, id, priority }) => ({ ownerId, id, priority })) }
+  subscribe(listener: () => void): PluginDisposer { this.#listeners.add(listener); return () => { this.#listeners.delete(listener) } }
+  #emit() { for (const listener of this.#listeners) { try { listener() } catch {} } }
+}
+
+/** One composition path for built-in and installed modules. Dependency consumers
+ * are stopped before providers, then rebound after a provider change. */
+export class ComposedPluginRuntime extends PluginRuntime {
+  readonly #sources = new Map<string, PluginSource>()
+  readonly #wanted = new Set<string>()
+  readonly #removing = new Set<string>()
+  #tail: Promise<unknown> = Promise.resolve()
+  #composing = false
+  readonly #compositionListeners = new Set<() => void>()
+  get isComposing(): boolean { return this.#composing }
+  subscribeComposition(listener: () => void): PluginDisposer { this.#compositionListeners.add(listener); return () => { this.#compositionListeners.delete(listener) } }
+
+  override install(source: PluginSource): void { super.install(source); this.#remember(source) }
+  desired(id: string): boolean { return this.#wanted.has(id) }
+  async start(ids: readonly string[] = this.list().map(item => item.manifest.id), allowWaiting = false): Promise<void> {
+    return this.#enqueueComposition(async () => {
+      for (const id of ids) { this.#source(id); this.#wanted.add(id) }
+      await this.#resume()
+      const waiting = this.list().filter(item => this.#wanted.has(item.manifest.id) && item.status !== 'active')
+      if (waiting.length && !allowWaiting) throw new Error('Unresolved plugin dependencies: ' + waiting.map(item => item.manifest.id).join(', '))
+    })
+  }
+  override activate(id: string): Promise<void> {
+    if (this.#removing.has(id)) return Promise.reject(new Error(`Plugin '${id}' is being uninstalled.`))
+    this.#source(id)
+    return this.#enqueueComposition(async () => {
+      const wasWanted = this.#wanted.has(id), active = this.#activeIds()
+      this.#wanted.add(id)
+      if (this.list().find(item => item.manifest.id === id)?.status === 'active') return
+      const missing = this.#source(id).manifest.services?.requires.find(service => !this.services.has(service))
+      if (missing) throw new Error(`Plugin '${id}' requested unavailable service '${missing}'.`)
+      await this.#suspend(new Set(this.#source(id).manifest.services?.provides ?? []), id)
+      try {
+        await super.activate(id)
+        await this.#resume(id)
+        this.#assertRestored(active, id)
+      } catch (error) {
+        await this.#suspend(new Set(this.#source(id).manifest.services?.provides ?? []), id)
+        if (this.list().find(item => item.manifest.id === id)?.status === 'active') await super.deactivate(id)
+        if (!wasWanted) this.#wanted.delete(id)
+        await this.#resetFailed(active)
+        await this.#resume(id)
+        throw error
+      }
+    })
+  }
+  override deactivate(id: string): Promise<void> {
+    this.#source(id)
+    return this.#enqueueComposition(async () => {
+      this.#wanted.delete(id)
+      await this.#suspend(new Set(this.#source(id).manifest.services?.provides ?? []), id)
+      await super.deactivate(id)
+      await this.#resume(id)
+    })
+  }
+  override uninstall(id: string): Promise<void> {
+    this.#source(id); this.#removing.add(id)
+    return this.#enqueueComposition(async () => {
+      try {
+        this.#wanted.delete(id)
+        await this.#suspend(new Set(this.#source(id).manifest.services?.provides ?? []), id)
+        await super.uninstall(id); this.#sources.delete(id)
+        await this.#resume(id)
+      } finally { this.#removing.delete(id) }
+    })
+  }
+  override replace(source: PluginSource): Promise<void> {
+    validatePluginManifest(source.manifest)
+    return this.#enqueueComposition(async () => {
+      const id = source.manifest.id, previous = this.#source(id), wanted = this.#wanted.has(id), active = this.#activeIds()
+      const changed = new Set([...(previous.manifest.services?.provides ?? []), ...(source.manifest.services?.provides ?? [])])
+      await this.#suspend(changed, id)
+      await super.uninstall(id)
+      try {
+        super.install(source); this.#remember(source)
+        if (wanted) await super.activate(id)
+        await this.#resume(id)
+        this.#assertRestored(active, id)
+      } catch (error) {
+        await this.#suspend(changed, id)
+        if (this.list().some(item => item.manifest.id === id)) await super.uninstall(id)
+        super.install(previous); this.#remember(previous)
+        await this.#resetFailed(active)
+        if (active.has(id)) await super.activate(id)
+        await this.#resume(id)
+        throw error
+      }
+    })
+  }
+  override reload(id: string): Promise<void> { return this.replace(this.#source(id)) }
+  stopAll(): Promise<void> {
+    return this.#enqueueComposition(async()=>{
+      this.#wanted.clear()
+      const errors:unknown[]=[]
+      for(const item of this.list())try {
+        await this.#suspend(new Set(item.manifest.services?.provides??[]),item.manifest.id)
+        await super.deactivate(item.manifest.id)
+      }catch(error){errors.push(error)}
+      if(errors.length)throw new AggregateError(errors,'Plugin cleanup failed.')
+    })
+  }
+  #source(id: string): PluginSource { const source = this.#sources.get(id); if (!source) throw new Error(`Plugin '${id}' is not installed.`); return source }
+  #remember(source: PluginSource): void {
+    this.#sources.set(source.manifest.id, Object.freeze({manifest: snapshotManifest(source.manifest), trust: source.trust, load: source.load.bind(source)}))
+  }
+  #activeIds(): Set<string> { return new Set(this.list().filter(item => item.status === 'active').map(item => item.manifest.id)) }
+  #assertRestored(active: Set<string>, owner: string): void {
+    const waiting = this.list().filter(item => item.manifest.id !== owner && active.has(item.manifest.id) && item.status !== 'active')
+    if (waiting.length) throw new Error('Plugin update left active consumers unavailable: ' + waiting.map(item => item.manifest.id).join(', '))
+  }
+  async #resetFailed(active: Set<string>): Promise<void> {
+    for (const item of this.list()) if (active.has(item.manifest.id) && item.status === 'failed') await super.deactivate(item.manifest.id)
+  }
+  #enqueueComposition<T>(work: () => Promise<T>): Promise<T> {
+    const run = async () => {
+      this.#composing = true
+      try { return await work() }
+      finally {
+        this.#composing = false
+        for (const listener of this.#compositionListeners) { try { listener() } catch {} }
+      }
+    }
+    const task = this.#tail.then(run, run); this.#tail = task.catch(() => undefined); return task
+  }
+  #upstream(owner: string): Set<string> {
+    const upstream = new Set<string>([owner])
+    const visit = (id: string) => {
+      const item = this.list().find(item => item.manifest.id === id)
+      if (!item) return
+      const dependencies = item.status === 'active'
+        ? [...this.serviceBindings(id).values()]
+        : (item.manifest.services?.requires ?? []).filter(service => this.services.has(service)).map(service => this.services.resolve(service).ownerId)
+      for (const dependency of dependencies) if (!upstream.has(dependency)) {upstream.add(dependency);visit(dependency)}
+    }
+    visit(owner)
+    return upstream
+  }
+  async #suspend(changed: Set<string>, owner: string): Promise<string[]> {
+    const affected = new Set<string>(), ordered: string[] = []
+    const upstream = this.#upstream(owner)
+    const visit = (services: Set<string>) => {
+      for (const item of this.list()) {
+        const id = item.manifest.id
+        if (upstream.has(id) || affected.has(id) || item.status !== 'active' || !item.manifest.services?.requires.some(service => services.has(service))) continue
+        affected.add(id)
+        visit(new Set(item.manifest.services.provides ?? []))
+        ordered.push(id)
+      }
+    }
+    visit(changed)
+    for (const id of ordered) await super.deactivate(id)
+    return ordered
+  }
+  async #resume(skip?: string): Promise<void> {
+    const attempted = new Set<string>(), errors: unknown[] = []
+    let activations = 0
+    const limit = Math.max(8, this.list().length ** 2 * 2)
+    let progress = true
+    while (progress) {
+      progress = false
+      for (const item of this.list()) {
+        const id = item.manifest.id
+        const status = this.list().find(record => record.manifest.id === id)?.status
+        if (id === skip || attempted.has(id) || !this.#wanted.has(id) || status === 'active' || status === 'failed') continue
+        if (!item.manifest.services?.requires.every(service => this.services.has(service)) && item.manifest.services?.requires.length) continue
+        attempted.add(id)
+        if (++activations > limit) throw new Error('Plugin service dependencies could not settle.')
+        try {
+          // A waiting replacement may become ready after another provider loads.
+          // Rebind existing consumers just as for an explicit enable operation.
+          for (const stopped of await this.#suspend(new Set(item.manifest.services?.provides ?? []), id)) attempted.delete(stopped)
+          await super.activate(id); progress = true
+        } catch (error) { errors.push(error) }
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Plugin composition could not activate: ' + errors.map(String).join('; '))
   }
 }
 
@@ -447,10 +678,13 @@ export class UiSurfaceRegistry extends ContributionRegistry<UiSurfaceContributio
     return super.register(ownerId, Object.freeze({ ...contribution }))
   }
   resolve(name: string): RegisteredContribution<UiSurfaceContribution> | undefined {
+    return this.resolveAll(name)[0]
+  }
+  resolveAll(name: string): RegisteredContribution<UiSurfaceContribution>[] {
     const entries=this.list().filter(entry=>entry.contribution.surface===name)
     const shadowed=new Set(entries.map(entry=>this.#instanceOwners.get(entry.ownerId)).filter(Boolean))
     return entries.filter(entry=>!shadowed.has(entry.ownerId))
-      .sort((a, b) => (a.contribution.priority ?? 0) - (b.contribution.priority ?? 0))[0]
+      .sort((a, b) => (a.contribution.priority ?? 0) - (b.contribution.priority ?? 0))
   }
 }
 export const hostToolsServiceId = 'host.tools'

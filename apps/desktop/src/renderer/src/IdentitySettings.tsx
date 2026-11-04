@@ -1,3 +1,4 @@
+import { appApi } from './app-api'
 import { useRef, useState } from 'react'
 import { backupPasswordIssue, refreshAfterCompletedAction } from './settings-actions'
 
@@ -17,20 +18,20 @@ export function IdentitySettings({connected}:{connected:boolean}) {
     <div className="network-buttons">
       <button className="secondary-button" disabled={busy} onClick={()=>changeMode('backup')}>备份身份</button>
       <button className="secondary-button" disabled={busy} onClick={()=>changeMode('restore')}>导入身份</button>
-      <button className="secondary-button" disabled={busy} onClick={()=>void run(async()=>setProfiles(await window.moreThanChat.getIdentityProfiles()))}>本机身份</button>
+      <button className="secondary-button" disabled={busy} onClick={()=>void run(async()=>setProfiles(await appApi.getIdentityProfiles()))}>本机身份</button>
     </div>
     {mode&&<form onKeyDown={event=>{if(event.key==='Enter'&&(event.nativeEvent.isComposing||event.nativeEvent.keyCode===229))event.preventDefault()}} onSubmit={e=>{e.preventDefault();void run(async()=>{
       const issue=backupPasswordIssue(password,mode==='backup'?confirmation:undefined)
       if(issue)throw new Error(issue)
       if(mode==='backup'){
-        const saved=await window.moreThanChat.backupIdentity(password)
+        const saved=await appApi.backupIdentity(password)
         changeMode(null);setNotice(saved?'加密身份备份已保存。它不包含聊天记录、插件或 API 密钥。':'已取消保存，当前身份不变。')
       }else{
-        const result=await window.moreThanChat.restoreIdentity(password)
+        const result=await appApi.restoreIdentity(password)
         changeMode(null)
         if(!result){setNotice('已取消导入，当前身份不变。');return}
         setNotice('身份已导入。选择下方身份即可重启切换，当前数据会保留。')
-        const refreshed=await refreshAfterCompletedAction(()=>window.moreThanChat.getIdentityProfiles())
+        const refreshed=await refreshAfterCompletedAction(()=>appApi.getIdentityProfiles())
         if(refreshed.value)setProfiles(refreshed.value)
         if(refreshed.refreshFailed)setError('身份已导入，但列表刷新失败；无需重新导入，请点击「本机身份」重试。')
       }
@@ -42,18 +43,18 @@ export function IdentitySettings({connected}:{connected:boolean}) {
       <div className="network-buttons"><button type="submit" className="primary-button" disabled={busy||!!backupPasswordIssue(password,mode==='backup'?confirmation:undefined)}>{busy?'处理中…':mode==='backup'?'加密并保存文件':'选择备份文件'}</button><button type="button" className="secondary-button" disabled={busy} onClick={()=>changeMode(null)}>取消</button></div>
     </form>}
     {profiles?.profiles.map(p=><div className="contact-row" key={p.id}><span><small>{p.userId}</small></span><button disabled={busy||p.id===profiles.current} onClick={()=>void run(async()=>{
-      const result=await window.moreThanChat.switchIdentity(p.id)
+      const result=await appApi.switchIdentity(p.id)
       setNotice(result==='cancelled'?'已取消切换，仍使用当前身份。':result==='unchanged'?'已在使用此身份。':'已请求切换，等待保存当前数据并重启。')
     })}>{p.id===profiles.current?'当前身份':'切换'}</button></div>)}
-    <div className="network-buttons"><button className="secondary-button" disabled={busy||!connected} onClick={()=>void run(async()=>setDevices(await window.moreThanChat.getDevices()))}>查看本服设备</button></div>
+    <div className="network-buttons"><button className="secondary-button" disabled={busy||!connected} onClick={()=>void run(async()=>setDevices(await appApi.getDevices()))}>查看本服设备</button></div>
     <p className="settings-note">已登记设备分别收取新消息，离线后会补投。移除设备会清除仅等待它接收的消息，但不会删除它已有的本地记录，也不会吊销身份密钥。</p>
     {!connected&&<p className="settings-note">连接原中心服务器后可查看和管理设备；身份备份不需要联网。</p>}
     {devices?.length===0&&<p className="settings-note">未查到已登记设备，可重新读取列表。</p>}
     {devices?.map(d=><div className="contact-row" key={d.id}><span>{d.name}{d.current?' · 此设备':''}<small>{d.id.slice(-8)} · 最近连接 {new Date(d.lastSeen).toLocaleString()}</small></span>{!d.current&&<button disabled={busy||!connected} onClick={()=>void run(async()=>{
-      const result=await window.moreThanChat.removeDevice(d.id)
+      const result=await appApi.removeDevice(d.id)
       if(result==='cancelled'){setNotice('已取消移除，设备保持不变。');return}
       setDevices(current=>current?.filter(device=>device.id!==d.id)??null);setNotice('设备已移除。其他设备的收件不受影响。')
-      const refreshed=await refreshAfterCompletedAction(()=>window.moreThanChat.getDevices())
+      const refreshed=await refreshAfterCompletedAction(()=>appApi.getDevices())
       if(refreshed.value)setDevices(refreshed.value)
       if(refreshed.refreshFailed)setError('设备已移除，但列表刷新失败，请点击「查看本服设备」重试。')
     })}>移除</button>}</div>)}

@@ -8,6 +8,7 @@ import type {
   ServerSnapshot,
   MessageRetraction,
   AttachmentRef,
+  UserProfileInput,
 } from '@more-than-chat/central-protocol'
 import {
   parseDirectory,
@@ -16,6 +17,7 @@ import {
   parseMessageRetraction,
   createMessageReference,
   messageContentDescriptor,
+  parseUserProfileInput,
 } from '@more-than-chat/central-protocol'
 import { ClientIdentity } from './identity-store'
 import { AttachmentStore } from './attachments'
@@ -79,6 +81,7 @@ export class CentralClient {
   #pluginListeners = new Set<
     (event: Extract<RelayEvent, { kind: 'plugin' }>) => void
   >()
+  #pluginGap: {serverId: string; cursor: string | null} | undefined
   constructor(
     readonly identity: ClientIdentity,
     readonly store: ChatStore,
@@ -120,6 +123,7 @@ export class CentralClient {
       await this.connect(
         this.#snapshot.address,
         this.#snapshot.displayName,
+        false,
       ).catch(() => undefined)
   }
   snapshot(): ServerSnapshot {
@@ -152,7 +156,20 @@ export class CentralClient {
     listener: (event: Extract<RelayEvent, { kind: 'plugin' }>) => void,
   ): () => void {
     this.#pluginListeners.add(listener)
-    return () => this.#pluginListeners.delete(listener)
+    const gap = this.#pluginGap
+    this.#pluginGap = undefined
+    if (gap && gap.serverId === this.#snapshot.serverId) {
+      // A service hot update temporarily disposes the forwarding listener while
+      // the underlying connection keeps receiving. Replay only that gap, once.
+      for (const event of this.store.pluginEventsAfter(gap.serverId, gap.cursor)) {
+        try { listener(event as Extract<RelayEvent, {kind: 'plugin'}>) } catch {}
+      }
+    }
+    return () => {
+      if (!this.#pluginListeners.delete(listener) || this.#pluginListeners.size) return
+      const serverId = this.#snapshot.serverId
+      if (serverId) this.#pluginGap = {serverId, cursor: this.store.pluginEventCursor(serverId)}
+    }
   }
   #emit(): void {
     for (const callback of this.#listeners) callback(this.snapshot())
@@ -227,7 +244,7 @@ export class CentralClient {
     }
     return value
   }
-  async connect(address: string, displayName: string): Promise<ServerSnapshot> {
+  async connect(address: string, displayName: string, updateDisplayName = true): Promise<ServerSnapshot> {
     const targetAddress=normalizeServerAddress(address)
     const epoch=++this.#epoch
     await this.#stopConnection()
@@ -240,6 +257,7 @@ export class CentralClient {
       error: null,
       serverId: null,
       directory: null,
+      profileSupported: false,
     }
     this.#emit()
     const controller=new AbortController()
@@ -265,11 +283,13 @@ export class CentralClient {
       this.#supportsReceipts = Array.isArray(ping.features) && ping.features.includes('message-receipts-v1')
       this.#supportsActions = Array.isArray(ping.features) && ping.features.includes('message-actions-v1')
       this.#supportsDevices = Array.isArray(ping.features) && ping.features.includes('device-delivery-v1')
+      this.#snapshot.profileSupported = Array.isArray(ping.features) && ping.features.includes('user-profiles-v1')
       this.#deviceId ??= await loadDeviceId(this.directory)
       if(epoch!==this.#epoch)throw new Error('连接已取消')
       const challenge = await request('challenge', 'POST', {
         publicKey: this.identity.publicKey,
         displayName: this.#snapshot.displayName,
+        preserveProfileName: !updateDisplayName,
         features:['message-actions-v1','group-program-v1','large-groups-v1','executable-plugin-v1'],
         ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
       })
@@ -294,11 +314,11 @@ export class CentralClient {
         mode: session.mode,
         directory: session.directory,
       }
+      this.#projectDirectory(session.directory)
       await this.#persistSettings({address:targetAddress,displayName:this.#snapshot.displayName},epoch)
       if(epoch!==this.#epoch)throw new Error('连接已取消')
       this.store.rememberServerOrigin(session.serverId,targetAddress)
       this.#configured = true
-      this.#projectDirectory(session.directory)
       this.#emit()
       void this.#loop(epoch, this.#controller.signal)
       void this.#drain()
@@ -314,6 +334,7 @@ export class CentralClient {
               void this.connect(
                 this.#snapshot.address,
                 this.#snapshot.displayName,
+                false,
               ).catch(() => undefined)
           }, 5000)
       }
@@ -331,6 +352,7 @@ export class CentralClient {
       await this.#persistSettings({address:this.#snapshot.address,displayName:this.#snapshot.displayName,autoConnect:false},epoch)
   }
   async #stopConnection():Promise<void> {
+    this.#pluginGap = undefined
     if (this.#workerTimer) clearTimeout(this.#workerTimer)
     this.#workerTimer = undefined
     this.#wantConnection = false
@@ -457,6 +479,7 @@ export class CentralClient {
             const challenge = await request('challenge', {
               publicKey: this.identity.publicKey,
               displayName: this.#snapshot.displayName,
+              preserveProfileName: true,
               features:['message-actions-v1','group-program-v1','large-groups-v1','executable-plugin-v1'],
               ...(this.#supportsDevices?{features:['message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1'],deviceId:this.#deviceId,deviceName:hostname().slice(0,80)||'PC'}:{}),
             })
@@ -496,6 +519,14 @@ export class CentralClient {
     this.#projectDirectory(directory)
     this.#emit()
     return this.snapshot()
+  }
+  async updateProfile(serverId: string, input: UserProfileInput): Promise<ServerSnapshot> {
+    if (serverId !== this.#snapshot.serverId || this.#snapshot.status !== 'connected') throw new Error('服务器连接已改变，请重新打开个人主页')
+    if (!this.#snapshot.profileSupported) throw new Error('此中心服务器需要升级后才能编辑个人资料')
+    const profile = parseUserProfileInput(input), epoch = this.#epoch
+    const snapshot = await this.action('profile/update', profile)
+    await this.#persistSettings({ address: snapshot.address, displayName: snapshot.displayName }, epoch)
+    return snapshot
   }
   pluginInbox(groupId: string, pluginId: string): unknown[] {
     if (!this.#snapshot.serverId) return []
@@ -539,6 +570,7 @@ export class CentralClient {
       id: this.identity.userId,
       displayName: this.#snapshot.displayName,
       avatar: this.#snapshot.displayName.slice(0, 2),
+      avatarColor: directory.self.avatarColor ?? null,
     }
     for (const conversation of state.conversations.filter(c=>c.serverId===this.#snapshot.serverId)) conversation.unavailable = true
     for (const item of [
@@ -547,12 +579,14 @@ export class CentralClient {
         targetId: friend.id,
         title: friend.displayName,
         kind: 'direct',
+        avatarColor: friend.avatarColor ?? null,
       })),
       ...directory.groups.map((group) => ({
         remoteId: group.id,
         targetId: group.id,
         title: group.name,
         kind: 'group',
+        avatarColor: null,
       })),
     ]) {
       const id = this.#localId(item.remoteId),
@@ -562,6 +596,7 @@ export class CentralClient {
         title: item.title,
         subtitle: '中心服务器 · ' + (item.kind === 'group' ? '群聊' : '好友'),
         avatar: item.title.slice(0, 2),
+        avatarColor: item.avatarColor,
         accent: item.kind === 'group' ? '#655be7' : '#21855e',
         kind: item.kind,
         unread: existing?.unread ?? 0,

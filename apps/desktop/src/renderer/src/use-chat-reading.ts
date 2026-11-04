@@ -21,19 +21,31 @@ export function useChatReading(conversationId:string|undefined,messages:readonly
   const bindScroll=useCallback((node:HTMLElement|null)=>{scrollRef.current=node;setScrollNode(node)},[])
   const bindContent=useCallback((node:HTMLDivElement|null)=>{contentRef.current=node;setContentNode(node)},[])
   const stick=useRef(true),previous=useRef<string|undefined>(undefined)
-  const [atBottom,setAtBottom]=useState(true),[focused,setFocused]=useState(false)
+  const [atBottom,setAtBottom]=useState(true),[focusRevision,setFocusRevision]=useState(0)
   const last=messages.at(-1),signature=last?`${last.id}:${last.text}:${messages.length}`:''
   useEffect(()=>{
-    let live=true,changed=false
-    const stop=window.moreThanChat.onWindowFocusChanged?.(value=>{changed=true;if(live)setFocused(value)})
-    void window.moreThanChat.getWindowFocus?.().then(value=>{if(live&&!changed)setFocused(value)}).catch(()=>undefined)
-    return()=>{live=false;stop?.();void window.moreThanChat.setReadingConversation?.(null).catch(()=>undefined)}
+    let live=true
+    const refresh=()=>{if(live)setFocusRevision(revision=>revision+1)}
+    // The main process clears its reader on every blur. Preserve each focus
+    // notification even if React batches blur/focus into the same final value.
+    // Focus is authoritative in chat:set-reading's main-process handler. Native
+    // and Chromium events are invalidations, not a second cached focus gate.
+    const stop=window.moreThanChat.onWindowFocusChanged?.(refresh)
+    window.addEventListener('focus',refresh);window.addEventListener('blur',refresh)
+    document.addEventListener('visibilitychange',refresh)
+    void window.moreThanChat.getWindowFocus?.().then(refresh).catch(()=>undefined)
+    return()=>{
+      live=false;stop?.()
+      window.removeEventListener('focus',refresh);window.removeEventListener('blur',refresh)
+      document.removeEventListener('visibilitychange',refresh)
+      void window.moreThanChat.setReadingConversation?.(null).catch(()=>undefined)
+    }
   },[])
   const notify=useCallback(()=>{
     const node=scrollRef.current
-    const id=conversationId&&node&&stick.current&&isReadingBottom(node)&&isReadingVisible(node)&&!blocked&&focused&&document.visibilityState==='visible'?conversationId:null
+    const id=conversationId&&node&&stick.current&&isReadingBottom(node)&&isReadingVisible(node)&&!blocked&&document.visibilityState==='visible'?conversationId:null
     void window.moreThanChat.setReadingConversation?.(id).catch(()=>undefined)
-  },[conversationId,blocked,focused])
+  },[conversationId,blocked,focusRevision])
   const latest=useRef({positionBlocked,notify})
   latest.current={positionBlocked,notify}
   const settle=useCallback(()=>{
@@ -54,7 +66,7 @@ export function useChatReading(conversationId:string|undefined,messages:readonly
     // Only explicit local send/navigation gestures may resume bottom-following.
     previous.current=conversationId
     settle()
-  },[conversationId,signature,blocked,positionBlocked,focused,unread,scrollNode,settle])
+  },[conversationId,signature,blocked,positionBlocked,focusRevision,unread,scrollNode,settle])
   useLayoutEffect(()=>{
     const node=scrollRef.current,content=contentRef.current
     if(!node||!content)return

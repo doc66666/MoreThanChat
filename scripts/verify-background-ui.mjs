@@ -70,6 +70,7 @@ try{
   // Use the real settings controls, then close the native window (not Browser.close).
   await evaluate(b.client,`[...document.querySelectorAll('button')].find(b=>b.title==='设置').click()`)
   await poll(b.client,'Boolean(document.querySelector("[data-desktop-option=closeToTray]"))')
+  await evaluate(b.client,'document.querySelector("[data-settings-target=desktop]").click()')
   await evaluate(b.client,'document.querySelector("[data-desktop-option=closeToTray]").click()')
   await poll(b.client,'window.moreThanChat.getDesktopSettings().then(s=>s.preferences.closeToTray)')
   await evaluate(b.main,'qaWindow().close()')

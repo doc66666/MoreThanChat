@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2022", "module": "CommonJS", "moduleResolution": "Node",
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals", "node"]
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

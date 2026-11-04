@@ -1,7 +1,8 @@
+import { appApi } from './app-api'
 import { useEffect, useRef, useState } from 'react'
-import type { Directory, Group } from '@more-than-chat/central-protocol'
+import type { Directory, Group, Member } from '@more-than-chat/central-protocol'
 import { MAX_GROUP_MEMBERS } from '@more-than-chat/central-protocol'
-export function GroupManager({group,directory,userId,connected}:{group:Group;directory:Directory;userId:string;connected:boolean}) {
+export function GroupManager({group,directory,userId,connected,onProfile}:{group:Group;directory:Directory;userId:string;connected:boolean;onProfile?:(member:Member)=>void}) {
   const [name,setName]=useState(group.name),[invite,setInvite]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('')
   const [confirmation,setConfirmation]=useState<{route:string;data:unknown;label:string}|null>(null)
   const [notice,setNotice]=useState('')
@@ -15,7 +16,7 @@ export function GroupManager({group,directory,userId,connected}:{group:Group;dir
     if(inFlight.current)return
     if(!connected){setError('请连接此群所在的服务器后再操作。');return}
     inFlight.current=true;setBusy(true);setError('');setNotice('')
-    try{await window.moreThanChat.serverAction(route,data);setConfirmation(null);setNotice(success);if(route==='groups/invite')setInvite('')}catch(e){setError(e instanceof Error?e.message:'操作失败')}finally{inFlight.current=false;setBusy(false)}
+    try{await appApi.serverAction(route,data);setConfirmation(null);setNotice(success);if(route==='groups/invite')setInvite('')}catch(e){setError(e instanceof Error?e.message:'操作失败')}finally{inFlight.current=false;setBusy(false)}
   }
   const confirm=(route:string,label:string,memberId?:string)=>setConfirmation({route,data:{groupId:group.id,...(memberId?{userId:memberId}:{})},label})
   return <details className="group-manager" data-group-management>
@@ -25,7 +26,7 @@ export function GroupManager({group,directory,userId,connected}:{group:Group;dir
     {error&&<p className="settings-error" role="alert">{error}</p>}
     {(busy||notice)&&<p className="settings-note" role="status">{busy?'正在处理…':notice}</p>}
     {group.members.map(member=><div className="group-member" key={member.id} data-group-member={member.id}>
-      <div><strong>{member.displayName}{member.id===userId?'（我）':''}</strong><small>{member.id===group.ownerId?'管理员':member.online?'在线':'离线'}</small></div>
+      {onProfile ? <button className="group-member-profile" data-member-profile={member.id} onClick={() => onProfile(member)}><strong>{member.displayName}{member.id===userId?'（我）':''}</strong><small>{member.id===group.ownerId?'管理员':member.online?'在线':'离线'} · 查看主页</small></button> : <div><strong>{member.displayName}{member.id===userId?'（我）':''}</strong><small>{member.id===group.ownerId?'管理员':member.online?'在线':'离线'}</small></div>}
       {owner&&member.id!==userId&&<div className="member-actions"><button disabled={disabled} data-transfer-owner={member.id} onClick={()=>confirm('groups/transfer','将管理员转让给 '+member.displayName,member.id)}>转让</button><button disabled={disabled} data-remove-member={member.id} onClick={()=>confirm('groups/kick','移出成员 '+member.displayName,member.id)}>移出</button></div>}
     </div>)}
     {owner&&<>

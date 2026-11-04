@@ -54,6 +54,7 @@ beforeEach(async()=>{
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'})
   ;({App}=await import('../src/renderer/src/App'))
   ;({uiSurfaceRegistry:surfaces}=await import('../src/renderer/src/plugin-host'))
+  await (await import('../src/renderer/src/plugin-host')).startBundledPlugins()
   container=document.createElement('div');document.body.append(container);root=createRoot(container)
 })
 afterEach(async()=>{await act(async()=>root.unmount());for(const dispose of disposers)dispose();container.remove();vi.restoreAllMocks();vi.unstubAllGlobals();frames.clear()})
@@ -102,4 +103,30 @@ it('does not let an old latest animation frame move a newer history navigation',
   await act(async()=>container.querySelector<HTMLElement>('[data-history-older]')!.click())
   await act(async()=>historyResolve!(page('direct')));await framesTick()
   expect(node().scrollTop).toBe(0);expect(receipts).toHaveBeenLastCalledWith(null)
+})
+
+it('keeps the live conversation and DOM across service replacement, rollback and default restoration',async()=>{
+  const {pluginRuntime}=await import('../src/renderer/src/plugin-host')
+  const manifest={manifestVersion:1,id:'test.live-api',version:'1.0.0',displayName:'Live API',description:'Composed provider fixture',targets:['pc-ui'],permissions:['client.trusted'],engine:{moreThanChat:'^0.1.0'},services:{requires:['model.api'],provides:['model.api']}} as const
+  await act(async()=>root.render(h(App)));await framesTick()
+  await click('[data-conversation-id="group"]')
+  const timeline=node()
+  const provider={manifest,trust:'trusted' as const,load:async()=>({manifest,activate(ctx:import('@more-than-chat/plugin-runtime').PluginContext){
+    const previous=ctx.getService<Window['moreThanChat']>('model.api')
+    ctx.provideService('model.api',{...previous,getModelSettings:async()=>({...await previous.getModelSettings(),model:'replacement'})})
+  }})}
+  pluginRuntime.install(provider)
+  try {
+    await act(async()=>pluginRuntime.activate(manifest.id));await framesTick()
+    expect(node()).toBe(timeline)
+    expect(container.querySelector('.chat-identity h1')?.textContent).toBe('group')
+    await act(async()=>{await expect(pluginRuntime.replace({...provider,load:async()=>({manifest,activate(){throw Error('broken version')}})})).rejects.toThrow('broken version')})
+    expect(node()).toBe(timeline)
+    // The re-bound event subscription still receives new messages exactly once.
+    state.messages.group!.push({...state.messages.group![0]!,id:'live-group',text:'arrived after update'})
+    await act(async()=>events.get('onCentralChat')!(structuredClone(state)))
+    expect(container.querySelectorAll('[data-message-id="live-group"]')).toHaveLength(1)
+  } finally {await act(async()=>pluginRuntime.uninstall(manifest.id))}
+  expect(node()).toBe(timeline)
+  expect(container.querySelector('.chat-identity h1')?.textContent).toBe('group')
 })

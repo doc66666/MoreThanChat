@@ -9,6 +9,7 @@ interface HostPingResult {
 }
 
 const api = {
+  restoreAppPlugins: ():Promise<void> => ipcRenderer.invoke('app:plugins:restore-defaults'),
   accessChat: (request:import('@more-than-chat/protocol').ChatAccessRequest):Promise<import('@more-than-chat/protocol').ChatAccessResult> => ipcRenderer.invoke('chat:access',request),
   getFirstUnread: (id:string):Promise<string|null> => ipcRenderer.invoke('chat:first-unread',id),
   managePlugins: (request:import('@more-than-chat/protocol').PluginManagementRequest):Promise<import('@more-than-chat/protocol').PluginManagementResult> => ipcRenderer.invoke('host:plugins:manage',request),
@@ -70,7 +71,9 @@ const api = {
   getPluginInbox:(groupId:string,pluginId:string)=>ipcRenderer.invoke('central:plugin-inbox',{groupId,pluginId}),
   connectServer:(address:string,displayName:string)=>ipcRenderer.invoke('central:connect',{address,displayName}),
   disconnectServer:()=>ipcRenderer.invoke('central:disconnect'),
-  serverAction:(route:string,data:unknown)=>ipcRenderer.invoke('central:action',{route,data}),
+  serverAction:(route:string,data:unknown,serverId?:string)=>ipcRenderer.invoke('central:action',{route,data,serverId}),
+  copyUserId:(userId:string)=>ipcRenderer.invoke('central:copy-user-id',userId),
+  updateUserProfile:(serverId:string,profile:unknown)=>ipcRenderer.invoke('central:profile',{serverId,profile}),
   groupPluginConsent:(input:unknown)=>ipcRenderer.invoke('central:plugin-consent',input),
   onGroupPluginConsentChanged:(listener:()=>void)=>{const handler=()=>listener();ipcRenderer.on('central:plugin-consent-changed',handler);return()=>ipcRenderer.removeListener('central:plugin-consent-changed',handler)},
   submitGroupDraft:(input:unknown)=>ipcRenderer.invoke('central:submit-draft',input),

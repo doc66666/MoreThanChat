@@ -6,6 +6,7 @@ export interface Profile {
   id: string
   displayName: string
   avatar: string
+  avatarColor?: number | null
 }
 
 export interface Conversation {
@@ -13,6 +14,7 @@ export interface Conversation {
   title: string
   subtitle: string
   avatar: string
+  avatarColor?: number | null
   accent: string
   kind: ConversationKind
   unread: number

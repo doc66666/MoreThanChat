@@ -31,15 +31,15 @@ export function setThemePreference(value: ThemePreference) {
   applyTheme()
 }
 
-systemTheme.addEventListener('change', () => {
-  if (preference === 'system') applyTheme()
-})
-window.addEventListener('storage', event => {
-  if (event.key !== storageKey) return
-  preference = event.newValue === 'dark' || event.newValue === 'system' ? event.newValue : 'light'
-  applyTheme()
-})
-applyTheme()
+export function startAppearance() {
+  const changed = () => {if (preference === 'system') applyTheme()}
+  const stored = (event:StorageEvent) => {
+    if(event.key!==storageKey)return
+    preference=event.newValue==='dark'||event.newValue==='system'?event.newValue:'light';applyTheme()
+  }
+  systemTheme.addEventListener('change',changed);window.addEventListener('storage',stored);applyTheme()
+  return () => {systemTheme.removeEventListener('change',changed);window.removeEventListener('storage',stored)}
+}
 
 const subscribe = (listener: () => void) => {
   listeners.add(listener)

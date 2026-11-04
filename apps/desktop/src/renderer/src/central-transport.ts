@@ -7,6 +7,7 @@ import {
   definePlugin,
   type PluginManifestV1,
 } from '@more-than-chat/plugin-runtime'
+import { appApi } from './app-api'
 export const centralTransport: ChatTransportPlugin = {
   id: 'builtin.central',
   version: '0.1.0',
@@ -17,7 +18,7 @@ export const centralTransport: ChatTransportPlugin = {
     async connect() {},
     async disconnect() {},
     async send(input) {
-      return window.moreThanChat.sendCentralMessage({
+      return appApi.sendCentralMessage({
         conversationId: input.conversationId,
         clientMessageId: input.clientMessageId,
         text: input.text,

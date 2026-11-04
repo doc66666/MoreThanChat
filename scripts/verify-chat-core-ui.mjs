@@ -103,6 +103,7 @@ try {
   await waitForExpression(session.client,'!document.querySelector("[data-history-latest]") && document.body.innerText.includes("原有会话已保留")')
   await evaluate(session.client, `document.querySelector('button[title="设置"]')?.click()`)
   await waitForExpression(session.client, `Boolean(document.querySelector('.settings-drawer'))`)
+  await evaluate(session.client, `document.querySelector('[data-settings-target="model"]').click()`)
   for (const [field, value] of Object.entries({ provider: 'openai-compatible', 'base-url': `http://127.0.0.1:${server.address().port}`, model: 'qa-chat-core', key: credential })) {
     await evaluate(session.client, `(() => { const node=document.querySelector('[data-model-field="${field}"]'); const prototype=node.tagName==='SELECT'?HTMLSelectElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(prototype,'value').set.call(node,${JSON.stringify(value)});node.dispatchEvent(new Event(node.tagName==='SELECT'?'change':'input',{bubbles:true})); })()`)
   }

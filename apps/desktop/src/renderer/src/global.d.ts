@@ -1,5 +1,5 @@
 export {}
-import type { AttachmentRef, WireAttachment, ServerSnapshot, RelayEvent } from '@more-than-chat/central-protocol'
+import type { AttachmentRef, WireAttachment, ServerSnapshot, RelayEvent, UserProfileInput } from '@more-than-chat/central-protocol'
 
 import type {
   HostPluginCatalog,
@@ -114,7 +114,9 @@ declare global {
       getPluginInbox(groupId:string,pluginId:string):Promise<Extract<RelayEvent,{kind:'plugin'}>[]>
       connectServer(address:string,displayName:string):Promise<ServerSnapshot>
       disconnectServer():Promise<void>
-      serverAction(route:string,data:unknown):Promise<ServerSnapshot>
+      serverAction(route:string,data:unknown,serverId?:string):Promise<ServerSnapshot>
+      copyUserId(userId:string):Promise<void>
+      updateUserProfile(serverId:string,profile:UserProfileInput):Promise<ServerSnapshot>
       groupPluginConsent(input:{groupId:string;pluginId:string;digest:string;decision?:'loaded'|'declined'}):Promise<'pending'|'loaded'|'declined'>
       onGroupPluginConsentChanged(listener:()=>void):()=>void
       submitGroupDraft(input:{serverId:string;groupId:string;draftId:string;revision:number;slot:string;confirmed:true}):Promise<ServerSnapshot>
@@ -133,6 +135,7 @@ declare global {
       getAppInfo(): Promise<{ version: string; platform: string }>
       getHostStatus(): Promise<HostStatusSnapshot>
       getHostPlugins(): Promise<HostPluginCatalog>
+      restoreAppPlugins():Promise<void>
       setHostPluginEnabled(pluginId: string, enabled: boolean): Promise<HostPluginCatalog>
       invokeHostTool(pluginId: string, toolId: string, input?: string): Promise<{ generation: number; text: string; replaceDraft?: boolean }>
       pingHost(): Promise<{

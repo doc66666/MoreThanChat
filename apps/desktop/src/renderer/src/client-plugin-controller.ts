@@ -15,10 +15,15 @@ export class ClientPluginController {
   constructor(readonly loader: ClientPluginLoader, readonly bridge: ClientPluginBridge, readonly changed: () => void) {}
   start(): Promise<void> {
     return this.#started ??= this.#enqueue(async () => {
-      for (const pack of await this.bridge.getClientPlugins()) {
-        if (!pack.enabled) continue
-        try {await this.loader.enable(pack)}
-        catch (error) {this.errors.set(pack.manifest.id, message(error))}
+      let pending = (await this.bridge.getClientPlugins()).filter(pack => pack.enabled)
+      while(pending.length) {
+        const retry:InstalledClientPackage[]=[]
+        for(const pack of pending) {
+          try {await this.loader.enable(pack);this.errors.delete(pack.manifest.id)}
+          catch(error){retry.push(pack);this.errors.set(pack.manifest.id,message(error))}
+        }
+        if(retry.length===pending.length)break
+        pending=retry
       }
     })
   }

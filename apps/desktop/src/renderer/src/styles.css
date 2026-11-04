@@ -4,82 +4,11 @@
   color: var(--text);
   background: var(--canvas);
   color-scheme: light;
-  --canvas: #faf9f6;
-  --surface: #fdfcf9;
-  --panel: #f3f1eb;
-  --rail: #eeece5;
-  --chrome: #f0eee8;
-  --surface-muted: #eeece5;
-  --hover: #e8e5dc;
-  --text: #30312d;
-  --text-secondary: #62645c;
-  --muted: #6c6e64;
-  --border: #dfdcd3;
-  --border-strong: #c9c3b8;
-  --accent: #b65332;
-  --accent-hover: #a44729;
-  --accent-text: #9b4529;
-  --accent-soft: #f3e4d9;
-  --accent-border: #dcb59c;
-  --on-accent: #fffaf5;
-  --own-bubble: #eee3d5;
-  --own-text: #4d392d;
-  --success: #48705b;
-  --success-soft: #e8eee7;
-  --success-border: #c8d6c9;
-  --warning: #8e692d;
-  --danger: #ab4741;
-  --danger-soft: #f6e7e3;
-  --danger-border: #dfb8ae;
-  --code-bg: #e8e5dd;
-  --inverse: #3a3b35;
-  --on-inverse: #faf9f6;
-  --shadow-color: #3029190c;
-  --focus-ring: #b653321a;
-  --highlight: #ffffff70;
-  --backdrop: #29282035;
-  --scrollbar: #c8c3b8;
-  --purple: var(--accent);
-  --purple-soft: var(--accent-soft);
+  /* Semantic colors live in design-system.css and are shared with plugin UI. */
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --canvas: #24283b;
-  --surface: #292e42;
-  --panel: #222639;
-  --rail: #1f2335;
-  --chrome: #1f2335;
-  --surface-muted: #292e42;
-  --hover: #323951;
-  --text: #c0caf5;
-  --text-secondary: #a9b1d6;
-  --muted: #949dbc;
-  --border: #343b55;
-  --border-strong: #495475;
-  --accent: #7aa2f7;
-  --accent-hover: #92b4ff;
-  --accent-text: #a4bffa;
-  --accent-soft: #303e5b;
-  --accent-border: #506894;
-  --on-accent: #1f2335;
-  --own-bubble: #333e5b;
-  --own-text: #d2dcfa;
-  --success: #a4c892;
-  --success-soft: #2b383c;
-  --success-border: #405453;
-  --warning: #e0af68;
-  --danger: #f7768e;
-  --danger-soft: #423044;
-  --danger-border: #74465b;
-  --code-bg: #1f2335;
-  --inverse: #c0caf5;
-  --on-inverse: #1f2335;
-  --shadow-color: #0c102033;
-  --focus-ring: #7aa2f71f;
-  --highlight: #c0caf508;
-  --backdrop: #15182785;
-  --scrollbar: #48516e;
 }
 
 * { box-sizing: border-box; }

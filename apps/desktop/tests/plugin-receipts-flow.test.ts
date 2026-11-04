@@ -17,6 +17,39 @@ async function until(check: () => boolean) {
   throw new Error('Plugin receipt recovery timeout')
 }
 
+it('replays only events received during a forwarding-listener hot update, without duplicates or history on reconnect', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mtc-plugin-rebind-'))
+  const app = createCentralServer({directory:path.join(root,'server'),mode:'public',adminToken:'qa-only-strong-admin-token-0001'})
+  const url = 'http://127.0.0.1:' + (await app.listen(0)).port
+  const store = await ChatStore.open(path.join(root,'client'));store.save(createSeedState())
+  const client = new CentralClient(await ClientIdentity.load(root,cipher),store,new AttachmentStore(path.join(root,'files')),root)
+  try {
+    await client.connect(url,'listener test')
+    const event = (id: string) => ({id,kind:'plugin' as const,groupId:'group',pluginId:'plugin',channel:'turn',payload:{id}})
+    store.savePluginEvent(app.serverId,event('old-history'))
+    const initial = vi.fn(), stop = client.onPlugin(initial)
+    expect(initial).not.toHaveBeenCalled()
+    stop()
+    store.savePluginEvent(app.serverId,event('during-update-1'))
+    store.savePluginEvent('other-server',event('foreign'))
+    store.savePluginEvent(app.serverId,event('during-update-2'))
+    const resumed = vi.fn(), stopResumed = client.onPlugin(resumed)
+    expect(resumed.mock.calls.map(call => call[0].id)).toEqual(['during-update-1','during-update-2'])
+    stop() // stale disposer cannot reset the new listener's cursor
+    const second = vi.fn(), stopSecond = client.onPlugin(second)
+    expect(second).not.toHaveBeenCalled()
+    stopResumed();stopSecond()
+    const again = vi.fn(), stopAgain = client.onPlugin(again)
+    expect(again).not.toHaveBeenCalled()
+    stopAgain()
+    store.savePluginEvent(app.serverId,event('before-disconnect'))
+    await client.disconnect(false)
+    await client.connect(url,'listener test')
+    const fresh = vi.fn();client.onPlugin(fresh)
+    expect(fresh).not.toHaveBeenCalled()
+  } finally {await client.disconnect(false);await app.close();store.close();await rm(root,{recursive:true,force:true})}
+})
+
 it.each(['before server commit', 'after server commit'])('recovers plugin ACK loss %s after restart without repeating the listener', async failure => {
   const root = await mkdtemp(path.join(tmpdir(), 'mtc-plugin-receipts-'))
   const clients: CentralClient[] = [], stores: ChatStore[] = []

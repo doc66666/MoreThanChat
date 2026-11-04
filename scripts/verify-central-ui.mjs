@@ -91,7 +91,7 @@ async function state(session) {
   return evaluate(session.client, 'window.moreThanChat.getServerState()')
 }
 async function connect(session, name) {
-  await click(session, 'button[title="联系人"]')
+  await click(session, '.brand-mark')
   await poll(session, 'Boolean(document.querySelector(".network-drawer"))')
   await input(session, '[data-server-field="address"]', url)
   await input(session, '[data-server-field="name"]', name)
@@ -124,7 +124,7 @@ async function openNetwork(session) {
       'Boolean(document.querySelector(".network-drawer"))',
     ))
   )
-    await click(session, 'button[title="联系人"]')
+    await click(session, '.brand-mark')
 }
 async function verifyIdentityAndDevices(aid,bid) {
   await openNetwork(a)
@@ -649,6 +649,8 @@ try {
   for (const [label, session] of [['a', a], ['b', b]]) {
     if (!session) continue
     try {
+      const reading = await evaluate(session.client, `(async()=>{const node=document.querySelector('.message-scroll'),box=node?.getBoundingClientRect();return {focused:await window.moreThanChat.getWindowFocus(),visibility:document.visibilityState,viewport:[innerWidth,innerHeight],scroll:node&&[node.scrollTop,node.scrollHeight,node.clientHeight],box:box?.toJSON(),hit:box&&document.elementFromPoint((box.left+box.right)/2,box.bottom-24)?.outerHTML,dialogs:[...document.querySelectorAll('[role="dialog"]')].map(n=>n.getAttribute('aria-label')),jump:document.querySelector('.jump-latest')?.outerHTML,history:document.querySelector('[data-history-latest]')?.outerHTML}})()`)
+      await writeFile(path.join(root, '.artifacts', `central-${label}-reading-failure.json`), JSON.stringify(reading, null, 2))
       console.error('Failure client ' + label + ': ' + JSON.stringify(await evaluate(session.client, `window.moreThanChat.getServerState().then(s=>({status:s.status,error:s.error,plugins:s.directory?.plugins,widgets:[...document.querySelectorAll('[data-group-plugin]')].map(n=>({text:n.innerText,entry:n.querySelector('[data-chain-entry]')?.value})),toast:document.querySelector('.toast')?.innerText}))`)))
       const capture = await session.client.send('Page.captureScreenshot', {format:'png',fromSurface:true})
       await writeFile(path.join(root,'.artifacts',`central-${packaged ? 'packaged-' : ''}${label}-failure.png`),Buffer.from(capture.data,'base64'))

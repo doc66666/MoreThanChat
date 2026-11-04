@@ -650,6 +650,18 @@ export class ChatStore {
       .reverse()
       .map((row) => JSON.parse(String(row.payload)) as unknown)
   }
+  /** Local relay cursor for a temporary listener gap; not plugin state storage. */
+  pluginEventCursor(serverId: string): string | null {
+    this.#assertOpen()
+    const row = this.#db.prepare('SELECT id FROM plugin_inbox WHERE server_id=? ORDER BY rowid DESC LIMIT 1').get(serverId)
+    return row ? String(row.id) : null
+  }
+  pluginEventsAfter(serverId: string, cursor: string | null): unknown[] {
+    this.#assertOpen()
+    return this.#db.prepare(`SELECT payload FROM plugin_inbox WHERE server_id=? AND rowid>COALESCE(
+      (SELECT rowid FROM plugin_inbox WHERE server_id=? AND id=?),0) ORDER BY rowid`)
+      .all(serverId, serverId, cursor).map(row => JSON.parse(String(row.payload)) as unknown)
+  }
 
   close(): void {
     if (this.#closed) return

@@ -22,6 +22,19 @@ export interface Member {
   id: string
   displayName: string
   online: boolean
+  bio?: string
+  avatarColor?: number | null
+}
+export const MAX_PROFILE_BIO = 160
+export interface UserProfileInput { displayName: string; bio: string; avatarColor: number | null }
+export function parseUserProfileInput(value: unknown): UserProfileInput {
+  const v = record(value)
+  if (Object.keys(v).some(key => !['displayName', 'bio', 'avatarColor'].includes(key))) throw new Error('无效个人资料字段')
+  const displayName = boundedText(v.displayName, 80).trim()
+  const bio = boundedText(v.bio, MAX_PROFILE_BIO).trim()
+  if (!displayName || /[\u0000-\u001f\u007f]/.test(displayName) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(bio)) throw new Error('昵称或签名包含无效字符')
+  if (v.avatarColor !== null && (!Number.isInteger(v.avatarColor) || Number(v.avatarColor) < 0 || Number(v.avatarColor) > 4)) throw new Error('无效头像配色')
+  return { displayName, bio, avatarColor: v.avatarColor as number | null }
 }
 export interface AttachmentRef {
   id: string
@@ -132,6 +145,7 @@ export interface ServerSnapshot {
   displayName: string
   error: string | null
   directory: Directory | null
+  profileSupported?: boolean
 }
 export type RelayEvent =
   | { id: string; kind: 'message'; message: RelayMessage }
@@ -258,10 +272,13 @@ function member(value: unknown): Member {
   const v = record(value)
   if (!validUid(v.id) || typeof v.online !== 'boolean')
     throw new Error('Invalid member')
+  if (v.avatarColor !== undefined && v.avatarColor !== null && (!Number.isInteger(v.avatarColor) || Number(v.avatarColor) < 0 || Number(v.avatarColor) > 4)) throw new Error('Invalid avatar color')
   return {
     id: v.id,
     displayName: boundedText(v.displayName, 80),
     online: v.online,
+    ...(v.bio === undefined ? {} : { bio: boundedText(v.bio, MAX_PROFILE_BIO) }),
+    ...(v.avatarColor === undefined ? {} : { avatarColor: v.avatarColor as number | null }),
   }
 }
 export function parseDirectory(value: unknown): Directory {
