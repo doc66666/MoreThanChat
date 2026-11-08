@@ -149,6 +149,7 @@ try{
  await openChat(b,sharedGroup,'groups');await sendCard(b,'先有消息后载入插件','<h2>共享渲染器历史卡片</h2>')
  await openChat(c,sharedGroup,'groups');const shared=await has(c,'先有消息后载入插件');await poll(c,`!!document.querySelector('${article(shared.id)} [data-message-fallback]')`)
  await panel(b);const select=`[data-client-plugin="${pluginId}"] [data-share-target]`
+ await poll(b,`[...document.querySelectorAll(${JSON.stringify(select+' option')})].some(option=>option.value===${JSON.stringify(sharedGroup)})`)
  await run(b,`(()=>{const n=document.querySelector(${JSON.stringify(select)});n.closest('details').open=true;Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(n,${JSON.stringify(sharedGroup)});n.dispatchEvent(new Event('change',{bubbles:true}));})()`)
  await click(b,`[data-client-plugin="${pluginId}"] [data-share-submit]`)
  await poll(a,`window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.groupId===${JSON.stringify(sharedGroup)}&&p.status==='pending'))`)
