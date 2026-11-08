@@ -81,7 +81,7 @@ try{
  await input(b,parent+' [data-share-target]',group);await click(b,parent+' [data-share-submit]')
  await poll(a,`window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.groupId===${JSON.stringify(group)}&&p.status==='pending'))`)
  const proposal=(await state(a)).directory.plugins.find(p=>p.groupId===group)
- await click(a,'button[title="联系人"]');await click(a,`[data-group-plugin-review="${proposal.pack.id}"] [data-approve-group-plugin]`);await closePanel(a)
+ await click(a,'button[title="联系人"]');await click(a,'[data-contacts-tab="requests"]');await click(a,`[data-group-plugin-review="${proposal.pack.id}"] [data-approve-group-plugin]`);await closePanel(a)
  await poll(b,`window.moreThanChat.getServerState().then(s=>s.directory.plugins.some(p=>p.digest===${JSON.stringify(proposal.digest)}&&p.status==='approved'))`)
  assert.equal(await evaluate(b.client,'globalThis.qaMediaLive??false'),false)
  await closePanel(b);await click(b,conversationSelector);await click(b,'button[title="插件"]')

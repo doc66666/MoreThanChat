@@ -1,4 +1,5 @@
 import { MODEL_USAGE_MAX_COUNT } from './model-limits';
+import {MESSAGE_CONTENT_SCHEMA} from '@more-than-chat/central-protocol';
 
 const protocolVersion = { const: 1 } as const;
 const nonEmptyString = { type: "string", minLength: 1, pattern: ".*\\S.*" } as const;
@@ -205,7 +206,7 @@ export const HOST_PROTOCOL_V1_JSON_SCHEMA = {
       {type:'object',additionalProperties:false,required:['action'],properties:{action:{const:'list'},offset:{type:'integer',minimum:0,maximum:Number.MAX_SAFE_INTEGER},limit:{type:'integer',minimum:1,maximum:100}}},
       {type:'object',additionalProperties:false,required:['action','conversationId'],properties:{action:{const:'history'},conversationId:boundedId,before:{type:'integer',minimum:0},after:{type:'integer',minimum:-1},around:boundedId,limit:{type:'integer',minimum:1,maximum:100}}},
       {type:'object',additionalProperties:false,required:['action','conversationId','messageId','format'],properties:{action:{const:'attachment'},conversationId:boundedId,messageId:boundedId,format:{enum:['text','base64','image']},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:65536}}},
-      {type:'object',additionalProperties:false,required:['action','conversationId','clientMessageId','text'],properties:{action:{const:'send'},conversationId:boundedId,clientMessageId:{...nonEmptyString,maxLength:80},text:{type:'string',maxLength:100000},attachmentMessageId:boundedId}},
+      {type:'object',additionalProperties:false,required:['action','conversationId','clientMessageId','text'],properties:{action:{const:'send'},conversationId:boundedId,clientMessageId:{...nonEmptyString,maxLength:80},text:{type:'string',maxLength:100000},content:MESSAGE_CONTENT_SCHEMA,attachmentMessageId:boundedId}},
     ]}),
     chatAccessResponse: response('chat.access',{type:'object',additionalProperties:false,required:['dataJson'],properties:{dataJson:{type:'string',maxLength:8388608}}}),
     pluginManageRequest: request('plugins.manage', { oneOf: [

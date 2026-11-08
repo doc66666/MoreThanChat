@@ -49,3 +49,17 @@
 最终类型检查、构建和 `git diff --check` 通过。修复后的真实窗口复核依次通过 `verify-chat-experience.mjs`、`verify-composition-ui.mjs`、`verify-shared-client-plugins.mjs`、`verify-central-ui.mjs`；日志分别为 `composition-followup-experience-verified.log`、`composition-followup-ui-final.log`、`composition-followup-shared-final.log`、`composition-followup-central-final.log`。
 
 本轮模型调用仍使用本机确定性接口，未使用外部模型额度。没有发布、推送或部署，也没有增加默认自动回复插件或插件业务存储。
+
+## 后台插件管理补查（2026-11-08）
+
+- 首次载入失败的 Main／Host Node 插件显示在管理面板中，提供具体错误、重新载入和停用入口。插件仍运行旧版但更新失败时明确说明旧版仍在运行。
+- 停用后改好源码，启用时先检查最新文件；原版本本身不能启动也不再阻止加载修正版本。停用选择和版本信息在重启后保留。
+- 同一份执行失败的源码不再在每次目录扫描时重复运行。修改源码或主动重试会重新执行，声明依赖尚未就绪的插件仍可在提供方加载后启动。
+- 首次失败遗留的清理效果保留所属记录，允许清理成功后重试；删除一个清理失败的插件目录不会阻止其他目录继续处理。
+- 管理面板打开时刷新后台状态；客户端插件清单忽略过期请求，防止旧结果覆盖卸载或更新后的列表。
+
+新增 5 项目录装载契约、2 项真实 React 清单竞态回归。全量测试 679 项通过、2 项按原配置跳过，构建和类型检查通过。扩展的真实 Electron 组合验收包含 Main／Host 首次失败、显式重试次数、停用、冷启动、编辑后启用和删除目录后列表刷新，继续覆盖原有服务替换、AI 流式回复和聊天。
+
+最终真实三客户端验收通过群与私聊的插件申请、审批、成员选择载入、多人同步、离线重连、升级与卸载流程；中心服务替换间隙收到的群事件仍能补投，保持单份插件界面。对应日志为 `optimization-1108-composition-ui.log` 和 `optimization-1108-shared-ui.log`。最终类型检查与 `git diff --check` 通过。
+
+本次开发日志位于 `.artifacts/optimization-1108-*.log`；没有发布、打包发行版或推送本次修改。此前提交 `1807eda` 已于上一轮推送，本节描述的是其后的本地迭代。

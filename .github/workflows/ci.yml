@@ -71,6 +71,12 @@ jobs:
       - name: Verify AI executable group and direct plugin lifecycle
         if: runner.os == 'Windows'
         run: node scripts/verify-shared-client-plugins.mjs
+      - name: Verify optional plugin examples and multiplayer games
+        if: runner.os == 'Windows'
+        run: node scripts/verify-bundled-examples.mjs
+      - name: Verify message renderer plugins and formatted message delivery
+        if: runner.os == 'Windows'
+        run: node scripts/verify-message-renderers.mjs
       - name: Verify Host crash recovery and plugin preferences
         if: runner.os == 'Windows'
         run: node scripts/verify-plugin-ui.mjs --host
@@ -100,6 +106,10 @@ jobs:
           node scripts/verify-client-plugins-ui.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/verify-shared-client-plugins.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-bundled-examples.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-message-renderers.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/verify-ai-ui.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -139,6 +149,10 @@ jobs:
           path: |
             .artifacts/*.png
             .artifacts/*acceptance*.json
+            .artifacts/examples-ui-*/*.png
+            .artifacts/examples-ui-*/report.json
+            .artifacts/message-renderers-*/*.png
+            .artifacts/message-renderers-*/report.json
           include-hidden-files: true
           if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}
           retention-days: 14

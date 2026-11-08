@@ -281,6 +281,10 @@ async function verifyHumanWorkflow(aid,bid,group) {
   await b.client.send('Page.bringToFront')
   await evaluate(b.client,'window.moreThanChat.focusChatWindow()')
   await poll(b,'window.moreThanChat.getWindowFocus()')
+  // Earlier layout and quote checks may deliberately leave a historic position.
+  // Receiving a message does not imply that the user has navigated to it.
+  await evaluate(b.client,'document.querySelector("[data-history-latest]")?.click();document.querySelector(".jump-latest")?.click()')
+  await poll(b,'(()=>{const n=document.querySelector(".message-scroll");return n&&n.scrollHeight-n.scrollTop-n.clientHeight<=2})()')
   await poll(a,'window.moreThanChat.loadState().then(s=>Object.values(s.messages).flat().some(m=>m.text==="offline-queued-durable-marker"&&m.receipt?.readCount===1))')
   const groupConversation=(await evaluate(b.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===group.id).id
   const aGroupConversation=(await evaluate(a.client,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===group.id).id

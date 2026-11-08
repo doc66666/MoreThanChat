@@ -2,6 +2,7 @@
   "name": "@more-than-chat/protocol",
   "version": "0.1.0",
   "private": true,
+  "dependencies": {"@more-than-chat/central-protocol":"workspace:*"},
   "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./src/index.ts",

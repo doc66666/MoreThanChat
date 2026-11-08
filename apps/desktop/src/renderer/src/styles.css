@@ -107,6 +107,8 @@ button { color: inherit; }
 .message-day { display: flex; align-items: center; gap: 12px; margin: 2px 0 22px; color: var(--muted); font-size: 10px; }
 .message-day::before, .message-day::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 .system-message { margin: 12px auto; width: fit-content; color: var(--muted); font-size: 10px; }
+.message-entry { display: flow-root; min-width: 0; }
+.message-entry.message-highlight > :not(.message-row) { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
 .message-row { display: flex; gap: 10px; margin-top: 18px; align-items: flex-start; }
 .message-row.compact { margin-top: 5px; padding-left: 40px; }
 .message-row.own { justify-content: flex-end; padding-left: 50px; }
@@ -166,6 +168,8 @@ button { color: inherit; }
 .game-board button { height:45px; font-size:19px; }
 .game-board button:disabled { cursor:default; }
 .ui-slot:empty { display:none; }
+.message-format-note { display:block; margin-top:8px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.message-html { width:100%; min-width:240px; height:240px; border:0; border-radius:8px; background:var(--surface); }
 /* Pending/declined consent gates are content too; hiding them prevents first load. */
 .slot-surface:not(:has(.group-plugin-gate, .group-plugin-widget)):has(>.ui-slot:empty){display:none}
 .slot-surface[data-ui-slot-surface="app.overlay"]{position:fixed;top:80px;right:30px;max-width:500px;max-height:65vh;overflow:auto;z-index:25;box-shadow:0 12px 30px var(--shadow-color);background:var(--surface);border-radius:12px}

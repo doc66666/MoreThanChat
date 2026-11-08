@@ -32,14 +32,16 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import { memo, useEffect, useRef, useState, type FormEvent } from 'react'
+import { memo, useEffect, useRef, useState, type FormEvent, type ComponentProps } from 'react'
 import { AppearancePicker } from './AppearancePicker'
 import { ClientPlugins, InstallClientDraft, ManagePluginButton } from './ClientPlugins'
 import { DesktopSettings } from './DesktopSettings'
 import { GroupDraftSubmission } from './GroupDraftSubmission'
 import { HistorySettings } from './HistorySettings'
-import { MessageAttachment } from './MessageAttachment'
-import { MessageMarkdown } from './MessageMarkdown'
+import { displayText, MessageBodyFallback, AttachmentMessageFallback, MessageFrame, type MessageSurfaceRenderer } from './message-content'
+export {displayText} from './message-content'
+import {UiSurface} from './UiSurface'
+import {pluginRuntime,uiSurfaceRegistry} from './plugin-host'
 import { appApi } from './app-api'
 import { avatarTone } from './conversation-presentation'
 import type { ModelClientEvent, ModelSettingsInput } from './global'
@@ -133,6 +135,13 @@ export function Avatar({
   )
 }
 
+export function MessageItem(props:ComponentProps<typeof MessageBubble>){
+  const context={...props,anchored:true}
+  // Withdrawn bodies are removed before any message renderer receives them.
+  return <MessageFrame message={props.message} highlighted={props.highlighted}>{props.message.retractedAt||props.message.type==='system'?<MessageBubble {...context}/>:<UiSurface registry={uiSurfaceRegistry} name="message" context={context} composition={pluginRuntime}>
+    <article className="message-row"><MessageBodyFallback message={props.message}/></article>
+  </UiSurface>}</MessageFrame>
+}
 export const MessageBubble = memo(function MessageBubble({
   message,
   compact,
@@ -147,6 +156,8 @@ export const MessageBubble = memo(function MessageBubble({
   onLocateQuote,
   onProfile,
   avatarColor,
+  renderSurface,
+  anchored = false,
 }: {
   message: ChatMessage
   compact: boolean
@@ -161,10 +172,12 @@ export const MessageBubble = memo(function MessageBubble({
   onLocateQuote?: (() => void) | undefined
   onProfile?: (() => void) | undefined
   avatarColor?: number | null | undefined
+  renderSurface?: MessageSurfaceRenderer | undefined
+  anchored?: boolean | undefined
 }) {
   if (message.retractedAt)
     return (
-      <article className="message-retracted" data-message-id={message.id} data-retracted-message>
+      <article className="message-retracted" data-message-id={anchored?undefined:message.id} data-retracted-message>
         <Undo2 size={13} />
         <span>{message.role === 'self' ? '你' : message.senderName}撤回了一条消息</span>
       </article>
@@ -173,8 +186,8 @@ export const MessageBubble = memo(function MessageBubble({
   const own = message.role === 'self'
   return (
     <article
-      data-message-id={message.id}
-      className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status} ${highlighted ? 'message-highlight' : ''}`}
+      data-message-id={anchored?undefined:message.id}
+      className={`message-row ${own ? 'own' : ''} ${compact ? 'compact' : ''} status-${message.status} ${highlighted&&!anchored ? 'message-highlight' : ''}`}
     >
       {!own &&
         (onProfile ? (
@@ -220,9 +233,9 @@ export const MessageBubble = memo(function MessageBubble({
               </span>
             </button>
           )}
-          {(!message.attachment || (message.text && message.text !== message.attachment.name)) &&
-            (own ? <p>{displayText(message)}</p> : <MessageMarkdown text={displayText(message)} />)}
-          {message.attachment && <MessageAttachment attachment={message.attachment} />}
+          {(message.content || !message.attachment || (message.text && message.text !== message.attachment.name)) &&
+            (renderSurface?renderSurface('message.body',{message,own},<MessageBodyFallback message={message}/>):<MessageBodyFallback message={message}/>)}
+          {message.attachment && (renderSurface?renderSurface('message.attachment',{message,own},<AttachmentMessageFallback message={message}/>):<AttachmentMessageFallback message={message}/>)}
           {message.errorMessage && <p className="message-error">{message.errorMessage}</p>}
           {message.authorNotes && message.authorNotes.length > 0 && (
             <ul className="author-tool-notes">
@@ -416,7 +429,7 @@ export function PluginPanel({
   onCreateDraft: (manifestJson: string, source: string) => void
   onDiagnoseDraft: (draftId: string) => void
   onInstallDraft: (draftId: string) => void
-  onHostToggle: (plugin: HostPluginSnapshot) => void
+  onHostToggle: (plugin: HostPluginSnapshot, enabled?: boolean) => void
   onToggle: (plugin: PluginSnapshot) => void
   onClose: () => void
 }) {
@@ -463,6 +476,7 @@ export function PluginPanel({
           </button>
         </div>
         <p className="drawer-description">管理已安装的工具，或者把新想法交给 AI，一起做成插件。</p>
+        <ClientPlugins snapshot={serverSnapshot} />
         <button
           className="secondary-button"
           data-composition-modules
@@ -530,7 +544,7 @@ export function PluginPanel({
                   <strong>{plugin.displayName}</strong>
                   <p>{plugin.description}</p>
                   <small>
-                    {plugin.id} · {plugin.version} · 独立后台进程
+                    {plugin.id} · {plugin.version} · {plugin.description.endsWith('· 主进程') ? '主进程' : '独立后台进程'} · {plugin.status === 'active' ? '运行中' : plugin.status === 'failed' ? '载入失败' : '未运行'}
                   </small>
                   {removableHostIds.has(plugin.id) && (
                     <ManagePluginButton
@@ -543,7 +557,7 @@ export function PluginPanel({
                       }}
                     />
                   )}
-                  {plugin.error && <span className="plugin-error">{plugin.error}</span>}
+                  {plugin.error && <span className="plugin-error" role="alert">{plugin.status === 'active' ? '更新未生效，仍在运行原版本。' : ''}{plugin.error}</span>}
                 </div>
                 <button
                   className={`plugin-toggle ${plugin.status === 'active' ? 'active' : ''}`}
@@ -552,12 +566,12 @@ export function PluginPanel({
                   }
                   onClick={() => onHostToggle(plugin)}
                 >
-                  {hostBusy ? '处理中' : plugin.status === 'active' ? '停用' : '启用'}
+                  {hostBusy ? '处理中' : plugin.status === 'active' ? '停用' : plugin.status === 'failed' ? '重新载入' : '启用'}
                 </button>
+                {plugin.status === 'failed' && <button className="secondary-button" data-stop-failed-plugin disabled={hostBusy} onClick={() => onHostToggle(plugin, false)}>停用</button>}
               </div>
             ))}
         </div>
-        <ClientPlugins snapshot={serverSnapshot} />
         <section className="draft-section">
           <div>
             <p className="eyebrow">未安装</p>
@@ -1053,14 +1067,6 @@ export function modelSubtitle(settings: ModelSettingsSnapshot | null): string {
   return settings.hasApiKey ? settings.model : `${settings.model} · 未保存密钥`
 }
 
-export function displayText(message: ChatMessage): string {
-  if (message.text) return message.text
-  if (message.status === 'streaming') return '正在生成…'
-  if (message.status === 'cancelled') return '回复已取消。'
-  if (message.status === 'failed')
-    return message.role === 'self' ? '消息发送失败。' : '回复没有完成。'
-  return ''
-}
 
 export function messageMeta(message: ChatMessage): string {
   const time = formatRelativeTime(message.createdAt)

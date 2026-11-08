@@ -144,7 +144,7 @@ export class HostComposition {
       generation: this.options.generation,
       plugins: [
         ...tools,
-        ...this.runtime
+        ...this.extensions
           .list()
           .map((p) => ({
             id: p.manifest.id,
@@ -160,7 +160,7 @@ export class HostComposition {
     }
   }
   async setEnabled(id: string, enabled: boolean): Promise<HostPluginCatalog> {
-    if (this.runtime.list().some((p) => p.manifest.id === id))
+    if (this.extensions.owns(id))
       await this.extensions.setEnabled(id, enabled)
     else {
       await this.get<HostPluginService>('host.plugins').setEnabled(id, enabled)

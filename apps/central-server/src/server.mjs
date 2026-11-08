@@ -25,6 +25,7 @@ import {
   parseMessageReference,
   createMessageReference,
   messageContentDescriptor,
+  parseMessageContent,
   RETRACTION_WINDOW_MS,
   MAX_GROUP_MEMBERS,
   parseUserProfileInput,
@@ -476,7 +477,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
       if (!isControlRequest(request.method, route) && lifecycle.activeRequests > 224)
         fail(429, '服务器请求繁忙，请稍后重试')
       if (request.method === 'GET' && route === '/v1/ping')
-        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1','user-profiles-v1'] })
+        return json(response, 200, { protocolVersion: 1, serverId, name, mode, features: ['message-receipts-v1','message-actions-v1','device-delivery-v1','group-program-v1','large-groups-v1','executable-plugin-v1','user-profiles-v1','message-content-v1'] })
       if ((route === '/v1/admin/access' && ['GET','POST'].includes(request.method)) ||
           (route === '/v1/admin/status' && request.method === 'GET') ||
           (['/v1/admin/mode','/v1/admin/shutdown'].includes(route) && request.method === 'POST')) {
@@ -895,6 +896,8 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
           )
             fail(400, '附件校验失败')
         }
+        const content=data.content===undefined?undefined:clientValue(()=>parseMessageContent(data.content))
+        if(content&&!data.text.trim())fail(400,'扩展消息需要文字摘要')
         const quote=data.quote===undefined?undefined:clientValue(() => parseMessageReference(data.quote))
         const forwarded=data.forwarded===undefined?undefined:clientValue(() => parseMessageReference(data.forwarded))
         const fingerprint = createHash('sha256')
@@ -904,6 +907,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
               kind,
               data.text,
               data.attachment ?? null,
+              ...(content?[content]:[]),
               ...(quote||forwarded?[quote?{messageId:quote.messageId,senderId:quote.senderId}:null,forwarded?{messageId:forwarded.messageId,senderId:forwarded.senderId}:null]:[]),
             ]),
           )
@@ -941,6 +945,7 @@ function initializeCentralServer({ mode, adminToken, name, accessList, shutdownT
             senderId: uid,
             senderName: user(uid).displayName,
             text: data.text,
+            ...(content?{content}:{}),
             createdAt: now,
             targetName: kind==='group'?db.prepare('SELECT name FROM groups WHERE id=?').get(targetId).name:user(targetId).displayName,
             ...(data.attachment ? { attachment: data.attachment } : {}),

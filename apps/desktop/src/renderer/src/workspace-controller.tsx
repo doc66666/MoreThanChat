@@ -491,6 +491,20 @@ export function useWorkspaceController() {
   }, [showPlugins, hostStatus.state, hostStatus.generation, api])
 
   useEffect(() => {
+    if (!showPlugins || hostPluginBusy) return
+    let active = true, timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = async () => {
+      try {
+        const catalog = await api.getHostPlugins()
+        if (active) setHostPlugins(current => JSON.stringify(current) === JSON.stringify(catalog.plugins) ? current : catalog.plugins)
+      } catch { /* The initial load and explicit actions report errors. */ }
+      finally {if (active) timer = setTimeout(() => void refresh(), 1000)}
+    }
+    void refresh()
+    return () => {active = false;clearTimeout(timer)}
+  }, [showPlugins, hostPluginBusy, hostStatus.generation, api])
+
+  useEffect(() => {
     if (hostStatus.state === 'ready') return
     setState((current) => (current ? interruptStreamingMessages(current) : current))
   }, [hostStatus.state, hostStatus.generation])
@@ -1193,11 +1207,11 @@ export function useWorkspaceController() {
     }
   }
 
-  async function toggleHostPlugin(plugin: HostPluginSnapshot) {
+  async function toggleHostPlugin(plugin: HostPluginSnapshot, enabled = plugin.status !== 'active') {
     if (hostPluginBusy) return
     setHostPluginBusy(true)
     try {
-      const catalog = await api.setHostPluginEnabled(plugin.id, plugin.status !== 'active')
+      const catalog = await api.setHostPluginEnabled(plugin.id, enabled)
       setHostPlugins(catalog.plugins)
       void api
         .getModelSettings()
@@ -1205,7 +1219,8 @@ export function useWorkspaceController() {
         .catch(() => setModelSettings(null))
     } catch (error) {
       console.error(error)
-      setToast('后台插件操作失败，请稍后重试')
+      setToast(errorText(error))
+      await api.getHostPlugins().then(catalog => setHostPlugins(catalog.plugins)).catch(() => undefined)
     } finally {
       setHostPluginBusy(false)
     }

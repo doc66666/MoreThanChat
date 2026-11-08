@@ -117,6 +117,7 @@ if (process.env.MTC_SCREENSHOT_PATH || process.env.MTC_QA_MODE === '1') {
 if (!app.requestSingleInstanceLock()) app.exit(0)
 if(process.platform==='win32')app.setAppUserModelId('dev.morethanchat.desktop')
 const profileRoot = app.getPath('userData')
+const demoPluginsEnabled = process.env.MTC_QA_MODE === '1' && process.env.MTC_ENABLE_DEMO_PLUGINS !== '0'
 let currentProfile = 'default'
 try {
   currentProfile = activeProfile(profileRoot)
@@ -526,6 +527,7 @@ function registerIpc(context: PluginContext): void {
         conversationId: string
         clientMessageId: string
         text: string
+        content?: import('@more-than-chat/central-protocol').MessageContent
         attachmentId?: string
         attachmentRef?: AttachmentRef
         quoteMessageId?: string
@@ -791,7 +793,7 @@ function startHostSupervisor(): void {
       cwd: hostEntry.cwd,
       environment: {
         MTC_HOST_DATA_DIR: path.join(dataDirectory, 'host-private'),
-        MTC_ENABLE_DEMO_PLUGINS: process.env.MTC_QA_MODE === '1' ? '1' : '0',
+        MTC_ENABLE_DEMO_PLUGINS: demoPluginsEnabled ? '1' : '0',
         MTC_HOST_QA_CRASH_ONCE:
           process.env.MTC_QA_HOST_CRASH_ONCE === '1' ? '1' : undefined,
       },
@@ -836,7 +838,7 @@ async function createWindow(previous?: BrowserWindow): Promise<void> {
     webPreferences: {
       ...(currentProfile==='default'?{}:{partition:'persist:identity-'+currentProfile}),
       preload: path.join(__dirname, 'preload.js'),
-      additionalArguments: process.env.MTC_QA_MODE === '1' ? ['--mtc-demo-plugins'] : [],
+      additionalArguments: demoPluginsEnabled ? ['--mtc-demo-plugins'] : [],
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
@@ -1019,7 +1021,7 @@ app
     // provider cannot remove the route needed to enable it again.
     const catalog=async()=>{
       const host=await hostSupervisor?.getPlugins().catch(()=>null)
-      return {generation:host?.generation??0,plugins:[...(host?.plugins??[]),...runtime.list().map(p=>({id:p.manifest.id,displayName:p.manifest.displayName,description:p.manifest.description+' · 主进程',version:p.manifest.version,status:p.status,error:composition!.extensions.errors.get(p.manifest.id)??p.error,tools:[],composerActions:[]}))]}
+      return {generation:host?.generation??0,plugins:[...(host?.plugins??[]),...composition!.extensions.list().map(p=>({id:p.manifest.id,displayName:p.manifest.displayName,description:p.manifest.description+' · 主进程',version:p.manifest.version,status:p.status,error:p.error,tools:[],composerActions:[]}))]}
     }
     ipcMain.handle('host:plugins:list',event=>{assertTrustedIpc(event);return catalog()})
     ipcMain.handle('host:plugins:set-enabled',async(event,payload:unknown)=>{
@@ -1027,7 +1029,7 @@ app
       const request=parseHostMessage(createHostRequest('plugins.setEnabled','ipc',payload as never))
       if(request.kind!=='request'||request.method!=='plugins.setEnabled')throw new Error('Invalid plugin request.')
       const {pluginId,enabled}=request.payload
-      if(runtime.list().some(p=>p.manifest.id===pluginId))await composition!.extensions.setEnabled(pluginId,enabled)
+      if(composition!.extensions.owns(pluginId))await composition!.extensions.setEnabled(pluginId,enabled)
       else {if(!hostSupervisor)throw new Error('PC Host is unavailable.');await hostSupervisor.setPluginEnabled(pluginId,enabled)}
       return catalog()
     })

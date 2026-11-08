@@ -9,6 +9,8 @@ import { ClientPluginLoader, importClientModule } from './client-plugin-loader'
 import { ClientPluginController } from './client-plugin-controller'
 import type { ServerSnapshot } from '@more-than-chat/central-protocol'
 import { ShareClientPlugin, SharedPluginChoices } from './SharedClientPlugins'
+import { PluginExamples } from './PluginExamples'
+import { prepareExample } from './bundled-examples'
 
 let loader: ClientPluginLoader | undefined
 export function getClientPluginLoader(): ClientPluginLoader {
@@ -52,8 +54,14 @@ export function ClientPlugins({snapshot:serverSnapshot}:{snapshot:ServerSnapshot
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState('')
   const [, refresh] = useState(0)
   useEffect(() => {
-    let alive = true
-    const reload = () => {if (alive) refresh(value => value + 1); void window.moreThanChat.getClientPlugins().then(list => {if (alive) setPackages(list)}).catch(error => {if (alive) setNotice(errorText(error))})}
+    let alive = true, request = 0
+    const reload = () => {
+      const current = ++request
+      if (alive) refresh(value => value + 1)
+      void window.moreThanChat.getClientPlugins().then(list => {
+        if (alive && request === current) setPackages(list)
+      }).catch(error => {if (alive && request === current) setNotice(errorText(error))})
+    }
     reload(); window.addEventListener('client-plugins-changed', reload)
     const off = pluginRuntime.subscribe(() => refresh(value => value + 1))
     return () => {alive = false; window.removeEventListener('client-plugins-changed', reload); off()}
@@ -63,6 +71,20 @@ export function ClientPlugins({snapshot:serverSnapshot}:{snapshot:ServerSnapshot
     try {await work()} catch (error) {setNotice(errorText(error))} finally {setBusy(false)}
   }
   return <section className="draft-section" data-client-plugins>
+    <PluginExamples packages={packages} busy={busy} onInstall={example=>void run(async()=>{
+      // A catalog is a starter, never an automatic overwrite of a user's edited copy.
+      if((await window.moreThanChat.getClientPlugins()).some(p=>p.manifest.id===example.id))throw new Error('此插件已经安装，请在下方管理。')
+      await clientPluginController.apply(await prepareExample(example))
+      setNotice(example.name+'已启用。关闭插件面板，在聊天顶部打开。')
+    })} onCopy={example=>void run(async()=>{
+      const source=(await window.moreThanChat.getClientPlugins()).find(p=>p.manifest.id===example.id)??example.pack
+      const manifest={...source.manifest,id:example.id+'.copy-'+crypto.randomUUID().slice(0,8),version:'1.0.0',displayName:example.name+' · 我的版本'}
+      const result=await window.moreThanChat.createPluginDraft({manifestJson:JSON.stringify(manifest),source:JSON.stringify(source.program)})
+      if(!result.persisted)throw new Error(result.summary)
+      window.dispatchEvent(new Event('local-plugins-managed'))
+      setNotice('已复制为草稿 '+manifest.id+'。可以告诉内置 AI：读取这份草稿，按我的要求修改。原插件不受影响。')
+    })}/>
+    {notice && <p role="status" className="settings-note" data-client-plugin-notice>{notice}</p>}
     <h3>可执行界面</h3>
     <p className="settings-note">插件可修改整个客户端界面，请使用可信来源。启用状态会保留，同 ID 新版本直接热更新。</p>
     <button className="secondary-button" disabled={busy} onClick={() => void run(async () => {
@@ -94,7 +116,6 @@ export function ClientPlugins({snapshot:serverSnapshot}:{snapshot:ServerSnapshot
         <ShareClientPlugin snapshot={serverSnapshot} pack={pack}/>
       </div>
     })}
-    {notice && <p role="status" className="settings-note">{notice}</p>}
     <p className="settings-note">界面异常时可按 Ctrl+Shift+F12 停用界面插件并重新打开聊天。已保存数据不变，未发送输入可能丢失。</p>
     <SharedPluginChoices snapshot={serverSnapshot} onError={setNotice}/>
   </section>

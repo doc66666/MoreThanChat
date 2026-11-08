@@ -9,6 +9,7 @@ it('routes all four tools and keeps original image data out of the textual tool 
  for(const [name,args,action] of [
   ['list_conversations',{},'list'],['read_chat_history',{conversationId:'c',before:12},'history'],
   ['send_chat_message',{conversationId:'c',clientMessageId:'retry-id',text:'hi'},'send'],
+  ['send_chat_message',{conversationId:'c',clientMessageId:'card-id',text:'卡片摘要',content:{format:'html',version:1,body:'<h2>卡片</h2>'}},'send'],
  ] as const){await executeChatTool({id:'call',name,arguments:JSON.stringify(args)},access);expect(access).toHaveBeenLastCalledWith({action,...args})}
 })
 it('returns actionable errors, rejects an action override, and never falls back to another conversation',async()=>{

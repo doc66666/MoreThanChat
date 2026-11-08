@@ -116,3 +116,18 @@ it('rechecks a plugin popup opening/closing without App state changes or ResizeO
   Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'})
   document.dispatchEvent(new Event('visibilitychange'));expect(receipts).toHaveBeenLastCalledWith(null)
 })
+
+it('rechecks a native plugin dialog when only its open attribute changes',async()=>{
+  const frames=new Map<number,FrameRequestCallback>();let id=0
+  vi.stubGlobal('requestAnimationFrame',(callback:FrameRequestCallback)=>{frames.set(++id,callback);return id})
+  vi.stubGlobal('cancelAnimationFrame',(id:number)=>frames.delete(id))
+  const flush=async()=>{await act(async()=>{await new Promise(resolve=>setTimeout(resolve,0));for(const callback of frames.values())callback(0);frames.clear()})}
+  const dialog=document.createElement('dialog');document.body.append(dialog)
+  try{
+    await render();await flush();expect(receipts).toHaveBeenLastCalledWith('direct');receipts.mockClear()
+    covered=true;dialog.setAttribute('open','');await flush()
+    expect(receipts).toHaveBeenLastCalledWith(null)
+    covered=false;dialog.removeAttribute('open');await flush()
+    expect(receipts).toHaveBeenLastCalledWith('direct')
+  }finally{dialog.remove()}
+})

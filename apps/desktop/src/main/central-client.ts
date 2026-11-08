@@ -17,6 +17,8 @@ import {
   parseMessageRetraction,
   createMessageReference,
   messageContentDescriptor,
+  parseMessageContent,
+  type MessageContent,
   parseUserProfileInput,
 } from '@more-than-chat/central-protocol'
 import { ClientIdentity } from './identity-store'
@@ -61,6 +63,7 @@ function serverAddressKey(value:string):string {
 }
 export class CentralClient {
   #supportsActions = false
+  #supportsContent = false
   #snapshot: ServerSnapshot
   #token: string | null = null
   #controller: AbortController | null = null
@@ -281,6 +284,7 @@ export class CentralClient {
       }
       if(epoch!==this.#epoch)throw new Error('连接已取消')
       this.#supportsReceipts = Array.isArray(ping.features) && ping.features.includes('message-receipts-v1')
+      this.#supportsContent = Array.isArray(ping.features) && ping.features.includes('message-content-v1')
       this.#supportsActions = Array.isArray(ping.features) && ping.features.includes('message-actions-v1')
       this.#supportsDevices = Array.isArray(ping.features) && ping.features.includes('device-delivery-v1')
       this.#snapshot.profileSupported = Array.isArray(ping.features) && ping.features.includes('user-profiles-v1')
@@ -645,7 +649,7 @@ export class CentralClient {
     const reading=this.#readingId===conversationId&&message.senderId!==this.identity.userId
     const list=state.messages[conversationId]??[]
     list.push({id:message.id,clientMessageId:message.clientMessageId,conversationId,senderId:message.senderId,senderName:message.senderName,
-      senderAvatar:message.senderName.slice(0,2),role:message.senderId===this.identity.userId?'self':'peer',type:'text',text:message.text,
+      senderAvatar:message.senderName.slice(0,2),role:message.senderId===this.identity.userId?'self':'peer',type:'text',text:message.text,...(message.content?{content:message.content}:{}),
       createdAt:message.createdAt,status:'sent',serverId,...(attachment?{attachment}:{}),...(reading?{readAt:Date.now()}:{}),...(message.quote?{quote:message.quote}:{}),...(message.forwarded?{forwarded:message.forwarded}:{}),...(message.actionsSupported===undefined?{}:{actionsSupported:message.actionsSupported})})
     state.messages[conversationId]=list
     conversation.updatedAt=Math.max(Number(conversation.updatedAt),message.createdAt)
@@ -689,7 +693,7 @@ export class CentralClient {
   async forwardMessage(messageId:string,conversationId:string,clientMessageId:string):Promise<void> {
     const source=this.store.message(messageId)
     if(!source)throw new Error('来源消息不存在')
-    await this.send({conversationId,clientMessageId,text:String(source.text),...((source.attachment as {id:string}|undefined)?.id?{attachmentId:(source.attachment as {id:string}).id}:{}),forwardMessageId:messageId})
+    await this.send({conversationId,clientMessageId,text:String(source.text),...(source.content?{content:parseMessageContent(source.content)}:{}),...((source.attachment as {id:string}|undefined)?.id?{attachmentId:(source.attachment as {id:string}).id}:{}),forwardMessageId:messageId})
   }
   #applyReceipt(state: NonNullable<ReturnType<ChatStore['load']>>, raw: unknown): string | undefined {
     const receipt = parseMessageReceipt(raw)
@@ -718,7 +722,9 @@ export class CentralClient {
     void this.#drain()
   }
 
-  async send(input: {conversationId:string;clientMessageId:string;text:string;attachmentId?:string;attachmentRef?:AttachmentRef;attachmentMessageId?:string;quoteMessageId?:string;forwardMessageId?:string}): Promise<{eventId:string;acceptedAt:number;queued?:boolean}> {
+  async send(input: {conversationId:string;clientMessageId:string;text:string;content?:MessageContent;attachmentId?:string;attachmentRef?:AttachmentRef;attachmentMessageId?:string;quoteMessageId?:string;forwardMessageId?:string}): Promise<{eventId:string;acceptedAt:number;queued?:boolean}> {
+    const content=input.content===undefined?undefined:parseMessageContent(input.content)
+    if(content&&!input.text.trim())throw new Error('扩展消息需要文字摘要')
     const state = this.store.load(), conversation = state?.conversations.find(c=>c.id===input.conversationId)
     if (!state || !conversation || typeof conversation.serverId!=='string' || conversation.transportId!=='builtin.central')
       throw new Error('找不到中心服务器会话')
@@ -736,7 +742,7 @@ export class CentralClient {
     }
     const quoted=input.quoteMessageId?referenceSource(input.quoteMessageId):undefined,forwarded=input.forwardMessageId?referenceSource(input.forwardMessageId):undefined
     if(quoted&&quoted.conversationId!==input.conversationId)throw new Error('只能引用当前会话的消息')
-    if(forwarded&&(forwarded.text!==input.text||(forwarded.attachment as {id?:string}|undefined)?.id!==input.attachmentId))throw new Error('转发不可改写原文或附件')
+    if(forwarded&&(JSON.stringify(forwarded.content)!==JSON.stringify(content)||forwarded.text!==input.text||(forwarded.attachment as {id?:string}|undefined)?.id!==input.attachmentId))throw new Error('转发不可改写原文或附件')
     const quote=quoted?createMessageReference(quoted as unknown as Parameters<typeof createMessageReference>[0]):undefined,forward=forwarded?createMessageReference(forwarded as unknown as Parameters<typeof createMessageReference>[0]):undefined
     const copiedAttachment=():AttachmentRef|undefined=>{
       if(!input.attachmentMessageId)return
@@ -757,13 +763,13 @@ export class CentralClient {
     if(!existing&&this.store.message(input.clientMessageId))throw new Error('此消息 ID 与已有消息冲突，请为新消息生成新的 clientMessageId')
     if(existing&&existing.conversationId!==input.conversationId)throw new Error('同一消息 ID 不能替换会话')
     if(existing&&!list.some(m=>m.id===existing.id))list.push(existing)
-    if (existing && JSON.stringify(messageContentDescriptor({text:String(existing.text),...(existing.attachment?{attachment:existing.attachment as AttachmentRef}:{})}))!==JSON.stringify(messageContentDescriptor({text:input.text,...(attachment?{attachment}:{})}))) throw new Error('同一消息 ID 不能替换内容')
+    if (existing && JSON.stringify(messageContentDescriptor({text:String(existing.text),...(existing.content?{content:parseMessageContent(existing.content)}:{}),...(existing.attachment?{attachment:existing.attachment as AttachmentRef}:{})}))!==JSON.stringify(messageContentDescriptor({text:input.text,...(content?{content}:{}),...(attachment?{attachment}:{})}))) throw new Error('同一消息 ID 不能替换内容')
     if(existing&&((existing.quote as {messageId?:string}|undefined)?.messageId!==quote?.messageId||(existing.forwarded as {messageId?:string}|undefined)?.messageId!==forward?.messageId))throw new Error('同一消息 ID 不能替换来源')
     if (existing?.status==='sent') return {eventId:String(existing.id),acceptedAt:Number(existing.createdAt)}
     const now = Number(existing?.createdAt ?? Date.now())
     const message = {id:existing?.id ?? input.clientMessageId,clientMessageId:input.clientMessageId,conversationId:input.conversationId,
       senderId:this.identity.userId,senderName:this.#snapshot.displayName,senderAvatar:this.#snapshot.displayName.slice(0,2),
-      role:'self',type:'text',text:input.text,createdAt:now,status:'queued',serverId:conversation.serverId,...(attachment?{attachment}:{}),...(quote?{quote}:{}),...(forward?{forwarded:forward}:{})}
+      role:'self',type:'text',text:input.text,...(content?{content}:{}),createdAt:now,status:'queued',serverId:conversation.serverId,...(attachment?{attachment}:{}),...(quote?{quote}:{}),...(forward?{forwarded:forward}:{})}
     if (existing) Object.assign(existing,message,{errorMessage:undefined})
     else list.push(message)
     latest.messages[input.conversationId]=list
@@ -778,7 +784,7 @@ export class CentralClient {
   async retryMessage(messageId: string): Promise<void> {
     const message = this.store.message(messageId)
     if (!message || message.senderId!==this.identity.userId || !['failed','queued'].includes(String(message.status))) throw new Error('此消息不能重试')
-    await this.send({conversationId:String(message.conversationId),clientMessageId:String(message.clientMessageId),text:String(message.text),
+    await this.send({conversationId:String(message.conversationId),clientMessageId:String(message.clientMessageId),text:String(message.text),...(message.content?{content:parseMessageContent(message.content)}:{}),
       ...((message.attachment as {id:string}|undefined)?.id ? {attachmentId:(message.attachment as {id:string}).id} : {}),...((message.quote as {messageId?:string}|undefined)?.messageId?{quoteMessageId:(message.quote as {messageId:string}).messageId}:{}),...((message.forwarded as {messageId?:string}|undefined)?.messageId?{forwardMessageId:(message.forwarded as {messageId:string}).messageId}:{})})
   }
 
@@ -797,12 +803,13 @@ export class CentralClient {
         if(message.retractedAt||message.status==='sent'){this.store.save(state,undefined,{authoritative:true,outboxRemove:entry.clientMessageId});continue}
         let requesting=false
         try {
+          if(message.content&&!this.#supportsContent)throw new LocalSendError('当前中心服务器不支持扩展消息，请更新服务器后重试')
           if((message.quote||message.forwarded)&&!this.#supportsActions)throw new LocalSendError('当前服务器不支持引用或转发，请更新服务器')
           const ref=message.attachment as {id:string;name:string;mime:string;size:number;durationMs?:number}|undefined
           const attachment=ref ? await this.attachments.read(ref.id,ref) : undefined
           if(epoch!==this.#epoch)return
           requesting=true
-          const result=await this.#request('messages','POST',{clientMessageId:entry.clientMessageId,targetKind:conversation.kind,targetId:conversation.targetId,text:message.text,...(attachment?{attachment}:{}),...(message.quote?{quote:message.quote}:{}),...(message.forwarded?{forwarded:message.forwarded}:{})},
+          const result=await this.#request('messages','POST',{clientMessageId:entry.clientMessageId,targetKind:conversation.kind,targetId:conversation.targetId,text:message.text,...(message.content?{content:message.content}:{}),...(attachment?{attachment}:{}),...(message.quote?{quote:message.quote}:{}),...(message.forwarded?{forwarded:message.forwarded}:{})},
             AbortSignal.any([this.#controller!.signal,AbortSignal.timeout(10000)]))
           if(epoch!==this.#epoch)return
           if(typeof result.messageId!=='string'||!/^[a-f0-9-]{36}$/.test(result.messageId)||!Number.isSafeInteger(result.acceptedAt))throw new Error('发送回执无效')

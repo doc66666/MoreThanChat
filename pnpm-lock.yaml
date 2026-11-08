@@ -142,6 +142,10 @@ importers:
         version: 4.1.11(@types/node@24.13.3)(happy-dom@21.0.1)(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0))
 
   packages/chat-core:
+    dependencies:
+      '@more-than-chat/central-protocol':
+        specifier: workspace:*
+        version: link:../central-protocol
     devDependencies:
       typescript:
         specifier: 5.9.3
@@ -160,6 +164,10 @@ importers:
         version: 4.1.11(@types/node@24.13.3)(happy-dom@21.0.1)(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0))
 
   packages/protocol:
+    dependencies:
+      '@more-than-chat/central-protocol':
+        specifier: workspace:*
+        version: link:../central-protocol
     devDependencies:
       typescript:
         specifier: 5.9.3

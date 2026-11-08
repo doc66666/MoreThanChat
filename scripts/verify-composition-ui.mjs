@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createServer } from 'node:http'
@@ -48,6 +48,40 @@ async function install(s,pack){
 }
 function pack(id,version,code,requires=['ui.surfaces'],provides=[]){return {manifest:{manifestVersion:1,id,version,displayName:id,description:'用户插件替换默认功能验收',targets:['pc-ui'],engine:{moreThanChat:'^0.1.0'},permissions:['client.trusted'],services:{requires,provides}},program:{kind:'executable-client',code}}}
 function header(version){return pack('test.replace-header',version,`export default(ctx,sdk)=>{globalThis.__headerLive=(globalThis.__headerLive||0)+1;ctx.effect(()=>globalThis.__headerLive--);ctx.contribute(ctx.getService('ui.surfaces'),{id:'header',surface:'workspace.chat.header',render:({defaultView,context})=>sdk.React.createElement('div',{'data-user-header':'${version}','data-selected-model':context.modelSettings?.model},defaultView,sdk.React.createElement('small',null,'用户插件标题 ${version}'))})}`)}
+async function failedNativePlugins(s){
+ const entries=[]
+ for(const area of ['host','main']){
+  const id='test.failed-'+area,folder=path.join(s.profile,...(area==='host'?['host-private','plugins']:['main-plugins']),id),attempts=path.join(directory,id+'.attempts')
+  await mkdir(folder,{recursive:true})
+  await writeFile(path.join(folder,'manifest.json'),JSON.stringify({manifestVersion:1,id,version:'1.0.0',displayName:id,description:'Failed first install',targets:['pc-host'],engine:{moreThanChat:'^0.1.0'},permissions:['host.trusted'],services:{requires:[]}}))
+  await writeFile(path.join(folder,'index.mjs'),`import {appendFile} from 'node:fs/promises';export default async()=>{await appendFile(${JSON.stringify(attempts)},'attempt\\n');throw Error('first-load-check')}`)
+  entries.push({id,folder,attempts})
+ }
+ await panel(s)
+ for(const {id} of entries)await poll(s,`document.querySelector('[data-plugin-id="${id}"] [role="alert"]')?.textContent.includes('first-load-check')`)
+ await delay(1700)
+ for(const {id,attempts} of entries){
+  assert.equal((await readFile(attempts,'utf8')).trim().split('\n').length,1,'a bad first install must not repeatedly execute')
+  await click(s,`[data-plugin-id="${id}"] .plugin-toggle`)
+  await poll(s,`!document.querySelector('[data-plugin-id="${id}"] .plugin-toggle').disabled`)
+  assert.equal((await readFile(attempts,'utf8')).trim().split('\n').length,2,'explicit retry executes once')
+  await click(s,`[data-plugin-id="${id}"] [data-stop-failed-plugin]`)
+  await poll(s,`document.querySelector('[data-plugin-id="${id}"] .plugin-toggle')?.textContent==='启用'`)
+ }
+ await close(s);s=await launch('a');await panel(s)
+ for(const {id,folder,attempts} of entries){
+  await poll(s,`document.querySelector('[data-plugin-id="${id}"] .plugin-toggle')?.textContent==='启用'`)
+  assert.equal(await run(s,`document.querySelector('[data-plugin-id="${id}"] small')?.textContent.includes('1.0.0')`),true)
+  assert.equal((await readFile(attempts,'utf8')).trim().split('\n').length,2)
+  await writeFile(path.join(folder,'index.mjs'),'export default()=>{}')
+  await click(s,`[data-plugin-id="${id}"] .plugin-toggle`)
+  await poll(s,`document.querySelector('[data-plugin-id="${id}"] .plugin-toggle')?.textContent==='停用'&&!document.querySelector('[data-plugin-id="${id}"] [role="alert"]')`)
+  await rm(folder,{recursive:true})
+  await poll(s,`!document.querySelector('[data-plugin-id="${id}"]')`)
+ }
+ await click(s,'.plugin-drawer .drawer-header button')
+ return s
+}
 async function nativePlugin(s,area,id,service,method,value){
  const folder=path.join(s.profile,...(area==='host'?['host-private','plugins']:['main-plugins']),id);await mkdir(folder,{recursive:true})
  const manifest={manifestVersion:1,id,version:'1.0.0',displayName:id,description:'Node provider replacement',targets:['pc-host'],engine:{moreThanChat:'^0.1.0'},permissions:['host.trusted'],services:{requires:[service],provides:[service]}}
@@ -62,6 +96,8 @@ try {
  await run(a,`window.moreThanChat.serverAction('friends/request',{userId:${JSON.stringify(bid)}})`);await run(b,`window.moreThanChat.serverAction('friends/accept',{userId:${JSON.stringify(aid)}})`)
  await poll(a,`window.moreThanChat.loadState().then(s=>s.conversations.some(c=>c.targetId===${JSON.stringify(bid)}))`)
  const chat=(await run(a,'window.moreThanChat.loadState()')).conversations.find(c=>c.targetId===bid).id
+ a=await failedNativePlugins(a)
+ checks.push('Main and Host first-load failures appear live in plugin management; explicit retry runs once; disable survives restart; edited code enables and removed folders disappear')
  await install(a,header('1.0.0'));await click(a,'.plugin-drawer .drawer-header button');await poll(a,`document.querySelector('[data-user-header="1.0.0"]')&&globalThis.__headerLive===1`)
  await run(a,`window.moreThanChat.sendCentralMessage({conversationId:${JSON.stringify(chat)},clientMessageId:'composition-before',text:'替换标题后仍可聊天'})`)
  await poll(b,`window.moreThanChat.loadState().then(s=>Object.values(s.messages).flat().some(m=>m.text==='替换标题后仍可聊天'))`)

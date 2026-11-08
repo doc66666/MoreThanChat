@@ -41,7 +41,7 @@ import { setThemePreference } from './theme'
 import {
   Avatar,
   DetailsPanel,
-  MessageBubble,
+  MessageItem,
   ModelSettingsPanel,
   NewChatDialog,
   PluginPanel,
@@ -631,7 +631,7 @@ export function WorkspaceChatTimelineView({ context, renderSurface }: ViewProps)
                   </div>
                 )}
                 {renderSlot('chat.message.before', message)}
-                <MessageBubble
+                <MessageItem
                   message={message}
                   avatarColor={
                     message.serverId === serverState?.serverId
@@ -1085,7 +1085,7 @@ export function WorkspacePluginsView({ context, renderSurface }: ViewProps) {
           onCreateDraft={(manifestJson, source) => void createPluginDraft(manifestJson, source)}
           onDiagnoseDraft={(draftId) => void diagnosePluginDraft(draftId)}
           onInstallDraft={(draftId) => void installPluginDraft(draftId)}
-          onHostToggle={(plugin) => void toggleHostPlugin(plugin)}
+          onHostToggle={(plugin, enabled) => void toggleHostPlugin(plugin, enabled)}
           onToggle={(plugin) => void togglePlugin(plugin)}
           onClose={() => setShowPlugins(false)}
         />

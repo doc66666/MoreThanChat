@@ -7,6 +7,17 @@ import { createCentralServer, publicUserId } from '../src/server.mjs'
 import { createMessageReference, MAX_GROUP_MEMBERS, parseDirectory, parseMessageReceipt, directPluginScope, parseRelayEvent } from '@more-than-chat/central-protocol'
 import { groupGameArtifact } from '../../../scripts/fixtures/group-game.mjs'
 const fixtures = []
+
+it('relays message format data and rejects a changed body under the same send id',async()=>{
+  const f=await fixture(),a=await login(f,identity(),'A'),b=await login(f,identity(),'B');await befriend(f,a,b)
+  const content={format:'html',version:1,body:'<strong>正文</strong>'},body={targetKind:'direct',targetId:b.userId,clientMessageId:randomUUID(),text:'摘要',content}
+  const sent=await request(f,'messages',a.token,body);expect(sent.status).toBe(200)
+  expect((await request(f,'messages',a.token,{...body,content:{...content,body:'changed'}})).status).toBe(409)
+  expect((await request(f,'messages',a.token,{...body,clientMessageId:randomUUID(),content:{...content,version:0}})).status).toBe(400)
+  expect((await request(f,'messages',a.token,{...body,clientMessageId:randomUUID(),text:' '})).status).toBe(400)
+  const events=(await request(f,'events',b.token)).data.events
+  expect(parseRelayEvent(events.find(e=>e.id===sent.data.messageId)).message.content).toEqual(content)
+})
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
     await f.app.close()

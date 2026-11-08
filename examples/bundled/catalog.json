@@ -1,0 +1,7 @@
+[
+  {"id":"example.quick-phrases","name":"常用短语","category":"效率","label":"聊得更顺手","description":"保存常用回复，一键填入当前输入框；发送前仍可编辑。","hint":"本机保存 · 不会自动发送","file":"quick-phrases"},
+  {"id":"example.focus-timer","name":"专注计时","category":"效率","label":"留一点专注时间","description":"25 分钟专注、5 分钟休息，也可自定义时长；关掉面板仍继续计时。","hint":"暂停 / 继续 · 重启保留进度","file":"focus-timer"},
+  {"id":"example.memory-pairs","name":"翻牌记忆","category":"游戏","label":"给脑袋换个频道","description":"翻开卡片找到相同图案，挑战用更少的步数配齐八组。","hint":"单人小游戏 · 本机最佳纪录","file":"memory-pairs"},
+  {"id":"example.tic-tac-toe","name":"一起井字棋","category":"游戏","label":"聊天之外，来一局","description":"本机双人轮流下，也可申请分享到好友或群聊，载入后实时对弈。","hint":"好友 / 群聊同步 · 观战与换人","file":"tic-tac-toe"},
+  {"id":"example.html-message","name":"HTML 消息卡片","category":"效率","label":"让消息有自己的排版","description":"编写并预览 HTML 卡片，发送给好友或群聊；保留文字摘要，未安装插件也能阅读。","hint":"正文渲染 · 编辑与预览","file":"html-message"}
+]

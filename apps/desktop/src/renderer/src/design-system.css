@@ -1,5 +1,24 @@
 /* Presentation layer. Feature mechanics and third-party extension slots remain in styles.css.
    The same semantic tokens are available to plugin UI; no styling of plugin-owned DOM. */
+.example-library { padding: 18px 0 22px; border-bottom: 1px solid var(--border); }
+.example-library-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.example-count { font-size: 11px; color: var(--muted); }
+.example-filters { display: flex; gap: 6px; margin: 16px 0; }
+.example-filters button { padding: 5px 13px; border: 1px solid transparent; border-radius: 20px; color: var(--text-secondary); background: transparent; cursor: pointer; font-size: 12px; }
+.example-filters button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent-border); }
+.example-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.example-card { min-width: 0; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; display: flex; flex-direction: column; gap: 10px; }
+.example-card-heading { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 10px; }
+.example-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-text); }
+.example-card h4 { margin: 0; font-size: 15px; font-weight: 650; }
+.example-card p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
+.example-card small, .ex-installed-note { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.example-card-actions { margin-top: auto; padding-top: 4px; display: flex; flex-wrap: wrap; gap: 8px; }
+.example-card-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 11px; }
+.example-copy { border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; padding: 5px 0; }
+.example-copy:hover:not(:disabled) { color: var(--accent); }
+.example-copy:disabled { opacity: .5; cursor: default; }
+@media(max-width:520px) { .example-grid { grid-template-columns: 1fr; } }
 :root {
   --purple: var(--accent);
   --purple-soft: var(--accent-soft);

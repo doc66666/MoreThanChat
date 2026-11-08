@@ -121,7 +121,7 @@ declare global {
       onGroupPluginConsentChanged(listener:()=>void):()=>void
       submitGroupDraft(input:{serverId:string;groupId:string;draftId:string;revision:number;slot:string;confirmed:true}):Promise<ServerSnapshot>
       shareClientPlugin(input:{serverId:string;groupId:string} & ({draftId:string;revision:number}|{pluginId:string;digest:string})):Promise<ServerSnapshot>
-      sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;attachmentId?:string;attachmentRef?:AttachmentRef}):Promise<{eventId:string;acceptedAt:number;queued?:boolean}>
+      sendCentralMessage(input:{conversationId:string;clientMessageId:string;text:string;content?:import('@more-than-chat/central-protocol').MessageContent;attachmentId?:string;attachmentRef?:AttachmentRef}):Promise<{eventId:string;acceptedAt:number;queued?:boolean}>
       chooseAttachment():Promise<AttachmentRef|null>
       recordVoice(input:{data:string;mime:string;durationMs:number}):Promise<AttachmentRef>
       readAttachment(attachment:string|AttachmentRef):Promise<WireAttachment>

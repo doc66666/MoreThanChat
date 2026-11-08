@@ -2,6 +2,7 @@
   "name": "@more-than-chat/chat-core",
   "version": "0.1.0",
   "private": true,
+  "dependencies": {"@more-than-chat/central-protocol":"workspace:*"},
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

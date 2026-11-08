@@ -1,15 +1,16 @@
+import {parseMessageContent,type MessageContent} from '@more-than-chat/central-protocol';
 /** Shared by the assistant broker and trusted client plugins. Never accepts file paths. */
 export type ChatAccessRequest =
   | { action: 'list'; offset?: number; limit?: number }
   | { action: 'history'; conversationId: string; before?: number; after?: number; around?: string; limit?: number }
   | { action: 'attachment'; conversationId: string; messageId: string; format: 'text' | 'base64' | 'image'; offset?: number; limit?: number }
-  | { action: 'send'; conversationId: string; clientMessageId: string; text: string; attachmentMessageId?: string };
+  | { action: 'send'; conversationId: string; clientMessageId: string; text: string; content?:MessageContent; attachmentMessageId?: string };
 export interface ChatAccessResult { dataJson: string }
 export const CHAT_ACCESS_TOOLS = ['list_conversations','read_chat_history','read_chat_attachment','send_chat_message'] as const;
 export function parseChatAccessRequest(value: unknown): ChatAccessRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('聊天接口参数必须是对象');
   const v=value as Record<string,unknown>;
-  const keys: Record<string,string[]>={list:['action','offset','limit'],history:['action','conversationId','before','after','around','limit'],attachment:['action','conversationId','messageId','format','offset','limit'],send:['action','conversationId','clientMessageId','text','attachmentMessageId']};
+  const keys: Record<string,string[]>={list:['action','offset','limit'],history:['action','conversationId','before','after','around','limit'],attachment:['action','conversationId','messageId','format','offset','limit'],send:['action','conversationId','clientMessageId','text','content','attachmentMessageId']};
   if(typeof v.action!=='string'||!Object.hasOwn(keys,v.action)||Object.keys(v).some(k=>!keys[v.action as string]!.includes(k)))throw Error('聊天接口参数无效');
   const str=(k:string,max=256)=>{if(typeof v[k]!=='string'||!(v[k] as string).trim()||(v[k] as string).length>max)throw Error('无效参数：'+k)};
   if(v.action!=='list')str('conversationId');
@@ -21,6 +22,7 @@ export function parseChatAccessRequest(value: unknown): ChatAccessRequest {
   }
   if(v.action==='attachment'){str('messageId');if(typeof v.format!=='string'||!['text','base64','image'].includes(v.format))throw Error('附件格式无效');if(v.format==='image'&&(v.offset!==undefined||v.limit!==undefined))throw Error('图片输入不使用分块游标');}
   if(v.action==='send'){str('clientMessageId',80);if(typeof v.text!=='string'||v.text.length>100000)throw Error('消息文本无效');if(v.attachmentMessageId!==undefined)str('attachmentMessageId');if(!v.text.trim()&&!v.attachmentMessageId)throw Error('消息不能为空');}
+  if(v.action==='send'&&v.content!==undefined){if(!(v.text as string).trim())throw Error('扩展消息需要文字摘要');return {...v,content:parseMessageContent(v.content)} as ChatAccessRequest;}
   return v as ChatAccessRequest;
 }
 export function parseChatAccessResult(value: unknown): ChatAccessResult {

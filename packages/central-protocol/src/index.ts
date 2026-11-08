@@ -1,5 +1,7 @@
 import { parseGroupArtifact, validateProgramState, type GroupArtifact } from './group-program.js'
 import { parseSharedClientPackage, type SharedClientPackage } from './executable-client.js'
+import {parseMessageContent,type MessageContent} from './message-content.js'
+export * from './message-content.js'
 export * from './executable-client.js'
 export * from './group-program.js'
 export * from './group-program-diagnostics.js'
@@ -70,11 +72,12 @@ export const RETRACTION_WINDOW_MS = 120000
 export function createMessageReference(message: {id:string;senderId:string;senderName:string;text:string;attachment?:{name:string}}): MessageReference {
   return parseMessageReference({messageId:message.id,senderId:message.senderId,senderName:message.senderName,text:message.text.slice(0,280),...(message.attachment?{attachmentName:message.attachment.name}:{})})
 }
-export function messageContentDescriptor(message:{text:string;attachment?:AttachmentRef}):unknown {
+export function messageContentDescriptor(message:{text:string;attachment?:AttachmentRef;content?:MessageContent}):unknown {
   const a=message.attachment
-  return {text:message.text,...(a?{attachment:{id:a.id,name:a.name,mime:a.mime,size:a.size,...(a.durationMs===undefined?{}:{durationMs:a.durationMs})}}:{})}
+  return {text:message.text,...(a?{attachment:{id:a.id,name:a.name,mime:a.mime,size:a.size,...(a.durationMs===undefined?{}:{durationMs:a.durationMs})}}:{}),...(message.content?{content:parseMessageContent(message.content)}:{})}
 }
 export interface RelayMessage {
+  content?: MessageContent
   id: string
   clientMessageId: string
   conversationId: string
@@ -437,6 +440,7 @@ export function parseRelayEvent(value: unknown): RelayEvent {
       senderId: m.senderId,
       senderName: boundedText(m.senderName, 80),
       text: boundedText(m.text, 100000),
+      ...(m.content===undefined?{}:{content:parseMessageContent(m.content)}),
       createdAt: Number(m.createdAt),
       ...(m.targetName===undefined?{}:{targetName:boundedText(m.targetName,80)}),
       ...(m.attachment === undefined

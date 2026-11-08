@@ -10,6 +10,7 @@ import { AttachmentStore } from '../src/main/attachments'
 import { CentralClient } from '../src/main/central-client'
 import { createCentralServer } from '../../central-server/src/server.mjs'
 import { ForwardAttemptIds } from '../src/renderer/src/message-actions'
+import {createChatAccess} from '../src/main/chat-access'
 
 const cleanups:(()=>Promise<void>)[]=[]
 afterEach(async()=>{vi.restoreAllMocks();for(const cleanup of cleanups.splice(0))await cleanup()})
@@ -26,6 +27,53 @@ async function fixture(){
   return{a,b,aid,bid,server,url}
 }
 describe('chat message action integration',()=>{
+  it('keeps typed content through the chat broker, offline queue, forwarding, quotes, and withdrawal',async()=>{
+    const {a,b,aid,bid,server,url}=await fixture(),clientId=randomUUID(),content={format:'html',version:1,body:'<h2>完整正文</h2>'}
+    const access=createChatAccess(a.store,a.files,input=>a.client.send(input))
+    await a.client.disconnect(false)
+    await access({action:'send',conversationId:aid,clientMessageId:clientId,text:'文字摘要',content})
+    expect(a.store.messageByClient(server.serverId,a.uid,clientId)?.content).toEqual(content)
+    await expect(access({action:'send',conversationId:aid,clientMessageId:clientId,text:'文字摘要',content:{...content,body:'different'}})).rejects.toThrow('替换内容')
+    await a.client.connect(url,'A')
+    await until(()=>Boolean(b.store.messageByClient(server.serverId,a.uid,clientId)?.actionsSupported))
+    const original=structuredClone(b.store.messageByClient(server.serverId,a.uid,clientId)!),id=String(original.id)
+    expect(original.content).toEqual(content)
+    const read=createChatAccess(b.store,b.files,input=>b.client.send(input))
+    expect(JSON.parse((await read({action:'history',conversationId:bid})).dataJson).messages.find((m:any)=>m.id===id).content).toEqual(content)
+    const group=(await a.client.action('groups',{name:'格式转发群',memberIds:[b.uid]})).directory!.groups[0]!.id
+    await until(()=>Boolean(b.store.load()!.conversations.some(c=>c.targetId===group)))
+    const bgroup=String(b.store.load()!.conversations.find(c=>c.targetId===group)!.id),forwardId=randomUUID()
+    await b.client.forwardMessage(id,bgroup,forwardId)
+    await until(()=>Boolean(a.store.messageByClient(server.serverId,b.uid,forwardId)))
+    expect(a.store.messageByClient(server.serverId,b.uid,forwardId)?.content).toEqual(content)
+    const quoteId=randomUUID();await b.client.send({conversationId:bid,clientMessageId:quoteId,text:'收到卡片',quoteMessageId:id})
+    await until(()=>Boolean(a.store.messageByClient(server.serverId,b.uid,quoteId)))
+    expect(a.store.messageByClient(server.serverId,b.uid,quoteId)?.quote).toMatchObject({text:'文字摘要'})
+    await a.client.retractMessage(id);await until(()=>Boolean(b.store.message(id)?.retractedAt))
+    for(const store of [a.store,b.store]){expect(store.message(id)?.content).toBeUndefined();expect(store.message(id)?.text).toBe('')}
+    const replay=b.store.load()!;replay.messages[bid]=[original];b.store.save(replay,undefined,{authoritative:true})
+    expect(b.store.message(id)?.content).toBeUndefined()
+    expect(a.store.messageByClient(server.serverId,b.uid,forwardId)?.content).toEqual(content)
+  })
+  it('keeps extended messages retryable when an older server cannot preserve their format',async()=>{
+    const {a,b,aid,server,url}=await fixture(),realFetch=globalThis.fetch,id=randomUUID()
+    await a.client.disconnect(false)
+    const spy=vi.spyOn(globalThis,'fetch').mockImplementation(async(input,init)=>{
+      const response=await realFetch(input,init)
+      if(String(input).endsWith('/v1/ping')){const body=await response.json();body.features=body.features.filter((f:string)=>f!=='message-content-v1');return new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}})}
+      return response
+    })
+    await a.client.connect(url,'A')
+    const content={format:'example.card',version:2,body:'{"value":1}'}
+    await a.client.send({conversationId:aid,clientMessageId:id,text:'卡片摘要',content})
+    await until(()=>a.store.messageByClient(server.serverId,a.uid,id)?.status==='failed')
+    expect(b.store.messageByClient(server.serverId,a.uid,id)).toBeUndefined()
+    expect(a.store.messageByClient(server.serverId,a.uid,id)?.content).toEqual(content)
+    spy.mockRestore();await a.client.disconnect(false);await a.client.connect(url,'A')
+    await a.client.retryMessage(String(a.store.messageByClient(server.serverId,a.uid,id)!.id))
+    await until(()=>Boolean(b.store.messageByClient(server.serverId,a.uid,id)))
+    expect(b.store.messageByClient(server.serverId,a.uid,id)?.content).toEqual(content)
+  })
   it('retries a forwarding destination without duplicate messages and allows another destination',async()=>{
     const {a,b,aid,bid,server}=await fixture(),clientId=randomUUID()
     await a.client.send({conversationId:aid,clientMessageId:clientId,text:'forward-retry-original'})

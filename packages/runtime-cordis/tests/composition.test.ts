@@ -31,6 +31,102 @@ function source(
   }
 }
 describe('shared built-in and user composition', () => {
+  it('allows a repaired first install to retry after its old cleanup initially failed', async () => {
+    const directory=await mkdtemp(path.join(tmpdir(),'mtc-node-cleanup-retry-')),folder=path.join(directory,'user.cleanup')
+    const runtime=new CordisPluginRuntime({target:'pc-host'});let cleanups=0
+    const loader=new NodePluginDirectory(directory,runtime,{cleanup(){if(++cleanups<=2)throw Error('cleanup busy')}})
+    try {
+      await mkdir(folder)
+      await writeFile(path.join(folder,'manifest.json'),JSON.stringify(source('user.cleanup',[],['value'],()=>{}).manifest))
+      await writeFile(path.join(folder,'index.mjs'),'export default (ctx,sdk)=>{ctx.effect(()=>sdk.cleanup());throw Error("bad first activation")}')
+      await loader.start()
+      expect(loader.list()[0]?.status).toBe('failed')
+      expect(cleanups).toBe(2)
+      await loader.refresh();expect(cleanups).toBe(2)
+      await writeFile(path.join(folder,'index.mjs'),'export default ctx=>ctx.provideService("value",7)')
+      await loader.setEnabled('user.cleanup',true)
+      expect(cleanups).toBe(3)
+      expect(runtime.services.get('value')).toBe(7)
+      expect(runtime.getDiagnostics().registeredScopes).toBe(1)
+    } finally {await loader.close();await runtime.close();await rm(directory,{recursive:true,force:true})}
+  })
+  it('shows a first-load error, avoids executing the same failure on every scan, and allows explicit retry', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'mtc-node-retry-')), id = 'user.retry', folder = path.join(directory,id)
+    const runtime = new CordisPluginRuntime({target:'pc-host'})
+    let attempts = 0, broken = true
+    const loader = new NodePluginDirectory(directory,runtime,{attempt(){attempts++;if(broken)throw Error('temporary activation failure')}})
+    try {
+      await mkdir(folder)
+      await writeFile(path.join(folder,'manifest.json'),JSON.stringify(source(id,[],['value'],()=>{}).manifest))
+      await writeFile(path.join(folder,'index.mjs'),'export default (ctx,sdk)=>{sdk.attempt();ctx.provideService("value",1)}')
+      await loader.start()
+      expect(loader.list()[0]).toMatchObject({manifest:{id},status:'failed',error:expect.stringContaining('temporary activation failure')})
+      expect(loader.owns(id)).toBe(true)
+      await loader.refresh();await loader.refresh()
+      expect(attempts).toBe(1)
+      broken = false
+      await loader.setEnabled(id,true)
+      expect(attempts).toBe(2)
+      expect(runtime.services.get('value')).toBe(1)
+      expect(loader.list()[0]?.error).toBeNull()
+      expect(runtime.getDiagnostics().registeredScopes).toBe(1)
+    } finally {await loader.close();await runtime.close();await rm(directory,{recursive:true,force:true})}
+  })
+  it('loads edited source before enabling a disabled broken revision, and keeps a failed first install disabled across restart', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'mtc-node-disabled-edit-')), id = 'user.edited', folder = path.join(directory,id)
+    let runtime = new CordisPluginRuntime({target:'pc-host'}), loader = new NodePluginDirectory(directory,runtime)
+    try {
+      await mkdir(folder)
+      await writeFile(path.join(folder,'manifest.json'),JSON.stringify(source(id,[],['value'],()=>{}).manifest))
+      await writeFile(path.join(folder,'index.mjs'),'export default()=>{throw Error("broken first install")}')
+      await loader.start()
+      await loader.setEnabled(id,false)
+      await loader.close();await runtime.close()
+      runtime = new CordisPluginRuntime({target:'pc-host'});loader = new NodePluginDirectory(directory,runtime)
+      await loader.start()
+      expect(loader.list()[0]).toMatchObject({manifest:{id,version:'1.0.0'},status:'inactive'})
+      expect(runtime.list()).toHaveLength(0)
+      await writeFile(path.join(folder,'index.mjs'),'export default ctx=>ctx.provideService("value",2)')
+      await loader.setEnabled(id,true)
+      expect(runtime.services.get('value')).toBe(2)
+      await loader.setEnabled(id,false)
+      // The old version may rely on resources that are no longer available.
+      await writeFile(path.join(folder,'index.mjs'),'export default ctx=>ctx.provideService("value",3)')
+      await loader.setEnabled(id,true)
+      expect(runtime.services.get('value')).toBe(3)
+      await rm(folder,{recursive:true});await loader.refresh()
+      expect(loader.list()).toEqual([])
+      expect(loader.owns(id)).toBe(false)
+    } finally {await loader.close();await runtime.close();await rm(directory,{recursive:true,force:true})}
+  })
+  it('can enable a fixed disk revision when the accepted disabled revision can no longer activate', async () => {
+    const directory=await mkdtemp(path.join(tmpdir(),'mtc-node-repair-')),folder=path.join(directory,'user.repair')
+    const runtime=new CordisPluginRuntime({target:'pc-host'});let available=true
+    const loader=new NodePluginDirectory(directory,runtime,{check(){if(!available)throw Error('old dependency gone')}})
+    try {
+      await mkdir(folder)
+      await writeFile(path.join(folder,'manifest.json'),JSON.stringify(source('user.repair',[],['value'],()=>{}).manifest))
+      await writeFile(path.join(folder,'index.mjs'),'export default (ctx,sdk)=>{sdk.check();ctx.provideService("value",1)}')
+      await loader.start();await loader.setEnabled('user.repair',false);available=false
+      await writeFile(path.join(folder,'index.mjs'),'export default ctx=>ctx.provideService("value",2)')
+      await loader.setEnabled('user.repair',true)
+      expect(runtime.services.get('value')).toBe(2)
+    } finally {await loader.close();await runtime.close();await rm(directory,{recursive:true,force:true})}
+  })
+  it('retries missing dependencies without repeatedly executing plugins that throw', async () => {
+    const directory=await mkdtemp(path.join(tmpdir(),'mtc-node-dependency-')),folder=path.join(directory,'user.waiting')
+    const runtime=new CordisPluginRuntime({target:'pc-host'}),loader=new NodePluginDirectory(directory,runtime)
+    try {
+      await mkdir(folder)
+      await writeFile(path.join(folder,'manifest.json'),JSON.stringify(source('user.waiting',['input'],['output'],()=>{}).manifest))
+      await writeFile(path.join(folder,'index.mjs'),'export default ctx=>ctx.provideService("output",ctx.getService("input"))')
+      await loader.start();expect(loader.list()[0]?.status).toBe('failed')
+      runtime.install(source('user.provider',[],['input'],ctx=>ctx.provideService('input',42)))
+      await runtime.activate('user.provider');await loader.refresh()
+      expect(runtime.services.get('output')).toBe(42)
+      expect(loader.errors.size).toBe(0)
+    } finally {await loader.close();await runtime.close();await rm(directory,{recursive:true,force:true})}
+  })
   it('starts a reverse-ordered graph and stops consumers before replacing providers, then restores defaults', async () => {
     const runtime = new CordisPluginRuntime({ target: 'pc-host' }),
       events: string[] = []

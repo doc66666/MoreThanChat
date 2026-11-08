@@ -5,7 +5,7 @@ import path from 'node:path'
 import { backup, DatabaseSync } from 'node:sqlite'
 import { redactSecretFields } from './secret-redaction'
 import { parseModelTokenUsage } from '@more-than-chat/protocol'
-import { MAX_GROUP_MEMBERS, parseMessageReference, parseMessageRetraction, validGroupId, validUid, type MessageRetraction } from '@more-than-chat/central-protocol'
+import { MAX_GROUP_MEMBERS, parseMessageContent, parseMessageReference, parseMessageRetraction, validGroupId, validUid, type MessageRetraction } from '@more-than-chat/central-protocol'
 
 type RecordValue = Record<string, unknown>
 export type HistoryRecord = { type: 'conversation'; value: RecordValue } | { type: 'message'; value: RecordValue } | { type: 'retraction'; serverId: string; value: MessageRetraction }
@@ -683,7 +683,7 @@ function object(value: unknown): RecordValue {
   return value as RecordValue
 }
 const HISTORY_CONVERSATION_FIELDS = ['id','title','subtitle','avatar','accent','kind','unread','pinned','updatedAt','transportId','serverId','targetId','remoteId','muted','unavailable']
-const HISTORY_MESSAGE_FIELDS = ['id','clientMessageId','conversationId','senderId','senderName','senderAvatar','role','type','text','createdAt','status','authorNotes','errorMessage','replyToId','retryOfId','supersededById','usage','serverId','receipt','readAt','attachment','quote','forwarded','actionsSupported','retractedAt']
+const HISTORY_MESSAGE_FIELDS = ['id','clientMessageId','conversationId','senderId','senderName','senderAvatar','role','type','text','content','createdAt','status','authorNotes','errorMessage','replyToId','retryOfId','supersededById','usage','serverId','receipt','readAt','attachment','quote','forwarded','actionsSupported','retractedAt']
 function pickHistory(value: unknown, fields: string[]): RecordValue {
   const source = object(value), result: RecordValue = {}
   for (const key of fields) if (Object.hasOwn(source, key)) result[key] = source[key]
@@ -758,7 +758,7 @@ function assertRetractionIdentity(left: MessageRetraction, right: MessageRetract
 }
 function redactRetractedMessage(message:RecordValue,notice:MessageRetraction):void {
   message.id=notice.messageId;message.createdAt=notice.createdAt;message.text='';message.status='sent';message.retractedAt=notice.retractedAt
-  for(const field of ['attachment','quote','forwarded','errorMessage'])delete message[field]
+  for(const field of ['attachment','content','quote','forwarded','errorMessage'])delete message[field]
 }
 function stringFields(value: RecordValue, fields: string[]): void {
   if (fields.some((key) => typeof value[key] !== 'string'))
@@ -828,6 +828,7 @@ function validateSnapshot(value: unknown): Snapshot {
         !Number.isFinite(item.createdAt)
       )
         throw new Error('Invalid message.')
+      if(item.content!==undefined){if(item.retractedAt!==undefined)delete item.content;else item.content=parseMessageContent(item.content)}
       if (item.receipt !== undefined) {
         const receipt = object(item.receipt)
         if (![receipt.recipientCount,receipt.deliveredCount,receipt.readCount].every(n => Number.isSafeInteger(n) && Number(n)>=0 && Number(n)<MAX_GROUP_MEMBERS) || Number(receipt.readCount)>Number(receipt.deliveredCount) || Number(receipt.deliveredCount)>Number(receipt.recipientCount)) throw new Error('Invalid receipt')

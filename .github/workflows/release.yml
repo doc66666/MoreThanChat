@@ -39,6 +39,30 @@ jobs:
       - name: Build Windows installer and ZIP
         if: runner.os == 'Windows'
         run: pnpm package:windows
+      - name: Verify packaged message rendering and shared plugins
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $releaseVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $distribution = Get-ChildItem -LiteralPath '.artifacts/windows-distributions' -Directory | Where-Object { $_.Name.StartsWith("$releaseVersion-") } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $distribution) { throw 'Packaged client directory is missing' }
+          $env:MTC_TEST_PACKAGED_EXE = Join-Path $distribution.FullName 'win-unpacked/MoreThanChat.exe'
+          node scripts/verify-message-renderers.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-bundled-examples.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Save packaged verification evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: packaged-verification
+          path: |
+            .artifacts/message-renderers-*/report.json
+            .artifacts/message-renderers-*/*.png
+            .artifacts/examples-ui-*/report.json
+            .artifacts/examples-ui-*/*.png
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-${{ runner.os }}

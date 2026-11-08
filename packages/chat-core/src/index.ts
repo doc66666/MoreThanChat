@@ -1,3 +1,4 @@
+import type {MessageContent} from '@more-than-chat/central-protocol'
 export type ConversationKind = 'direct' | 'group' | 'assistant'
 export type MessageStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'streaming' | 'cancelled'
 export type ParticipantRole = 'self' | 'peer' | 'system'
@@ -43,6 +44,7 @@ export interface AuthorToolNote {
 }
 
 export interface ChatMessage {
+  content?: MessageContent
   id: string
   clientMessageId: string
   conversationId: string
@@ -73,7 +75,7 @@ export interface MessageReference {messageId:string;senderId:string;senderName:s
 export function redactMessageForRetraction(message:ChatMessage,notice:{serverId:string;messageId:string;clientMessageId:string;senderId:string;retractedAt:number;createdAt:number}):ChatMessage {
   if(message.serverId!==notice.serverId)return message
   if(message.id===notice.messageId||(message.clientMessageId===notice.clientMessageId&&message.senderId===notice.senderId)){
-    const {attachment:_attachment,quote:_quote,forwarded:_forwarded,errorMessage:_error,...rest}=message
+    const {attachment:_attachment,content:_content,quote:_quote,forwarded:_forwarded,errorMessage:_error,...rest}=message
     return {...rest,id:notice.messageId,createdAt:notice.createdAt,text:'',status:'sent',retractedAt:notice.retractedAt}
   }
   if(message.quote?.messageId===notice.messageId){const {attachmentName:_attachment,...quote}=message.quote;return {...message,quote:{...quote,text:'引用的消息已撤回',retracted:true}}}
@@ -90,6 +92,7 @@ export interface ChatState {
 }
 
 export interface OutgoingMessage {
+  content?: MessageContent
   clientMessageId: string
   conversationId: string
   text: string

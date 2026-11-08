@@ -4,10 +4,13 @@ import type {
   UiSlotContribution,
 } from '@more-than-chat/plugin-runtime'
 class SlotBoundary extends Component<
-  { children: ReactNode; fallback?: ReactNode },
-  { failed: boolean }
+  { children: ReactNode; fallback?: ReactNode; revision: UiSlotContribution },
+  { failed: boolean; revision: UiSlotContribution }
 > {
-  state = { failed: false }
+  state = { failed: false, revision: this.props.revision }
+  static getDerivedStateFromProps(props: { revision: UiSlotContribution }, state: { revision: UiSlotContribution }) {
+    return props.revision === state.revision ? null : { failed: false, revision: props.revision }
+  }
   static getDerivedStateFromError() {
     return { failed: true }
   }
@@ -50,6 +53,7 @@ export function UiSlot({
         .map((entry) => (
           <SlotBoundary
             key={entry.ownerId + ':' + entry.contribution.id}
+            revision={entry.contribution}
             {...(fallback === undefined ? {} : { fallback })}
           >
             <Contribution contribution={entry.contribution} context={context} />

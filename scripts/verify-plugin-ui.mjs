@@ -228,11 +228,11 @@ class CdpClient {
     })
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, sessionId) {
     const id = ++this.#sequence
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject })
-      this.#socket.send(JSON.stringify({ id, method, params }))
+      this.#socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
     })
   }
 

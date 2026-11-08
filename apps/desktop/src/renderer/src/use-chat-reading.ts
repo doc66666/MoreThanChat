@@ -80,7 +80,8 @@ export function useChatReading(conversationId:string|undefined,messages:readonly
     const schedule=()=>{if(frame===undefined)frame=requestAnimationFrame(()=>{frame=undefined;notify()})}
     // Plugin overlays can open without changing App state or container size.
     const observer=new MutationObserver(schedule)
-    observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style','hidden']})
+    // showModal()/close() change `open`, without changing a class or App state.
+    observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style','hidden','open']})
     document.addEventListener('visibilitychange',notify)
     window.addEventListener('resize',schedule)
     return()=>{observer.disconnect();if(frame!==undefined)cancelAnimationFrame(frame);document.removeEventListener('visibilitychange',notify);window.removeEventListener('resize',schedule)}

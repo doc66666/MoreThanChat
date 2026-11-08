@@ -1,4 +1,4 @@
-import { createElement, type ReactNode } from 'react'
+import { createElement, type ReactNode, type ComponentProps } from 'react'
 import type {
   PluginContext,
   PluginSource,
@@ -7,7 +7,8 @@ import type {
 } from '@more-than-chat/plugin-runtime'
 import { useWorkspaceController, type WorkspaceViewContext } from './workspace-controller'
 import { workspaceViews } from './workspace-views'
-import { LoadingScreen } from './workspace-components'
+import { LoadingScreen, MessageBubble } from './workspace-components'
+import {MessageBodyView,MarkdownMessageView,PlainMessageView,AttachmentMessageView,type MessageViewContext,type MessageSurfaceRenderer} from './message-content'
 import { UiSurface } from './UiSurface'
 import { pluginRuntime, uiSurfaceRegistry } from './plugin-host'
 import { startAppearance } from './theme'
@@ -94,7 +95,20 @@ function DefaultApplication({ useController }: { useController: typeof useWorksp
     />
   )
 }
+function messageSources():PluginSource[]{
+  const views:{name:string;label:string;render:(input:UiSurfaceInput)=>unknown}[]=[
+    {name:'message',label:'默认消息气泡',render:({context,renderSurface})=>createElement(MessageBubble,{...context as ComponentProps<typeof MessageBubble>,renderSurface:renderSurface as MessageSurfaceRenderer})},
+    {name:'message.body',label:'消息正文格式分派',render:({context,renderSurface})=>createElement(MessageBodyView,{context:context as MessageViewContext,renderSurface:renderSurface as MessageSurfaceRenderer})},
+    {name:'message.body.markdown',label:'Markdown 消息渲染',render:({context})=>createElement(MarkdownMessageView,{context:context as MessageViewContext})},
+    {name:'message.body.plain',label:'纯文本消息渲染',render:({context})=>createElement(PlainMessageView,{context:context as MessageViewContext})},
+    {name:'message.attachment',label:'图片、语音与文件消息渲染',render:({context})=>createElement(AttachmentMessageView,{context:context as MessageViewContext})},
+  ]
+  return views.map(view=>builtinSource('builtin.ui.'+view.name,view.label,['ui.surfaces'],[],ctx=>{
+    ctx.contribute(ctx.getService<UiSurfaceRegistry>('ui.surfaces'),{id:'default',surface:view.name,priority:10000,render:view.render})
+  }))
+}
 export const appSources: PluginSource[] = [
+  ...messageSources(),
   builtinSource('builtin.ui.theme', '默认外观', [], [], (context) => {
     const style = document.createElement('style')
     style.dataset.pluginStyle = context.manifest.id

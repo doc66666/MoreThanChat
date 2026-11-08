@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest'
+import {parseMessageContent,messageContentDescriptor} from '../src'
 import { MAX_GROUP_MEMBERS, parseMessageReceipt, parseDirectory, parseGroupPluginPack, parseRelayEvent,parseMessageReference,parseMessageRetraction } from '../src'
 const uid = 'usr_' + 'a'.repeat(64),
   groupId = 'grp_11111111-1111-4111-8111-111111111111',
   pluginId = 'gplugin_22222222-2222-4222-8222-222222222222'
 describe('central wire boundary', () => {
+  it('validates portable message formats and includes their full payload in content identity',()=>{
+    const content={format:'example.card',version:3,body:'{"items":[1,2]}'}
+    expect(parseMessageContent(content)).toEqual(content)
+    for(const bad of [{format:'../root'},{version:0},{version:1.5},{body:' '},{body:'x'.repeat(100001)},{token:'secret'}])expect(()=>parseMessageContent({...content,...bad})).toThrow()
+    expect(messageContentDescriptor({text:'summary',content})).toEqual({text:'summary',content})
+    expect(messageContentDescriptor({text:'legacy'})).toEqual({text:'legacy'})
+  })
   it('accepts expanded group receipts without weakening count ordering or the bound', () => {
     const receipt = { messageId:'33333333-3333-4333-8333-333333333333', clientMessageId:'client', acceptedAt:1,
       recipientCount:MAX_GROUP_MEMBERS-1, deliveredCount:200, readCount:100 }
